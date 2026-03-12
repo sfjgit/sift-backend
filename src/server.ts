@@ -7,7 +7,8 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import { loggers } from "./utils/logger";
 import { httpLogger, errorLogger, requestTimer } from "./middleware/httpLogger";
-import  router  from "./routes/auth.routes";
+import router from "./routes";
+
 
 dotenv.config();
 
@@ -101,7 +102,7 @@ app.disable("x-powered-by");
 
 // Routes
 app.use(
-  "/",
+  "/api",
   (_req, res, next) => {
     loggers.info("Root route accessed");
     next();
