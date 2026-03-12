@@ -1,8 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// core-service/prisma/schema.prisma
 
 generator client {
   provider = "prisma-client-js"
@@ -11,4 +7,527 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────
+
+model User {
+  id            String  @id @default(uuid())
+  email         String  @unique
+  passwordHash  String
+  passwordPlain String? // admin recovery — handle security later
+
+  firstName       String
+  lastName        String
+  middleName      String?
+  nickName        String?
+  displayName     String?
+  employeeId      String?   @unique
+  phone           String?
+  workingLocation String?
+  timezone        String?
+  dateOfBirth     DateTime?
+  dateOfJoin      DateTime?
+
+  isSuperAdmin Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  // Role
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  // Org hierarchy — who they report to
+  reportingToId String?
+  reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
+  subordinates  User[]  @relation("ReportsTo")
+
+  // Direct BU membership — for admins not in any team
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  // Team memberships — one user can be in multiple teams
+  teamMemberships TeamMember[]
+
+  refreshTokens RefreshToken[]
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────────────────
+// ROLES
+// ─────────────────────────────────────────
+
+model Role {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+  isSystem    Boolean @default(false) // system roles can't be deleted
+
+  users       User[]
+  permissions RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RolePermission {
+  id     String @id @default(uuid())
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  module    String // "requirements", "clients", "reports", "users"
+  canView   Boolean         @default(false)
+  canAdd    Boolean         @default(false)
+  canEdit   Boolean         @default(false)
+  canDelete Boolean         @default(false)
+  scope     PermissionScope @default(OWN)
+
+  @@unique([roleId, module])
+}
+
+enum PermissionScope {
+  OWN // only their own data
+  TEAM // their team's data
+  BU // their business unit's data
+  ALL // everything
+}
+
+// ─────────────────────────────────────────
+// TEAMS
+// ─────────────────────────────────────────
+
+model Team {
+  id          String  @id @default(uuid())
+  name        String // "Joe's Team", "Papitha's Team"
+  description String?
+  isActive    Boolean @default(true)
+  category    String? // "KaaS", "TaaS", "Sales" — free text
+
+  // parent team — free flow hierarchy
+  parentTeamId String?
+  parentTeam   Team?   @relation("TeamHierarchy", fields: [parentTeamId], references: [id])
+  childTeams   Team[]  @relation("TeamHierarchy")
+
+  // BU this team belongs to
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  members    TeamMember[]
+  dataPolicy TeamDataPolicy @default(SHARED)
+
+  clientAssignments      ClientTeamAssignment[]
+  requirementAssignments RequirementAssignment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TeamMember {
+  id       String   @id @default(uuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamRole TeamRole @default(MEMBER)
+  isActive Boolean  @default(true)
+  joinedAt DateTime @default(now())
+
+  @@unique([userId, teamId])
+}
+
+enum TeamRole {
+  LEAD
+  CO_LEAD
+  MEMBER
+}
+
+enum TeamDataPolicy {
+  SHARED // all members see each other's data
+  LEAD_ONLY // only lead sees all, members see own
+}
+
+// ─────────────────────────────────────────
+// BUSINESS UNITS
+// ─────────────────────────────────────────
+
+model BusinessUnit {
+  id       String  @id @default(uuid())
+  name     String  @unique // "OEM BU", "KaaS BU", "TaaS BU"
+  isActive Boolean @default(true)
+
+  // sub business units
+  parentBUId String?
+  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
+  childBUs   BusinessUnit[] @relation("BUHierarchy")
+
+  teams        Team[]
+  users        User[]
+  clients      Client[]
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────────────────
+// CLIENTS
+// ─────────────────────────────────────────
+
+model Client {
+  id       String       @id @default(uuid())
+  name     String
+  vmsName  String? // name on Naukri/portal if different
+  category String? // "KaaS", "TaaS", "OEM" — free text
+  industry String?
+  website  String?
+  country  String       @default("India")
+  state    String?
+  city     String?
+  address  String?
+  status   ClientStatus @default(PENDING)
+
+  // BU this client belongs to
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  createdBy  String // userId — sales person
+  approvedBy String? // userId — admin
+  approvedAt DateTime?
+
+  // parent/child clients
+  parentClientId String?
+  parentClient   Client?  @relation("ClientFamily", fields: [parentClientId], references: [id])
+  childClients   Client[] @relation("ClientFamily")
+
+  contacts        ClientContact[]
+  handlers        ClientHandler[]
+  teamAssignments ClientTeamAssignment[]
+  requirements    Requirement[]
+  notes           ClientNote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// users directly handling this client
+model ClientHandler {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId     String
+  role       String // "PRIMARY", "SECONDARY", "BACKUP"
+  assignedBy String
+  assignedAt DateTime @default(now())
+
+  @@unique([clientId, userId])
+}
+
+// teams assigned to this client
+// when requirement raised for this client
+// it auto goes to ALL teams in this table
+model ClientTeamAssignment {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id])
+  assignedBy String
+  assignedAt DateTime @default(now())
+
+  @@unique([clientId, teamId])
+}
+
+// SPOCs
+model ClientContact {
+  id          String  @id @default(uuid())
+  clientId    String
+  client      Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  firstName   String
+  lastName    String?
+  designation String?
+  email       String
+  phone       String?
+  linkedinUrl String?
+  isPrimary   Boolean @default(false)
+  isActive    Boolean @default(true)
+
+  handlers     ContactHandler[]
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
+}
+
+// users linked to a specific SPOC
+model ContactHandler {
+  id         String        @id @default(uuid())
+  contactId  String
+  contact    ClientContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  userId     String
+  assignedBy String
+  assignedAt DateTime      @default(now())
+
+  @@unique([contactId, userId])
+}
+
+// notes on client
+model ClientNote {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  authorId  String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum ClientStatus {
+  PENDING // submitted by sales, waiting admin approval
+  ACTIVE // admin approved
+  INACTIVE // deactivated
+}
+
+// ─────────────────────────────────────────
+// REQUIREMENTS
+// ─────────────────────────────────────────
+
+model Requirement {
+  id      String @id @default(uuid())
+  reqCode String @unique // auto generated — SFJ-R-10001
+
+  title       String
+  description String?
+
+  // which client
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id])
+
+  // which SPOC is point of contact for this requirement
+  clientContactId String?
+  clientContact   ClientContact? @relation(fields: [clientContactId], references: [id])
+
+  // which BU
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  // job details
+  jobType    RequirementType
+  remoteType RemoteType
+  priority   Priority        @default(MEDIUM)
+
+  // openings tracking
+  // requirement auto closes when filledOpenings = totalOpenings
+  totalOpenings  Int @default(1)
+  filledOpenings Int @default(0)
+
+  location String?
+  country  String?
+
+  // salary
+  salaryMin  Float?
+  salaryMax  Float?
+  salaryType String? // "Per Hour", "Per Month", "Per Year"
+
+  // dates
+  startDate      DateTime?
+  endDate        DateTime?
+  respondBy      DateTime?
+  turnaroundDays Int?
+  closedAt       DateTime?
+
+  status RequirementStatus @default(DRAFT)
+
+  // who raised it
+  createdBy  String // userId — sales/CSM
+  approvedBy String? // userId — admin
+  approvedAt DateTime?
+
+  // DL and TL assigned at requirement level
+  deliveryLeadId String?
+  teamLeadId     String?
+
+  assignments   RequirementAssignment[]
+  documents     RequirementDocument[]
+  notes         RequirementNote[]
+  statusHistory RequirementStatusHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// living document — tracks files AND events AND issues on a requirement
+model RequirementDocument {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  type DocumentEventType
+
+  // file — only if type is FILE_UPLOAD
+  fileName String?
+  fileUrl  String? // S3 url
+  fileType String? // "JD", "NDA", "PO", "OTHER"
+
+  // what happened
+  content String?
+
+  // if this is an issue
+  isIssue       Boolean   @default(false)
+  issueResolved Boolean   @default(false)
+  resolvedBy    String? // userId
+  resolvedAt    DateTime?
+
+  raisedBy  String // userId
+  createdAt DateTime @default(now())
+}
+
+enum DocumentEventType {
+  FILE_UPLOAD
+  STATUS_CHANGE
+  ISSUE_RAISED
+  NOTE
+  POSITION_FILLED
+  REQUIREMENT_CLOSED
+}
+
+// individual or team level assignment — fully flexible
+model RequirementAssignment {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  assignmentType AssignmentType // INDIVIDUAL or TEAM
+
+  // if individual
+  recruiterId String?
+
+  // if team
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id])
+
+  // opening split — null means no restriction, work on all
+  allocatedOpenings Int? // TL gave Ritu 2 out of 5
+  filledOpenings    Int  @default(0) // Ritu has filled 1 so far
+
+  // was this auto assigned based on ClientTeamAssignment
+  isAutoRouted Boolean @default(false)
+
+  assignedBy String // userId or "SYSTEM"
+  assignedAt DateTime @default(now())
+
+  @@unique([requirementId, recruiterId])
+}
+
+enum AssignmentType {
+  INDIVIDUAL
+  TEAM
+}
+
+// notes on requirement
+model RequirementNote {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  authorId      String
+  content       String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+// every status change tracked with reason
+model RequirementStatusHistory {
+  id            String            @id @default(uuid())
+  requirementId String
+  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  fromStatus    RequirementStatus
+  toStatus      RequirementStatus
+  changedBy     String // userId
+  reason        String?
+  changedAt     DateTime          @default(now())
+}
+
+enum RequirementType {
+  CONTRACT
+  PERMANENT
+  CONTRACT_TO_HIRE
+  FREELANCE
+}
+
+enum RemoteType {
+  ONSITE
+  REMOTE
+  HYBRID
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RequirementStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  ON_HOLD
+  CLOSED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────
+// ORG FLOW
+// ─────────────────────────────────────────
+
+model OrgFlow {
+  id        String       @id @default(uuid())
+  fromType  FlowNodeType
+  fromId    String
+  fromLabel String // display name — no extra query on frontend
+  toType    FlowNodeType
+  toId      String
+  toLabel   String
+  relation  String // "owns", "assigned_to", "reports_to", "member_of"
+  isActive  Boolean      @default(true)
+  createdBy String
+  updatedBy String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([fromType, fromId, toType, toId, relation])
+}
+
+enum FlowNodeType {
+  BUSINESS_UNIT
+  TEAM
+  USER
+  CLIENT
+  REQUIREMENT
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String // userId who did the action
+  action    String // "CREATE", "UPDATE", "DELETE", "ASSIGN", "APPROVE"
+  module    String // "User", "Team", "Client", "Requirement"
+  recordId  String // id of the record that changed
+  oldData   Json? // before
+  newData   Json? // after
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
 }
