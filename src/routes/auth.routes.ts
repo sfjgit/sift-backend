@@ -3,7 +3,7 @@ import { validate } from "@/validators/validator";
 import { Router } from "express";
 import { getUserCredentials, login, logout, refresh, register, resetPassword } from "../controller/auth.controller";
 import { authorize } from "@/middleware/role";
-import { get } from "node:http";
+import { authenticateUser } from "@/middleware/auth";
 
 const router = Router();
 
@@ -34,6 +34,7 @@ router.delete(
 
 router.patch(
     '/reset-password/:userId',
+    authenticateUser,
     authorize('SUPER_ADMIN'),
     validate.params(resetPasswordParamsSchema),
     validate.body(resetPasswordBodySchema),
@@ -42,6 +43,7 @@ router.patch(
 
 router.get(
     '/user-credentials',
+    authenticateUser,
     authorize('SUPER_ADMIN'),
     validate.params(getUserCredentialsSchema),
     getUserCredentials
