@@ -6,7 +6,7 @@ export const registerSchema = z.object({
     passwordPlain: z.string().optional(),
     roleId: z.string().uuid(),
     firstName: z.string().min(2, {message: "First name must be at least 2 characters long"}),
-    lastName: z.string().min(2, {message: "Last name must be at least 2 characters long"}),
+    lastName: z.string().min(1, {message: "Last name must be at least 1 characters long"}),
     middleName: z.string().optional(),
     nickName: z.string().optional(),
     displayName: z.string().trim().optional(),
@@ -22,7 +22,7 @@ export const registerSchema = z.object({
 
 export const loginSchema = z.object({
     email: z.string().email().min(5),
-    passwordHash: z.string().min(8),
+    password: z.string().min(8),
 })
 
 export const refreshSchema = z.object({
@@ -34,7 +34,7 @@ export const resetPasswordParamsSchema = z.object({
 })
 
 export const resetPasswordBodySchema = z.object({
-  newPassword: z
+    password: z
     .string()
     .min(8, { message: "Password must be at least 8 characters long" })
 });

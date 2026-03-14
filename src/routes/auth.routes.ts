@@ -7,31 +7,60 @@ import { authenticateUser } from "@/middleware/auth";
 
 const router = Router();
 
+/**
+ * @route   POST /api/auth/register
+ * @desc    Create new new
+ * @access  Super Admin
+ */
 router.post(
     '/register',
-    validate.body(registerSchema),
+    authenticateUser,
     authorize('SUPER_ADMIN'),
+    validate.body(registerSchema),
     register
 )
 
+
+/**
+ * @route   POST /api/auth/login
+ * @desc    Login
+ * @access  Public
+ */
 router.post(
     '/login',
     validate.body(loginSchema),
     login
 )
 
+
+/**
+ * @route   POST /api/auth/refresh
+ * @desc    Refresh
+ * @access  Public
+ */
 router.post(
     '/refresh',
     validate.body(refreshSchema),
     refresh
 )
 
+
+/**
+ * @route   DELETE /api/auth/logout
+ * @desc    Logout
+ * @access  Public
+ */
 router.delete(
     '/logout',
     validate.body(refreshSchema),
     logout
 )
 
+/**
+ * @route   PATCH /api/auth/reset-password/:userId
+ * @desc    Reset password
+ * @access  Super Admin
+ */
 router.patch(
     '/reset-password/:userId',
     authenticateUser,
@@ -41,8 +70,14 @@ router.patch(
     resetPassword
 )
 
+
+/**
+ * @route   POST /api/auth/user-credentials/:userId
+ * @desc    Get user credentials
+ * @access  Super Admin
+ */
 router.get(
-    '/user-credentials',
+    '/user-credentials/:userId',
     authenticateUser,
     authorize('SUPER_ADMIN'),
     validate.params(getUserCredentialsSchema),

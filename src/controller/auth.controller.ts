@@ -2,10 +2,12 @@ import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { generateAccessToken, generateRefreshToken, JWTPayLoad, verifyAccessToken } from "@/utils/jwt";
+import { create } from "node:domain";
+import { createAuditLog } from "@/services/auditLogs.service";
 
 export const register = async (req:Request, res:Response) => {
     try {
-        const {email, password, roleId, firstName, lastName, ...rest} = req.validatedBody;
+        const {email, passwordHash:password, roleId, firstName, lastName, ...rest} = req.validatedBody;
         const existingUser=await prisma.user.findUnique({
             where:{email},
         })
@@ -22,6 +24,8 @@ export const register = async (req:Request, res:Response) => {
         const user=await prisma.user.create({
             data:{...rest, email, passwordHash:hashedPassword, roleId: roleId, firstName, lastName}
         })
+        await createAuditLog({ actorId: req.user.id, action: "CREATE", module: "USER", recordId: user.id, oldData: null, newData: user, req });
+        console.log('Audit log created successfully');
         const {passwordHash, passwordPlain, ...safeUser} = user
         return res.status(201).json({ success: true, message: "User created successfully", data: safeUser });
     }catch (error) {
@@ -52,6 +56,14 @@ export const login =async(req:Request, res:Response) => {
                 userId:user.id, 
                 expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)}
         })
+        await createAuditLog({
+            actorId: user.id,
+            action: "LOGIN",
+            module: "Auth",
+            recordId: user.id,
+            req
+        });
+        console.log('Audit log created successfully');
         const {passwordHash, passwordPlain, ...safeUser} = user
         return res.status(200).json({success:true, message:"Login successful", data:safeUser, accessToken:accessToken, refreshToken:refreshToken});
     }catch (error) {
@@ -111,6 +123,14 @@ export const logout = async (req:Request, res:Response) => {
                 userId:userId
             }
         })
+        await createAuditLog({
+            actorId: userId,
+            action: "LOGOUT",
+            module: "Auth",
+            recordId: userId,
+            req
+            });
+        console.log('Audit log created successfully');
         return res.status(200).json({success:true, message:"Logout successful"});
     } catch (error) {
         console.error("Error logging out:", error);
@@ -121,24 +141,34 @@ export const logout = async (req:Request, res:Response) => {
 export const resetPassword = async (req:Request, res:Response) => {
     try {
         const {userId}=req.validatedParams;
-        const {newPassword}=req.validatedBody;
-        const user = await prisma.user.findUnique({
+        const {password}=req.validatedBody;
+        const oldUser = await prisma.user.findUnique({
             where: { id: userId }
             });
 
-            if (!user) {
+            if (!oldUser) {
             return res.status(404).json({
                 success: false,
                 message: "User not found"
             });
         }
-        const hashedNewPassword=await bcrypt.hash(newPassword, 10);
-        await prisma.user.update({
+        const hashedPassword=await bcrypt.hash(password, 10);
+        const updatedUser=await prisma.user.update({
             where:{id:userId},
             data:{
-                passwordHash:hashedNewPassword
+                passwordHash:hashedPassword
             }
         })
+        await createAuditLog({
+            actorId: req.user!.id,
+            action: "UPDATE",
+            module: "User",
+            recordId: userId,
+            oldData: { passwordHash: oldUser?.passwordHash },
+            newData: { passwordHash: updatedUser.passwordHash },
+            req
+            });
+        console.log('Audit log created successfully');
         return res.status(200).json({success:true, message:"Password reset successful"});
     } catch (error) {
         console.error("Error resetting password:", error);
@@ -153,6 +183,14 @@ export const getUserCredentials = async (req:Request, res:Response) => {
             where:{id:userId},
             include:{role:true}
         })
+        await createAuditLog({
+            actorId: req.user!.id,
+            action: "GET",
+            module: "User",
+            recordId: userId,
+            req
+            });
+        console.log('Audit log created successfully');
         if(!user){
             return res.status(404).json({message:"User not found"});
         }
