@@ -10,7 +10,7 @@ COPY package*.json ./
 # Copy prisma schema BEFORE install (needed for prisma generate)
 COPY prisma ./prisma
 
-# Install dependencies (this will also install prisma CLI as a dev dep)
+# Install dependencies (this will also install prisma as a dev dep)
 RUN npm install
 
 # Copy all other source files
