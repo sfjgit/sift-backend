@@ -15,7 +15,7 @@ const router = Router();
 router.post(
     '/register',
     authenticateUser,
-    authorize('SUPER_ADMIN'),
+    // authorize('SUPER_ADMIN'),
     validate.body(registerSchema),
     register
 )
