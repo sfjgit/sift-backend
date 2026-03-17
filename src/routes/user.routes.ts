@@ -3,7 +3,7 @@ import {
   getAllUsers,
   getSingleUsers,
   reportingManager,
-  // subordinates,
+  subordinates,
   updateUsers,
 } from "@/controller/user.controller";
 import { authenticateUser } from "@/middleware/auth";
@@ -90,15 +90,15 @@ router.patch(
 );
 
 // /**
-//  * @route   PATCH /api/users/:id/reporting-to
-//  * @desc    Adding the reporting manager
-//  * @access  Super Admin,admin
+//  * @route   GET /api/users/:id/subordinates
+//  * @desc    Fetching subordinates
+//  * @access  Super Admin,admin,users
 //  */
-// router.get(
-//   "/:id/subordinates",
-//   authenticateUser,
-//   authorize("SUPER_ADMIN", "ADMIN", "USER"),
-//   validate.params(userIdParamsSchema),
-//   subordinates,
-// );
+router.get(
+  "/:id/subordinates",
+  authenticateUser,
+  authorize("SUPER_ADMIN", "ADMIN", "USER"),
+  validate.params(userIdParamsSchema),
+  subordinates,
+);
 export default router;

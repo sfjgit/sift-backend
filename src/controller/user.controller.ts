@@ -2,6 +2,7 @@ import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import { success } from "zod";
+import { tr } from "zod/v4/locales";
 
 export const getAllUsers = async (req: Request, res: Response) => {
   try {
@@ -187,23 +188,36 @@ export const reportingManager = async (req: Request, res: Response) => {
   }
 };
 
-// export const subordinates = async (req: Request, res: Response) => {
-//   try {
-//     const { id } = req.validatedParams;
-//     const user = await prisma.user.findUnique({
-//       where: { id },
-//     });
-//     if (!user) {
-//       return res.status(404).json({
-//         success: false,
-//         message: `No Subordinates for this particular user ${id}`,
-//       });
-//     }
-//     const subordinateUsers = await prisma.user.findMany({
-//       where: { reportingToId: id },
-//       data: {
-//         subordinates,
-//       },
-//     });
-//   } catch (error) {}
-// };
+export const subordinates = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const user = await prisma.user.findUnique({
+      where: { id },
+    });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: `No Subordinates for this particular user ${id}`,
+      });
+    }
+    const subordinateUsers = await prisma.user.findMany({
+      where: { reportingToId: id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+      },
+    });
+    return res.json({
+      success: true,
+      message: "Subordinates fetched",
+      data: subordinateUsers,
+    });
+  } catch (error: any) {
+    console.error("Error fetching subordinates", error);
+    return res
+      .status(500)
+      .json({ success: false, message: error.message, debug: error });
+  }
+};
