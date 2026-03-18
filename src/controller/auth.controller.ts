@@ -7,8 +7,9 @@ import {
   JWTPayLoad,
   verifyAccessToken,
 } from "@/utils/jwt";
-import { create } from "node:domain";
 import { createAuditLog } from "@/services/auditLogs.service";
+import { setTokenCookies } from "@/middleware/auth";
+import { loggers } from "@/utils/logger";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -54,13 +55,11 @@ export const register = async (req: Request, res: Response) => {
     });
     console.log("Audit log created successfully");
     const { passwordHash, passwordPlain, ...safeUser } = user;
-    return res
-      .status(201)
-      .json({
-        success: true,
-        message: "User created successfully",
-        data: safeUser,
-      });
+    return res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      data: safeUser,
+    });
   } catch (error) {
     console.error("Error creating user:", error);
     return res
@@ -74,8 +73,15 @@ export const login = async (req: Request, res: Response) => {
     const { email, password } = req.validatedBody;
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { role: true },
+      include: {
+        role: {
+          include: {
+            permissions: true,
+          },
+        },
+      },
     });
+    console.log(user);
     if (!user) {
       return res.status(401).json({ message: "Email not found" });
     }
@@ -83,16 +89,22 @@ export const login = async (req: Request, res: Response) => {
     if (!isPasswordValid) {
       return res.status(401).json({ message: "Invalid password" });
     }
-    const accessToken = generateAccessToken({
+    const payload: JWTPayLoad = {
       userId: user.id,
       email: user.email,
       roleId: user.roleId,
-    });
-    const refreshToken = generateRefreshToken({
-      userId: user.id,
-      email: user.email,
-      roleId: user.roleId,
-    });
+      role: {
+        name: user.role.name,
+        permissions: user.role.permissions,
+      },
+    };
+
+    console.log("JWT Payload:", JSON.stringify(payload, null, 2));
+    loggers.info("JWT Payload:", JSON.stringify(payload, null, 2));
+
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = generateRefreshToken(payload);
+    setTokenCookies(res, accessToken, refreshToken);
     await prisma.refreshToken.create({
       data: {
         token: refreshToken,
@@ -109,15 +121,13 @@ export const login = async (req: Request, res: Response) => {
     });
     console.log("Audit log created successfully");
     const { passwordHash, passwordPlain, ...safeUser } = user;
-    return res
-      .status(200)
-      .json({
-        success: true,
-        message: "Login successful",
-        data: safeUser,
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-      });
+    return res.status(200).json({
+      success: true,
+      message: "Login successful",
+      data: safeUser,
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+    });
   } catch (error) {
     console.error("Error logging in:", error);
     return res
@@ -154,6 +164,10 @@ export const refresh = async (req: Request, res: Response) => {
       userId: user.id,
       email: user.email,
       roleId: user.roleId,
+      role: {
+        name: user.role.name,
+        permissions: user.role.permissions,
+      },
     });
 
     return res.status(200).json({
@@ -259,13 +273,11 @@ export const getUserCredentials = async (req: Request, res: Response) => {
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    return res
-      .status(200)
-      .json({
-        success: true,
-        message: "User credentials fetched successfully",
-        data: user,
-      });
+    return res.status(200).json({
+      success: true,
+      message: "User credentials fetched successfully",
+      data: user,
+    });
   } catch (error) {
     console.error("Error getting user credentials:", error);
     return res

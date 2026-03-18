@@ -15,7 +15,7 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
-  authorize("ADMIN"),
+  // authorize("ADMIN"),
   validate.body(createTeamSchema),
   createTeam,
 );

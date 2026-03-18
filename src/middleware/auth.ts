@@ -47,6 +47,7 @@ export const authenticateUser = async (
 
     // Verify access token
     const decoded = verifyAccessToken(accessToken);
+    console.log(decoded);
 
     if (!decoded) {
       res.status(401).json({
@@ -91,4 +92,30 @@ export const authenticateUser = async (
     });
     return;
   }
+};
+
+export const setTokenCookies = (
+  res: Response,
+  accessToken: string,
+  refreshToken: string,
+) => {
+  const isProduction = process.env.NODE_ENV === "production";
+
+  // Set access token cookie (shorter expiry)
+  res.cookie("accessToken", accessToken, {
+    httpOnly: false,
+    secure: isProduction,
+    sameSite: "none",
+    maxAge: 2 * 60 * 1000, // 15 minutes
+    path: "/",
+  });
+
+  // Set refresh token cookie (longer expiry)
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "none",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    path: "/",
+  });
 };
