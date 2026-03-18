@@ -13,13 +13,12 @@ const router = Router();
  * @access  Admin
  */
 router.post(
-    '/',
-    authenticateUser,
-    authorize('ADMIN'),
-    validate.body(createTeamSchema),
-    createTeam
-)
-
+  "/",
+  authenticateUser,
+  authorize("ADMIN"),
+  validate.body(createTeamSchema),
+  createTeam,
+);
 
 /**
  * @route   GET /api/teams
@@ -34,5 +33,4 @@ router.post(
 //     getTeams
 // )
 
-
-export default router
+export default router;
