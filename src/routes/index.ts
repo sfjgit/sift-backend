@@ -4,18 +4,18 @@ import userRoutes from "./user.routes";
 import roleRoutes from "./role.routes";
 import businessUnitRoutes from "./businessUnit.routes";
 import teamRoutes from "./team.routes";
+import clientRoutes from "./client.routes";
 
 const router = Router();
 
+router.use("/auth", authRoutes);
 
-router.use("/auth", authRoutes)
+router.use("/users", userRoutes);
 
-router.use("/users", userRoutes)
+router.use("/roles", roleRoutes);
+router.use("/clients", clientRoutes);
+router.use("/business-units", businessUnitRoutes);
 
-router.use("/roles", roleRoutes)
+router.use("/teams", teamRoutes);
 
-router.use('/business-units', businessUnitRoutes)
-
-router.use("/teams", teamRoutes)
-
-export default router
+export default router;

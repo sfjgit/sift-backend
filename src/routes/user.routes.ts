@@ -1,7 +1,7 @@
 import {
   deactivateUser,
   getAllUsers,
-  getSingleUsers,
+  getSingleUser,
   reportingManager,
   subordinates,
   updateUsers,
@@ -44,7 +44,7 @@ router.get(
   authenticateUser,
   authorize("ADMIN", "SUPER_ADMIN"),
   validate.params(getSingleUsersSchema),
-  getSingleUsers,
+  getSingleUser,
 );
 
 /**

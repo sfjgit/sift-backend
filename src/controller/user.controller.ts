@@ -1,16 +1,29 @@
 import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
+import {
+  TAllUsersSchema,
+  TGetSingleUserSchema,
+  TUserUpdateBodySchema,
+} from "@/validators/user.validators";
+import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import { success } from "zod";
-import { tr } from "zod/v4/locales";
+// import { object, success } from "zod";
+// import { tr } from "zod/v4/locales";
 
 export const getAllUsers = async (req: Request, res: Response) => {
   try {
-    const { roleId, buId, teamId, page, limit, isActive } = req.validatedQuery;
+    const { roleId, buId, teamId, page, limit, isActive } =
+      req.validatedQuery as TAllUsersSchema;
     const skip = (page - 1) * limit;
 
     //filters
-    const where: any = { isActive, roleId, buId, teamId };
+    const where: Prisma.UserWhereInput = {
+      ...(roleId !== undefined && { roleId }),
+      ...(buId !== undefined && { buId }),
+      ...(teamId !== undefined && { teamId }),
+      ...(isActive !== undefined && { isActive }),
+    };
 
     console.log(where);
     const users = await prisma.user.findMany({
@@ -41,10 +54,10 @@ export const getAllUsers = async (req: Request, res: Response) => {
   }
 };
 
-export const getSingleUsers = async (req: Request, res: Response) => {
+export const getSingleUser = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams;
-    const where: any = { id };
+    const { id } = req.validatedParams as TGetSingleUserSchema;
+    const where = { id };
     const singleUser = await prisma.user.findUnique({
       where,
       include: {
@@ -67,8 +80,7 @@ export const getSingleUsers = async (req: Request, res: Response) => {
     console.error("Error fetching user", error);
     return res.status(500).json({
       success: false,
-      message: error.message,
-      debug: error,
+      message: "Internal Server Error",
     });
   }
 };
@@ -77,15 +89,29 @@ export const updateUsers = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
     const { firstName, lastName, phone, workingLocation, timezone } =
-      req.validatedBody;
+      req.validatedBody as TUserUpdateBodySchema;
+    const existing = await prisma.user.findUnique({ where: { id } });
+    if (!existing) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User Not found" });
+    }
     const updateUser = await prisma.user.update({
-      where: { id: id },
+      where: { id },
       data: {
-        firstName,
-        lastName,
-        phone,
-        workingLocation,
-        timezone,
+        ...(firstName !== undefined && { firstName }),
+        ...(lastName !== undefined && { lastName }),
+        ...(phone !== undefined && { phone }),
+        ...(workingLocation !== undefined && { workingLocation }),
+        ...(timezone !== undefined && { timezone }),
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        workingLocation: true,
+        timezone: true,
       },
     });
     await createAuditLog({
@@ -106,7 +132,7 @@ export const updateUsers = async (req: Request, res: Response) => {
     console.error("Error Updating user", error);
     return res
       .status(500)
-      .json({ success: false, message: error.message, debug: error });
+      .json({ success: false, message: "Internal server error" });
   }
 };
 
