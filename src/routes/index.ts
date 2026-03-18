@@ -7,15 +7,16 @@ import teamRoutes from "./team.routes";
 
 const router = Router();
 
+router.use("/auth", authRoutes);
 
-router.use("/auth", authRoutes)
+router.use("/users", userRoutes);
 
-router.use("/users", userRoutes)
+router.use("/roles", roleRoutes);
 
-router.use("/roles", roleRoutes)
+router.use("/business-units", businessUnitRoutes);
 
-router.use('/business-units', businessUnitRoutes)
+router.use("/teams", teamRoutes);
 
-router.use("/teams", teamRoutes)
+// router.use("/requirements", requirementRoutes);
 
-export default router
+export default router;
