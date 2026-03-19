@@ -125,8 +125,8 @@ export const login = async (req: Request, res: Response) => {
       success: true,
       message: "Login successful",
       data: safeUser,
-      accessToken: accessToken,
-      refreshToken: refreshToken,
+      // accessToken: accessToken,
+      // refreshToken: refreshToken,
     });
   } catch (error) {
     console.error("Error logging in:", error);

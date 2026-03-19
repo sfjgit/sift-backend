@@ -4,7 +4,10 @@ import {
   RemoteType,
   Priority,
   RequirementStatus,
+  AssignmentType,
+  AssignmentStatus,
 } from "@prisma/client";
+import { de } from "zod/v4/locales";
 
 export const RequirementTypeEnum = z.enum(RequirementType);
 export const RemoteTypeEnum = z.enum(RemoteType);
@@ -30,7 +33,81 @@ export const createRequirementsSchema = z.object({
   endDate: z.string().datetime().optional(),
   respondBy: z.string().datetime().optional(),
   turnaroundDays: z.number().int().optional(),
-  createdBy: z.string(),
+  createdById: z.string(),
   deliveryLeadId: z.string().uuid().optional(),
   teamLeadId: z.string().uuid().optional(),
 });
+
+export const getAllRequirementsSchema = z.object({
+  status: z
+    .enum([
+      "DRAFT",
+      "PENDING_APPROVAL",
+      "ACTIVE",
+      "ON_HOLD",
+      "CLOSED",
+      "CANCELLED",
+    ])
+    .optional(),
+
+  clientId: z.string().uuid().optional(),
+
+  priority: z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
+
+  jobType: z
+    .enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"])
+    .optional(),
+
+  search: z.string().min(1).optional(),
+});
+
+export const getRequirementParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const approveRequirementParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const approveRequirementBodySchema = z
+  .object({
+    deliveryLeadId: z.string().optional(),
+    teamLeadId: z.string().optional(),
+  })
+  .optional();
+
+export const changeRequirementStatusParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const changeRequirementStatusBodySchema = z
+  .object({
+    status: z
+      .enum([
+        "DRAFT",
+        "PENDING_APPROVAL",
+        "ACTIVE",
+        "ON_HOLD",
+        "CLOSED",
+        "CANCELLED",
+      ])
+      .optional(),
+    reason: z.string().optional(),
+  })
+  .optional();
+
+export const assignRequirementParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const assignRequirementBodySchema = z
+  .object({
+    assignmentType: z.enum(AssignmentType),
+    status: z.enum(AssignmentStatus).default("ACTIVE"),
+    recruiterId: z.string().optional(),
+    teamId: z.string().optional(),
+    allocatedOpenings: z.number().int().optional(),
+    isAutoRouted: z.boolean().optional(),
+    isSystemAssigned: z.boolean().optional(),
+  })
+  .optional();
