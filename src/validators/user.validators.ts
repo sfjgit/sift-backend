@@ -1,15 +1,13 @@
 import { z } from "zod";
 
-export const getAllUsersSchema = z
-  .object({
-    roleId: z.string().min(1).optional(),
-    buId: z.string().uuid().optional(),
-    teamId: z.string().uuid().optional(),
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
-    isActive: z.boolean().default(true),
-  })
-  .optional();
+export const getAllUsersSchema = z.object({
+  roleId: z.string().min(1).optional(),
+  buId: z.string().uuid().optional(),
+  teamId: z.string().uuid().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  isActive: z.boolean().default(true),
+});
 
 export const getSingleUsersSchema = z.object({
   id: z.string().uuid(),
@@ -33,3 +31,7 @@ export const deactivateUserParamsSchema = z.object({
 export const reportingManagerSchema = z.object({
   reportingToId: z.string().uuid(),
 });
+
+export type TUserUpdateBodySchema = z.infer<typeof userUpdateBodySchema>;
+export type TAllUsersSchema = z.infer<typeof getAllUsersSchema>;
+export type TGetSingleUserSchema = z.infer<typeof getSingleUsersSchema>;
