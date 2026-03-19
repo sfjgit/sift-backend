@@ -28,22 +28,31 @@ export const authenticateUser = async (
   try {
     // Get access token from cookies or Authorization header
     let accessToken = req.cookies?.accessToken;
+    console.log("Authorization header:", req.cookies);
 
     if (!accessToken) {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        accessToken = authHeader.substring(7);
-      }
-    }
-
-    if (!accessToken) {
+      console.log("Authorization header:", req.cookies);
       res.status(401).json({
         success: false,
         message: "Access token not provided",
         code: "NO_TOKEN",
       });
       return;
+      // const authHeader = req.headers.authorization;
+      // if (authHeader && authHeader.startsWith("Bearer ")) {
+      //   accessToken = authHeader.substring(7);
+      // }
     }
+
+    // if (!accessToken) {
+    //   console.log("Access token not provided");
+    //   res.status(401).json({
+    //     success: false,
+    //     message: "Access token not provided",
+    //     code: "NO_TOKEN",
+    //   });
+    //   return;
+    // }
 
     // Verify access token
     const decoded = verifyAccessToken(accessToken);
