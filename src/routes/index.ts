@@ -17,10 +17,9 @@ router.use("/roles", roleRoutes);
 router.use("/clients", clientRoutes);
 router.use("/business-units", businessUnitRoutes);
 
-router.use("/teams", teamRoutes);
+// router.use("/teams", teamRoutes);
 
-
-router.use("/business-units", businessUnitRoutes);
+// router.use("/business-units", businessUnitRoutes);
 
 router.use("/teams", teamRoutes);
 
