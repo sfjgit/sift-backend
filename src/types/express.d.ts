@@ -1,12 +1,13 @@
 declare global {
-    namespace Express {
-        interface Request {
-            validatedBody: any;
-            validatedQuery: any;
-            validatedParams: any;
-            user: any;
-        }
+  namespace Express {
+    interface Request {
+      validatedBody: any;
+      validatedQuery: any;
+      validatedParams: any;
+      file: any;
+      user: any;
     }
+  }
 }
 
-export {}
+export {};

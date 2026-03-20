@@ -1,13 +1,21 @@
+import { upload } from "@/config/multer.config";
 import {
+  addNotes,
   approveRequirement,
   assignRequirement,
   changeRequirementStatus,
   createRequirements,
+  fillAssignment,
   getAllRequirements,
   getRequirement,
+  getRequirementStatusHistory,
+  resolveIssue,
+  uploadDocument,
 } from "@/controller/requirement.controller";
 import { authenticateUser } from "@/middleware/auth";
 import {
+  addNotesBodySchema,
+  addNotesParamsSchema,
   approveRequirementBodySchema,
   approveRequirementParamsSchema,
   assignRequirementBodySchema,
@@ -15,8 +23,13 @@ import {
   changeRequirementStatusBodySchema,
   changeRequirementStatusParamsSchema,
   createRequirementsSchema,
+  fillAssignmentBodySchema,
+  fillAssignmentParamsSchema,
   getAllRequirementsSchema,
   getRequirementParamsSchema,
+  getRequirementStatusHistoryParamsSchema,
+  resolveIssuesParamsSchema,
+  uploadDocumentsParamsSchema,
 } from "@/validators/requirement.validators";
 import { validate } from "@/validators/validator";
 import { Router } from "express";
@@ -98,4 +111,67 @@ router.post(
   assignRequirement,
 );
 
+/**
+ * @route   POST /api/requirements/:id/notes
+ * @desc    Add notes
+ * @access
+ */
+router.post(
+  "/:id/notes",
+  authenticateUser,
+  // authorize('ADMIN'),
+  validate.params(addNotesParamsSchema),
+  validate.body(addNotesBodySchema),
+  addNotes,
+);
+
+/**
+ * @route   GET /api/requirements/:id/history
+ * @desc    Get requirement status history
+ * @access
+ */
+router.get(
+  "/:id/history",
+  authenticateUser,
+  validate.params(getRequirementStatusHistoryParamsSchema),
+  getRequirementStatusHistory,
+);
+
+/**
+ * @route   PATCH /api/requirements/:id/assignments/:assignmentId/fill
+ * @desc    Fill assignment
+ * @access
+ */
+router.patch(
+  "/:id/assignments/:assignmentId/fill",
+  authenticateUser,
+  validate.params(fillAssignmentParamsSchema),
+  validate.body(fillAssignmentBodySchema),
+  fillAssignment,
+);
+
+/**
+ * @route   POST /api/requirements/:id/documents
+ * @desc    Upload document
+ * @access
+ */
+router.post(
+  "/:id/documents",
+  authenticateUser,
+  validate.params(uploadDocumentsParamsSchema),
+  upload.single("file"),
+  uploadDocument,
+);
+
+/**
+ * @route   PATCH /api/requirements/:id/documents/:documentId/resolve
+ * @desc    Resolve issue
+ * @access
+ */
+router.patch(
+  "/:id/documents/:documentId/resolve",
+  authenticateUser,
+  validate.params(resolveIssuesParamsSchema),
+  resolveIssue,
+);
 export default router;
