@@ -1,10 +1,12 @@
 import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
 import {
-  // TApproveClientsSchema,
+  TAssignContactHandlerSchema,
   TClientsIdSchema,
+  TContactHandlerParamsSchema,
   TCreateClientSchema,
   TGetAllClientsSchema,
+  TspocContactSchema,
 } from "@/validators/client.validators";
 import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
@@ -269,4 +271,166 @@ export const getSingleClientDetails = async (req: Request, res: Response) => {
   }
 };
 
-export const spocContact = async () => {};
+export const spocContact = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams as TClientsIdSchema;
+    const {
+      firstName,
+      lastName,
+      designation,
+      email,
+      phone,
+      linkedinUrl,
+      isPrimary,
+    } = req.validatedBody as TspocContactSchema;
+
+    const existingClient = await prisma.client.findUnique({ where: { id } });
+    if (!existingClient) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Client not found" });
+    }
+
+    const existingContact = await prisma.clientContact.findFirst({
+      where: { clientId: id, email },
+    });
+    if (existingContact) {
+      return res.status(400).json({
+        success: false,
+        message: "Contact with this email already exists",
+      });
+    }
+
+    // unset previous primary if new one is primary
+    if (isPrimary) {
+      await prisma.clientContact.updateMany({
+        where: { clientId: id, isPrimary: true },
+        data: { isPrimary: false },
+      });
+    }
+
+    const newContact = await prisma.clientContact.create({
+      data: {
+        clientId: id,
+        firstName,
+        email,
+        ...(lastName !== undefined && { lastName }),
+        ...(designation !== undefined && { designation }),
+        ...(phone !== undefined && { phone }),
+        ...(linkedinUrl !== undefined && { linkedinUrl }),
+        ...(isPrimary !== undefined && { isPrimary }),
+      } as Prisma.ClientContactUncheckedCreateInput,
+      select: {
+        id: true,
+        clientId: true,
+        firstName: true,
+        lastName: true,
+        designation: true,
+        email: true,
+        phone: true,
+        linkedinUrl: true,
+        isPrimary: true,
+        isActive: true,
+        createdAt: true,
+      },
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: "CREATE",
+      module: "CLIENT_CONTACT",
+      recordId: newContact.id,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "SPOC created successfully",
+      data: newContact,
+    });
+  } catch (error) {
+    console.error("Error creating SPOC:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+};
+
+export const assignContactHandler = async (req: Request, res: Response) => {
+  try {
+    const { id, contactId } =
+      req.validatedParams as TContactHandlerParamsSchema;
+    const { userId } = req.validatedBody as TAssignContactHandlerSchema;
+
+    // check client exists
+    const existingClient = await prisma.client.findUnique({ where: { id } });
+    if (!existingClient) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Client not found" });
+    }
+
+    // check contact exists and belongs to this client
+    const existingContact = await prisma.clientContact.findFirst({
+      where: { id: contactId, clientId: id },
+    });
+    if (!existingContact) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Contact not found" });
+    }
+
+    // check user exists
+    const existingUser = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+    if (!existingUser) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    // check if already assigned
+    const alreadyAssigned = await prisma.contactHandler.findUnique({
+      where: { contactId_userId: { contactId, userId } },
+    });
+    if (alreadyAssigned) {
+      return res.status(400).json({
+        success: false,
+        message: "User already assigned to this contact",
+      });
+    }
+
+    const handler = await prisma.contactHandler.create({
+      data: {
+        contactId,
+        userId,
+        assignedById: req.user!.id,
+      } as Prisma.ContactHandlerUncheckedCreateInput,
+      select: {
+        id: true,
+        contactId: true,
+        userId: true,
+        assignedBy: true,
+        assignedAt: true,
+      },
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: "CREATE",
+      module: "CONTACT_HANDLER",
+      recordId: handler.id,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Handler assigned to contact successfully",
+      data: handler,
+    });
+  } catch (error) {
+    console.error("Error assigning contact handler:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+};
