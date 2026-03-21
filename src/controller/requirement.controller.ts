@@ -1,4 +1,5 @@
 import { createAuditLog } from "@/services/auditLogs.service";
+import { uploadToS3 } from "@/services/s3.service";
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 
@@ -353,6 +354,324 @@ export const assignRequirement = async (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       message: "Failed to create assignment",
+    });
+  }
+};
+
+export const addNotes = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const { notes } = req.validatedBody;
+    const requirement = await prisma.requirement.findUnique({
+      where: { id },
+    });
+    if (!requirement) {
+      return res.status(404).json({
+        success: false,
+        message: "Requirement not found",
+      });
+    }
+    const addedNotes = await prisma.requirementNote.create({
+      data: {
+        requirementId: id,
+        authorId: req.user.id,
+        content: notes,
+      },
+    });
+    await createAuditLog({
+      actorId: req.user.id,
+      action: "CREATE",
+      module: "REQUIREMENT_NOTE",
+      recordId: addedNotes.id,
+      oldData: null,
+      newData: addedNotes,
+      req,
+    });
+    return res.status(201).json({
+      success: true,
+      message: "Notes added successfully",
+      data: addedNotes,
+    });
+  } catch (error) {
+    console.error("Error adding notes:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to add notes",
+    });
+  }
+};
+
+export const getRequirementStatusHistory = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { id } = req.validatedParams;
+    const requirement = await prisma.requirement.findUnique({
+      where: { id },
+    });
+    if (!requirement) {
+      return res.status(404).json({
+        success: false,
+        message: "Requirement not found",
+      });
+    }
+    const requirementStatusHistory =
+      await prisma.requirementStatusHistory.findMany({
+        where: { requirementId: id },
+      });
+    return res.status(200).json({
+      success: true,
+      message: "Requirement status history fetched successfully",
+      data: requirementStatusHistory,
+    });
+  } catch (error) {
+    console.error("Error fetching requirement status history:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch requirement status history",
+    });
+  }
+};
+
+export const fillAssignment = async (req: Request, res: Response) => {
+  try {
+    const { id, assignmentId } = req.validatedParams;
+    const { filledOpenings } = req.validatedBody;
+    const requirement = await prisma.requirement.findUnique({
+      where: { id },
+    });
+
+    if (!requirement) {
+      return res.status(404).json({
+        success: false,
+        message: "Requirement not found",
+      });
+    }
+
+    // Check if the assignment exists
+    const assignment = await prisma.requirementAssignment.findUnique({
+      where: { id: assignmentId },
+    });
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: "Assignment not found",
+      });
+    }
+
+    // Update the assignment
+    const filledAssignment = await prisma.requirementAssignment.update({
+      where: { id: assignmentId },
+      data: {
+        filledOpenings: filledOpenings,
+      },
+    });
+
+    // Update the overall openings
+    const totalOpenings = await prisma.requirement.findUnique({
+      where: { id },
+      select: {
+        totalOpenings: true,
+        filledOpenings: true,
+      },
+    });
+
+    await prisma.requirement.update({
+      where: { id },
+      data: {
+        filledOpenings: totalOpenings?.filledOpenings + filledOpenings,
+      },
+    });
+
+    // Close the requirement if all openings are filled
+    if (totalOpenings?.totalOpenings === totalOpenings?.filledOpenings) {
+      await prisma.requirement.update({
+        where: { id },
+        data: {
+          status: "CLOSED",
+        },
+      });
+    }
+    await createAuditLog({
+      actorId: req.user.id,
+      action: "UPDATE",
+      module: "REQUIREMENT_ASSIGNMENT",
+      recordId: filledAssignment.id,
+      oldData: assignment,
+      newData: filledAssignment,
+      req,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Assignment filled successfully",
+      data: filledAssignment,
+    });
+  } catch (error) {
+    console.error("Error filling assignment:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fill assignment",
+    });
+  }
+};
+
+export const uploadDocument = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const { type } = req.body;
+
+    if (!type) {
+      return res.status(400).json({
+        success: false,
+        message: "Type is required",
+      });
+    }
+
+    const allowedTypes = [
+      "FILE_UPLOAD",
+      "STATUS_CHANGE",
+      "ISSUE_RAISED",
+      "NOTE",
+      "POSITION_FILLED",
+      "REQUIREMENT_CLOSED",
+    ];
+
+    if (!allowedTypes.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid document type",
+      });
+    }
+
+    const requirement = await prisma.requirement.findUnique({
+      where: { id },
+    });
+
+    if (!requirement) {
+      return res.status(404).json({
+        success: false,
+        message: "Requirement not found",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "File is required",
+      });
+    }
+
+    const allowedMimeTypes = ["application/pdf", "image/png", "image/jpeg"];
+
+    if (!allowedMimeTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid file type",
+      });
+    }
+
+    const { fileUrl } = await uploadToS3(req.file);
+
+    const document = await prisma.requirementDocument.create({
+      data: {
+        requirementId: id,
+        fileName: req.file.originalname,
+        fileUrl,
+        fileType: req.file.mimetype,
+        type,
+        raisedById: req.user.id,
+      },
+    });
+
+    await createAuditLog({
+      actorId: req.user.id,
+      action: "CREATE",
+      module: "REQUIREMENT_DOCUMENT",
+      recordId: document.id,
+      oldData: null,
+      newData: document,
+      req,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Document uploaded successfully",
+      data: document,
+    });
+  } catch (error) {
+    console.error("Error uploading document:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to upload document",
+    });
+  }
+};
+
+export const resolveIssue = async (req: Request, res: Response) => {
+  try {
+    const { id, documentId } = req.validatedParams;
+
+    const requirement = await prisma.requirement.findUnique({
+      where: { id },
+    });
+
+    if (!requirement) {
+      return res.status(404).json({
+        success: false,
+        message: "Requirement not found",
+      });
+    }
+
+    const document = await prisma.requirementDocument.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!document || document.requirementId !== id) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found for this requirement",
+      });
+    }
+
+    if (document.issueResolved) {
+      return res.status(400).json({
+        success: false,
+        message: "Issue already resolved",
+      });
+    }
+
+    const resolvedDocument = await prisma.requirementDocument.update({
+      where: { id: documentId },
+      data: {
+        issueResolved: true,
+        resolvedById: req.user.id,
+        resolvedAt: new Date(),
+      },
+    });
+
+    await createAuditLog({
+      actorId: req.user.id,
+      action: "UPDATE",
+      module: "REQUIREMENT_DOCUMENT",
+      recordId: documentId,
+      oldData: document,
+      newData: resolvedDocument,
+      req,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Issue resolved successfully",
+      data: resolvedDocument,
+    });
+  } catch (error) {
+    console.error("Error resolving issue:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to resolve issue",
     });
   }
 };

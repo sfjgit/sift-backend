@@ -6,8 +6,8 @@ import {
   RequirementStatus,
   AssignmentType,
   AssignmentStatus,
+  DocumentEventType,
 } from "@prisma/client";
-import { de } from "zod/v4/locales";
 
 export const RequirementTypeEnum = z.enum(RequirementType);
 export const RemoteTypeEnum = z.enum(RemoteType);
@@ -111,3 +111,37 @@ export const assignRequirementBodySchema = z
     isSystemAssigned: z.boolean().optional(),
   })
   .optional();
+
+export const addNotesParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const addNotesBodySchema = z.object({
+  notes: z.string(),
+});
+
+export const getRequirementStatusHistoryParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const fillAssignmentParamsSchema = z.object({
+  id: z.string(),
+  assignmentId: z.string(),
+});
+
+export const fillAssignmentBodySchema = z.object({
+  filledOpenings: z.number().int().positive(),
+});
+
+export const uploadDocumentsParamsSchema = z.object({
+  id: z.string(),
+});
+
+export const uploadDocumentsBodySchema = z.object({
+  type: z.enum(DocumentEventType),
+});
+
+export const resolveIssuesParamsSchema = z.object({
+  id: z.string(),
+  documentId: z.string(),
+});
