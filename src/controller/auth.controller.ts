@@ -6,6 +6,7 @@ import {
   generateRefreshToken,
   JWTPayLoad,
   verifyAccessToken,
+  verifyRefreshToken,
 } from "@/utils/jwt";
 import { createAuditLog } from "@/services/auditLogs.service";
 import { setTokenCookies } from "@/middleware/auth";
@@ -138,7 +139,8 @@ export const login = async (req: Request, res: Response) => {
 
 export const refresh = async (req: Request, res: Response) => {
   try {
-    const { refreshToken } = req.validatedBody;
+    // Token comes from httpOnly cookie, not body
+    const refreshToken = req.cookies?.refreshToken;
 
     if (!refreshToken) {
       return res.status(401).json({
@@ -147,20 +149,41 @@ export const refresh = async (req: Request, res: Response) => {
       });
     }
 
-    const decoded = verifyAccessToken(refreshToken) as JWTPayLoad;
+    // Verify with the REFRESH secret, not access secret
+    const decoded = verifyRefreshToken(refreshToken) as JWTPayLoad;
 
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+    // Check token exists in DB and is not expired/revoked
+    const storedToken = await prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
     });
 
-    if (!user) {
+    if (!storedToken || storedToken.expiresAt < new Date()) {
       return res.status(401).json({
         success: false,
-        message: "Invalid refresh token",
+        message: "Invalid or expired refresh token",
       });
     }
 
-    const accessToken = generateAccessToken({
+    // Fetch full user with role + permissions — same as login
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      include: {
+        role: {
+          include: {
+            permissions: true,
+          },
+        },
+      },
+    });
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found or inactive",
+      });
+    }
+
+    const payload: JWTPayLoad = {
       userId: user.id,
       email: user.email,
       roleId: user.roleId,
@@ -168,13 +191,31 @@ export const refresh = async (req: Request, res: Response) => {
         name: user.role.name,
         permissions: user.role.permissions,
       },
+    };
+
+    // Rotate — delete old refresh token, issue new pair
+    await prisma.refreshToken.delete({ where: { token: refreshToken } });
+
+    const newAccessToken = generateAccessToken(payload);
+    const newRefreshToken = generateRefreshToken(payload);
+
+    setTokenCookies(res, newAccessToken, newRefreshToken);
+
+    await prisma.refreshToken.create({
+      data: {
+        token: newRefreshToken,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
     });
+
+    // Return same user shape as login
+    const { passwordHash, passwordPlain, ...safeUser } = user;
 
     return res.status(200).json({
       success: true,
-      data: {
-        accessToken,
-      },
+      message: "Token refreshed successfully",
+      data: safeUser,
     });
   } catch (error) {
     return res.status(401).json({

@@ -19,7 +19,7 @@ export type TCreateClientSchema = z.infer<typeof createClientSchema>;
 export const getAllClientsSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1, "Name is required").optional(),
-  status: z.enum(ClientStatus),
+  status: z.enum(ClientStatus).optional(),
   category: z.string().min(1).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

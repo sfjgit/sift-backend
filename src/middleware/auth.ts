@@ -23,7 +23,7 @@ import { Request, Response, NextFunction } from "express";
 export const authenticateUser = async (
   req: Request,
   res: Response,
-  next: NextFunction,
+  next: NextFunction
 ) => {
   try {
     // Get access token from cookies or Authorization header
@@ -106,25 +106,28 @@ export const authenticateUser = async (
 export const setTokenCookies = (
   res: Response,
   accessToken: string,
-  refreshToken: string,
+  refreshToken: string
 ) => {
   const isProduction = process.env.NODE_ENV === "production";
 
-  // Set access token cookie (shorter expiry)
-  res.cookie("accessToken", accessToken, {
-    httpOnly: false,
-    secure: isProduction,
-    sameSite: "none",
-    maxAge: 2 * 60 * 1000, // 15 minutes
-    path: "/",
-  });
-
-  // Set refresh token cookie (longer expiry)
-  res.cookie("refreshToken", refreshToken, {
+  const base = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: "none",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    // "none" REQUIRES secure:true — browsers silently drop the cookie otherwise.
+    // In dev (same machine, localhost) "lax" works fine and doesn't need https.
+    sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
     path: "/",
+  };
+
+  res.cookie("accessToken", accessToken, {
+    ...base,
+    httpOnly: false, // needs to be readable by JS for axios interceptors
+    maxAge: 15 * 60 * 1000, // 15 minutes
+  });
+
+  res.cookie("refreshToken", refreshToken, {
+    ...base,
+    httpOnly: true, // never readable by JS
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
 };

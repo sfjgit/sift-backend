@@ -40,3 +40,7 @@ export const generateRefreshToken = (payload: JWTPayLoad) => {
 export const verifyAccessToken = (token: string) => {
   return jwt.verify(token, process.env.JWT_SECRET as string) as JWTPayLoad;
 };
+
+export const verifyRefreshToken = (token: string) => {
+  return jwt.verify(token, process.env.JWT_SECRET as string) as JWTPayLoad;
+};
