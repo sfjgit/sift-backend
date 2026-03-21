@@ -30,12 +30,31 @@ export type TGetAllClientsSchema = z.infer<typeof getAllClientsSchema>;
 export const clientsIdSchema = z.object({
   id: z.string(),
 });
-// export const clientsApprovalSchema = z.object({
-//   id: z.string(),
-//   name: z.string().min(1, "Name is required").optional(),
-//   status: z.enum(ClientStatus),
-//   category: z.string().min(1).optional(),
-//   approvedBy: z.string(),
-//   approvedAt: z.number(),
-// });
 export type TClientsIdSchema = z.infer<typeof clientsIdSchema>;
+
+export const spocContactSchema = z.object({
+  firstName: z.string().min(1, "First name is required"),
+  lastName: z.string().min(1).optional(),
+  designation: z.string().min(1).optional(),
+  email: z.string().email("Invalid Email"),
+  phone: z.string().min(1).optional(),
+  linkedinUrl: z.string().url().optional(),
+  isPrimary: z.boolean().default(false),
+});
+export type TspocContactSchema = z.infer<typeof spocContactSchema>;
+
+export const assignContactHandlerSchema = z.object({
+  userId: z.string().uuid("Invalid user id"),
+});
+
+export type TAssignContactHandlerSchema = z.infer<
+  typeof assignContactHandlerSchema
+>;
+export const contactHandlerParamsSchema = z.object({
+  id: z.string().uuid(),
+  contactId: z.string().uuid(),
+});
+
+export type TContactHandlerParamsSchema = z.infer<
+  typeof contactHandlerParamsSchema
+>;
