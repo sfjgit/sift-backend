@@ -1,6 +1,7 @@
 import {
   approveClients,
   assignContactHandler,
+  clientNote,
   createClient,
   getAllClients,
   getSingleClientDetails,
@@ -11,6 +12,7 @@ import { authenticateUser } from "@/middleware/auth";
 import { authorize } from "@/middleware/role";
 import {
   assignContactHandlerSchema,
+  clientNoteSchema,
   // approveClientsSchema,
   // clientsApprovalSchema,
   clientsIdSchema,
@@ -57,7 +59,7 @@ router.get(
  * @desc    Approve the clients
  * @access  Super Admin,admin
  */
-router.use(
+router.post(
   "/:id/approve",
   authenticateUser,
   // authorize("SUPER_ADMIN", "ADMIN"),
@@ -70,7 +72,7 @@ router.use(
  * @desc    GET the clients
  * @access  Super Admin,admin,Based on roles
  */
-router.use(
+router.get(
   "/:id",
   authenticateUser,
   validate.params(clientsIdSchema),
@@ -92,15 +94,27 @@ router.post(
 
 /**
  * @route   POST /api/clients
- * @desc    Add a SPOC handler.
+ * @desc    Assign a user to handle a specific SPOC
  * @access  Super Admin,admin,Based on roles
  */
 router.post(
   "/:id/contacts/:contactId/handlers",
   authenticateUser,
-  validate.params(assignContactHandlerSchema),
+  validate.body(assignContactHandlerSchema),
   validate.params(contactHandlerParamsSchema),
   // validate.body(spocHandlerSchema),
   assignContactHandler,
+);
+/**
+ * @route   POST /api/clients
+ * @desc    Add a note to client .
+ * @access  Super Admin,admin,CSM
+ */
+router.post(
+  "/:id/notes",
+  authenticateUser,
+  validate.params(clientsIdSchema),
+  validate.body(clientNoteSchema),
+  clientNote,
 );
 export default router;

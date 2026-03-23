@@ -12,7 +12,6 @@ export const createClientSchema = z.object({
   city: z.string().min(1).optional(),
   businessUnitId: z.string().min(1).optional(),
   status: z.enum(ClientStatus).default("PENDING"),
-  createdById: z.string(),
 });
 export type TCreateClientSchema = z.infer<typeof createClientSchema>;
 
@@ -39,12 +38,12 @@ export const spocContactSchema = z.object({
   email: z.string().email("Invalid Email"),
   phone: z.string().min(1).optional(),
   linkedinUrl: z.string().url().optional(),
-  isPrimary: z.boolean().default(false),
+  isPrimary: z.boolean().default(false).optional(),
 });
 export type TspocContactSchema = z.infer<typeof spocContactSchema>;
 
 export const assignContactHandlerSchema = z.object({
-  userId: z.string().uuid("Invalid user id"),
+  userId: z.string(),
 });
 
 export type TAssignContactHandlerSchema = z.infer<
@@ -58,3 +57,8 @@ export const contactHandlerParamsSchema = z.object({
 export type TContactHandlerParamsSchema = z.infer<
   typeof contactHandlerParamsSchema
 >;
+
+export const clientNoteSchema = z.object({
+  content: z.string().min(1, "Note content is required"),
+});
+export type TClientNoteSchema = z.infer<typeof clientNoteSchema>;
