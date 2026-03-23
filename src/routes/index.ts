@@ -6,6 +6,7 @@ import businessUnitRoutes from "./businessUnit.routes";
 import teamRoutes from "./team.routes";
 import clientRoutes from "./client.routes";
 import requirementRoutes from "./requirements.routes";
+import orgFlowRoutes from "./orgFlow.routes";
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use("/business-units", businessUnitRoutes);
 router.use("/teams", teamRoutes);
 
 router.use("/requirements", requirementRoutes);
+router.use("/org-flow", orgFlowRoutes);
 
 export default router;
