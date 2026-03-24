@@ -2,14 +2,17 @@ import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
 import {
   TAssignContactHandlerSchema,
+  TClientNoteSchema,
   TClientsIdSchema,
   TContactHandlerParamsSchema,
   TCreateClientSchema,
   TGetAllClientsSchema,
   TspocContactSchema,
 } from "@/validators/client.validators";
+import { validateParams } from "@/validators/validator";
 import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
+import { success } from "zod";
 
 export const createClient = async (req: Request, res: Response) => {
   try {
@@ -271,6 +274,7 @@ export const getSingleClientDetails = async (req: Request, res: Response) => {
   }
 };
 
+//Add a SPOC to the client.
 export const spocContact = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams as TClientsIdSchema;
@@ -355,6 +359,7 @@ export const spocContact = async (req: Request, res: Response) => {
   }
 };
 
+// Assign a user to handle a specific SPOC
 export const assignContactHandler = async (req: Request, res: Response) => {
   try {
     const { id, contactId } =
@@ -432,5 +437,49 @@ export const assignContactHandler = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Internal server error" });
+  }
+};
+
+// Add a note to the client.
+export const clientNote = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams as TClientsIdSchema;
+    const { content } = req.validatedBody as TClientNoteSchema;
+    const existingClient = await prisma.client.findUnique({ where: { id } });
+    if (!existingClient) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Client not found" });
+    }
+    const notes = await prisma.clientNote.create({
+      data: {
+        clientId: id,
+        authorId: req.user!.id,
+        content,
+      } as Prisma.ClientNoteUncheckedCreateInput,
+      select: {
+        id: true,
+        clientId: true,
+        authorId: true,
+        content: true,
+        createdAt: true,
+      },
+    });
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: "CREATE",
+      module: "CLIENT_NOTE",
+      recordId: notes.id,
+    });
+    return res.status(201).json({
+      success: true,
+      message: "Added a note successfully",
+      data: notes,
+    });
+  } catch (error) {
+    console.error("Error Adding note to client");
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal Server Error" });
   }
 };
