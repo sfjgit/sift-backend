@@ -1,13 +1,13 @@
 import {
   createOrgFlows,
-  deleteOrgFlows,
+  deleteOrgFlow,
   orgFlows,
   updateOrgFlows,
 } from "@/controller/orgFlow.controllers";
 import { authenticateUser } from "@/middleware/auth";
 import {
   createOrgFlowSchema,
-  deleteOrgFlowSchema,
+  idParamSchema,
   orgFlowSchema,
   updateOrgFlowSchema,
 } from "@/validators/orgFlow.validator";
@@ -43,7 +43,8 @@ router.post(
 router.patch(
   "/:id",
   authenticateUser,
-  validate.params(updateOrgFlowSchema),
+  validate.params(idParamSchema),
+  validate.body(updateOrgFlowSchema),
   updateOrgFlows,
 );
 
@@ -55,8 +56,9 @@ router.patch(
 router.delete(
   "/:id",
   authenticateUser,
-  validate.query(deleteOrgFlowSchema),
-  deleteOrgFlows,
+  validate.params(idParamSchema),
+  // validate.query(deleteOrgFlowSchema),
+  deleteOrgFlow,
 );
 
 export default router;
