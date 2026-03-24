@@ -42,7 +42,11 @@ app.use(cookieParser());
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        origin.startsWith("chrome-extension://")
+      ) {
         return callback(null, true);
       }
       loggers.warn(`CORS blocked request from origin: ${origin}`);
