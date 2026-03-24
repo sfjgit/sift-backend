@@ -43,10 +43,12 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (
-        !origin ||
-        allowedOrigins.includes(origin) ||
+        typeof origin === "string" &&
         origin.startsWith("chrome-extension://")
       ) {
+        return callback(null, true);
+      }
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       loggers.warn(`CORS blocked request from origin: ${origin}`);
