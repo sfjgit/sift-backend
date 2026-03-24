@@ -190,6 +190,30 @@ export const getRequirement = async (req: Request, res: Response) => {
   }
 };
 
+export const getMyRequirements = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.user;
+    const requirements = await prisma.requirementAssignment.findMany({
+      where: {
+        recruiterId: id,
+      },
+      include: {
+        requirement: true,
+      },
+    });
+    return res.status(200).json({
+      success: true,
+      data: requirements,
+    });
+  } catch (error) {
+    console.error("Error fetching requirements:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch requirements",
+    });
+  }
+};
+
 export const approveRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
