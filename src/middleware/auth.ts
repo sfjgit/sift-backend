@@ -23,7 +23,7 @@ import { Request, Response, NextFunction } from "express";
 export const authenticateUser = async (
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) => {
   try {
     // Get access token from cookies or Authorization header
@@ -106,7 +106,7 @@ export const authenticateUser = async (
 export const setTokenCookies = (
   res: Response,
   accessToken: string,
-  refreshToken: string
+  refreshToken: string,
 ) => {
   const isProduction = process.env.NODE_ENV === "production";
 
@@ -122,7 +122,8 @@ export const setTokenCookies = (
   res.cookie("accessToken", accessToken, {
     ...base,
     httpOnly: false, // needs to be readable by JS for axios interceptors
-    maxAge: 15 * 60 * 1000, // 15 minutes
+    // maxAge: 15 * 60 * 1000,
+    maxAge: 1 * 60 * 1000, // 1 min
   });
 
   res.cookie("refreshToken", refreshToken, {
