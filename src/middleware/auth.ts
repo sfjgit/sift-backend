@@ -123,7 +123,7 @@ export const setTokenCookies = (
     ...base,
     httpOnly: false, // needs to be readable by JS for axios interceptors
     // maxAge: 15 * 60 * 1000,
-    maxAge: 5 * 60 * 60 * 1000, // 5 hours
+    maxAge: 1 * 60 * 1000, // 1 min
   });
 
   res.cookie("refreshToken", refreshToken, {
