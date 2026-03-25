@@ -7,6 +7,7 @@ import {
   createRequirements,
   fillAssignment,
   getAllRequirements,
+  getMyRequirements,
   getRequirement,
   getRequirementStatusHistory,
   resolveIssue,
@@ -59,6 +60,13 @@ router.get(
   validate.query(getAllRequirementsSchema),
   getAllRequirements,
 );
+
+/**
+ * @route   GET /api/requirements/assigned-to-me
+ * @desc    Get requirements assigned to me
+ * @access
+ */
+router.get("/assigned-to-me", authenticateUser, getMyRequirements);
 
 /**
  * @route   GET /api/requirements/:id
