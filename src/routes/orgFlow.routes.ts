@@ -3,7 +3,7 @@ import {
   deleteOrgFlow,
   orgFlows,
   updateOrgFlows,
-} from "@/controller/orgFlow.controllers";
+} from "@/controller/orgFlow.controller";
 import { authenticateUser } from "@/middleware/auth";
 import {
   createOrgFlowSchema,
