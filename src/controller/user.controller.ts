@@ -1,3 +1,4 @@
+import env from "@/config/env";
 import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
 import {
@@ -7,9 +8,6 @@ import {
 } from "@/validators/user.validators";
 import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
-import { success } from "zod";
-// import { object, success } from "zod";
-// import { tr } from "zod/v4/locales";
 
 export const getAllUsers = async (req: Request, res: Response) => {
   try {
@@ -25,7 +23,7 @@ export const getAllUsers = async (req: Request, res: Response) => {
       ...(isActive !== undefined && { isActive }),
     };
 
-    console.log(where);
+    if (env.NODE_ENV == "development") console.log(where);
     const users = await prisma.user.findMany({
       where,
       skip,
@@ -56,7 +54,12 @@ export const getAllUsers = async (req: Request, res: Response) => {
 
 export const getSingleUser = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams as TGetSingleUserSchema;
+    let { id } = req.validatedParams as TGetSingleUserSchema;
+
+    if (id === "me") {
+      id = req.user.id;
+    }
+
     const where = { id };
     const singleUser = await prisma.user.findUnique({
       where,

@@ -55,7 +55,7 @@ export const getTeams = async (req: Request, res: Response) => {
     const { name, isActive, category, parentTeamId, businessUnitId, search } =
       req.validatedQuery;
 
-    // 🔍 Build filters dynamically
+    //  Build filters dynamically
     const where: any = {
       ...(name && {
         name: {
@@ -104,12 +104,12 @@ export const getTeams = async (req: Request, res: Response) => {
       success: true,
       data: teams,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Get Teams Error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch teams",
-      error: error.message,
+      error: error,
     });
   }
 };
@@ -254,13 +254,11 @@ export const getAllTeamMembers = async (req: Request, res: Response) => {
       where: { teamId },
       include: { user: true },
     });
-    return res
-      .status(200)
-      .json({
-        success: true,
-        message: "Team members fetched successfully",
-        data: members,
-      });
+    return res.status(200).json({
+      success: true,
+      message: "Team members fetched successfully",
+      data: members,
+    });
   } catch (error) {
     console.error("Error getting team members:", error);
     return res
