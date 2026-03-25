@@ -29,7 +29,7 @@ const router = Router();
 router.get(
   "/",
   authenticateUser,
-  authorize("ADMIN", "SUPER_ADMIN"),
+  // authorize("ADMIN", "SUPER_ADMIN"),
   validate.query(getAllUsersSchema),
   getAllUsers,
 );
