@@ -26,6 +26,10 @@ export const getTeamsSchema = z.object({
   search: z.string().optional(),
 });
 
+export const getSingleTeamSchema = z.object({
+  id: z.string().uuid(),
+});
+
 export const updateTeamsParamsSchema = z.object({
   id: z.string(),
 });
