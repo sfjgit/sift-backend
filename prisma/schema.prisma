@@ -1,4 +1,18 @@
 // core-service/prisma/schema.prisma
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPLETE ATS SCHEMA — FIXED
+//
+// Changes from previous version:
+//   Fix 1 — FileAsset: removed broken Prisma back-relations (polymorphic FK
+//            cannot also be a typed Prisma relation). Query by entityType+entityId
+//            in service layer.
+//   Fix 2 — OnboardingTask: removed fileAssetId (redundant with FileAsset.entityId).
+//   Fix 3 — Application: removed @@unique([candidateId, requirementId]).
+//            Added partial-index comment for ACTIVE-only uniqueness at DB level.
+//   Fix 4 — Added OfferStatusHistory model.
+//   Fix 5 — Added @@index on hot query paths.
+//   Fix 6 — Renamed Interview_Panel → InterviewPanelMember.
+// ─────────────────────────────────────────────────────────────────────────────
 
 generator client {
   provider = "prisma-client-js"
@@ -8,6 +22,10 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ═════════════════════════════════════════
+// DOMAIN A — MANAGEMENT
+// ═════════════════════════════════════════
 
 // ─────────────────────────────────────────
 // USERS
@@ -47,12 +65,11 @@ model User {
   teamMemberships TeamMember[]
   refreshTokens   RefreshToken[]
 
-  // ── who created this user ──
   createdById String?
   createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
   createdByMe User[]  @relation("UserCreatedBy")
 
-  // ── back-relations ──
+  // ── Domain A back-relations ──
   clientsCreated                    Client[]                   @relation("ClientCreatedBy")
   clientsApproved                   Client[]                   @relation("ClientApprovedBy")
   clientHandlerEntries              ClientHandler[]            @relation("ClientHandlerUser")
@@ -77,6 +94,21 @@ model User {
   orgFlowsUpdated                   OrgFlow[]                  @relation("OrgFlowUpdatedBy")
   auditLogs                         AuditLog[]                 @relation("AuditLogActor")
 
+  // ── Domain B back-relations ──
+  candidatesCreated   Candidate[]                @relation("CandidateCreatedBy")
+  fileAssetsUploaded  FileAsset[]                @relation("FileAssetUploadedBy")
+  applicationsOwned   Application[]              @relation("ApplicationRecruiter")
+  appStatusChanges    ApplicationStatusHistory[] @relation("AppStatusChangedBy")
+  interviewsCreated   Interview[]                @relation("InterviewCreatedBy")
+  interviewPanels     InterviewPanelMember[]     @relation("InterviewPanelMember")
+  interviewFeedbacks  InterviewFeedback[]        @relation("InterviewFeedbackReviewer")
+  offersCreated       Offer[]                    @relation("OfferCreatedBy")
+  offersApproved      Offer[]                    @relation("OfferApprovedBy")
+  offerStatusChanges  OfferStatusHistory[]       @relation("OfferStatusChangedBy")
+  onboardingsManaged  Onboarding[]               @relation("OnboardingAssignedTo")
+  onboardingTasksDone OnboardingTask[]           @relation("OnboardingTaskDoneBy")
+  communicationsSent  CommunicationLog[]         @relation("CommSentBy")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -91,7 +123,7 @@ model RefreshToken {
 }
 
 // ─────────────────────────────────────────
-// ROLES
+// ROLES & PERMISSIONS
 // ─────────────────────────────────────────
 
 model Role {
@@ -127,6 +159,27 @@ enum PermissionScope {
   TEAM
   BU
   ALL
+}
+
+// ─────────────────────────────────────────
+// BUSINESS UNITS
+// ─────────────────────────────────────────
+
+model BusinessUnit {
+  id       String  @id @default(uuid())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  parentBUId String?
+  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
+  childBUs   BusinessUnit[] @relation("BUHierarchy")
+
+  teams        Team[]
+  users        User[]
+  clients      Client[]
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
 }
 
 // ─────────────────────────────────────────
@@ -167,18 +220,13 @@ model TeamMember {
   isActive Boolean  @default(true)
   joinedAt DateTime @default(now())
 
-  // ── deactivation trail ──
   deactivatedAt      DateTime?
   deactivatedById    String?
   deactivatedBy      User?     @relation("TeamMemberDeactivatedBy", fields: [deactivatedById], references: [id])
   deactivationReason String?
 
-  // ── replacement trail ──
-  // when a member is swapped, point to who replaced them
-  replacedByUserId String?
-  replacedByUser   User?       @relation("TeamMemberReplacedByUser", fields: [replacedByUserId], references: [id])
-
-  // self-ref: which TeamMember record replaced this one
+  replacedByUserId   String?
+  replacedByUser     User?        @relation("TeamMemberReplacedByUser", fields: [replacedByUserId], references: [id])
   replacedByMemberId String?
   replacedByMember   TeamMember?  @relation("MemberReplacement", fields: [replacedByMemberId], references: [id])
   replacedMembers    TeamMember[] @relation("MemberReplacement")
@@ -195,27 +243,6 @@ enum TeamRole {
 enum TeamDataPolicy {
   SHARED
   LEAD_ONLY
-}
-
-// ─────────────────────────────────────────
-// BUSINESS UNITS
-// ─────────────────────────────────────────
-
-model BusinessUnit {
-  id       String  @id @default(uuid())
-  name     String  @unique
-  isActive Boolean @default(true)
-
-  parentBUId String?
-  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
-  childBUs   BusinessUnit[] @relation("BUHierarchy")
-
-  teams        Team[]
-  users        User[]
-  clients      Client[]
-  requirements Requirement[]
-
-  createdAt DateTime @default(now())
 }
 
 // ─────────────────────────────────────────
@@ -264,7 +291,7 @@ model ClientHandler {
   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
   userId   String
   user     User   @relation("ClientHandlerUser", fields: [userId], references: [id])
-  role     String // "PRIMARY", "SECONDARY", "BACKUP"
+  role     String // "PRIMARY" | "SECONDARY" | "BACKUP"
 
   assignedById String
   assignedBy   User     @relation("ClientHandlerAssignedBy", fields: [assignedById], references: [id])
@@ -324,11 +351,10 @@ model ClientNote {
   id       String @id @default(uuid())
   clientId String
   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
-
   authorId String
   author   User   @relation("ClientNoteAuthor", fields: [authorId], references: [id])
+  content  String
 
-  content   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -396,9 +422,13 @@ model Requirement {
   documents     RequirementDocument[]
   notes         RequirementNote[]
   statusHistory RequirementStatusHistory[]
+  applications  Application[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([clientId])
 }
 
 model RequirementDocument {
@@ -412,11 +442,11 @@ model RequirementDocument {
   fileType String?
   content  String?
 
-  isIssue      Boolean   @default(false)
-  issueResolved Boolean  @default(false)
-  resolvedById String?
-  resolvedBy   User?     @relation("RequirementDocResolvedBy", fields: [resolvedById], references: [id])
-  resolvedAt   DateTime?
+  isIssue       Boolean   @default(false)
+  issueResolved Boolean   @default(false)
+  resolvedById  String?
+  resolvedBy    User?     @relation("RequirementDocResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt    DateTime?
 
   raisedById String
   raisedBy   User     @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
@@ -447,22 +477,20 @@ model RequirementAssignment {
   team   Team?   @relation(fields: [teamId], references: [id])
 
   allocatedOpenings Int?
-  filledOpenings    Int @default(0)
+  filledOpenings    Int  @default(0)
 
   isAutoRouted     Boolean @default(false)
-  isSystemAssigned Boolean @default(false) // true when system triggered — assignedById will be null
+  isSystemAssigned Boolean @default(false)
 
   assignedById String?
-  assignedBy   User?   @relation("RequirementAssignedBy", fields: [assignedById], references: [id])
+  assignedBy   User?    @relation("RequirementAssignedBy", fields: [assignedById], references: [id])
   assignedAt   DateTime @default(now())
 
-  // removal trail
   removedAt     DateTime?
   removedReason String?
 
-  // NOTE: @@unique([requirementId, recruiterId]) intentionally removed
-  // same recruiter can be re-assigned after removal
-  // always filter by status = ACTIVE for current assignments
+  @@index([requirementId, status])
+  @@index([recruiterId, status])
 }
 
 enum AssignmentType {
@@ -480,11 +508,10 @@ model RequirementNote {
   id            String      @id @default(uuid())
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User        @relation("RequirementNoteAuthor", fields: [authorId], references: [id])
+  content       String
 
-  authorId String
-  author   User   @relation("RequirementNoteAuthor", fields: [authorId], references: [id])
-
-  content   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -563,6 +590,8 @@ enum FlowNodeType {
   USER
   CLIENT
   REQUIREMENT
+  CANDIDATE
+  APPLICATION
 }
 
 // ─────────────────────────────────────────
@@ -576,11 +605,537 @@ model AuditLog {
   actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
 
   action    String
-  module    String
+  module    String // "CANDIDATE" | "APPLICATION" | "INTERVIEW" | "OFFER" | etc.
   recordId  String
   oldData   Json?
   newData   Json?
   ip        String?
   userAgent String?
   createdAt DateTime @default(now())
+
+  @@index([module, recordId])
+  @@index([actorId])
+}
+
+// ═════════════════════════════════════════
+// DOMAIN B — CANDIDATE
+// ═════════════════════════════════════════
+
+// ─────────────────────────────────────────
+// FILE ASSETS
+//
+// FIX 1: Polymorphic pattern — entityType + entityId identify the owner.
+// There are NO Prisma typed back-relations here because a single foreign key
+// field (entityId) cannot simultaneously be a typed relation to multiple models.
+// In your service layer, fetch files like:
+//   prisma.fileAsset.findMany({ where: { entityType: 'CANDIDATE', entityId: id } })
+// ─────────────────────────────────────────
+
+model FileAsset {
+  id         String  @id @default(uuid())
+  bucket     String
+  key        String // S3 object key
+  url        String // presigned or CDN URL
+  fileName   String
+  mimeType   String
+  fileSizeKb Int?
+  checksum   String? // md5 for file-level dedup
+
+  entityType FileEntityType
+  entityId   String // UUID of the owning record
+  purpose    FilePurpose
+
+  uploadedById String
+  uploadedBy   User   @relation("FileAssetUploadedBy", fields: [uploadedById], references: [id])
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId]) // primary lookup path
+}
+
+enum FileEntityType {
+  CANDIDATE
+  APPLICATION
+  OFFER
+  ONBOARDING
+  REQUIREMENT
+  CLIENT
+}
+
+enum FilePurpose {
+  RESUME
+  COVER_LETTER
+  OFFER_LETTER
+  ID_PROOF
+  EXPERIENCE_LETTER
+  ONBOARDING_DOC
+  REQUIREMENT_DOC
+  OTHER
+}
+
+// ─────────────────────────────────────────
+// CANDIDATES
+// ─────────────────────────────────────────
+
+model Candidate {
+  id           String  @id @default(uuid())
+  firstName    String
+  lastName     String
+  email        String  @unique
+  phone        String?
+  linkedinUrl  String?
+  portfolioUrl String?
+
+  currentTitle      String?
+  currentCompany    String?
+  currentLocation   String?
+  preferredLocation String?
+  totalExpYears     Float?
+  noticePeriodDays  Int?
+  currentSalary     Float?
+  expectedSalary    Float?
+  salaryType        String? // "ANNUAL" | "MONTHLY" | "HOURLY"
+
+  source     CandidateSource @default(MANUAL)
+  sourceNote String?
+
+  // dedup result — set by parsing module
+  isDuplicateSuspect  Boolean @default(false)
+  duplicateOfId       String?
+  duplicateConfidence String? // "HIGH" | "MEDIUM" | "LOW"
+
+  isActive    Boolean @default(true)
+  isBlocked   Boolean @default(false)
+  blockReason String?
+
+  // resume parse state
+  resumeParseStatus ResumeParseStatus @default(PENDING)
+  resumeParsedAt    DateTime?
+  resumeParseError  String?
+
+  tags           CandidateTag[]
+  applications   Application[]
+  communications CommunicationLog[] @relation("CommCandidate")
+
+  createdById String
+  createdBy   User   @relation("CandidateCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([isActive, isBlocked])
+  @@index([resumeParseStatus])
+}
+
+model CandidateTag {
+  id          String    @id @default(uuid())
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  tag         String
+
+  @@unique([candidateId, tag])
+}
+
+enum CandidateSource {
+  MANUAL
+  PORTAL
+  REFERRAL
+  LINKEDIN
+  AGENCY
+  WALK_IN
+  OTHER
+}
+
+enum ResumeParseStatus {
+  PENDING // file uploaded, not yet parsed
+  IN_PROGRESS // LLM call in flight
+  DONE // parsed and indexed in ES
+  FAILED // parsing failed — see resumeParseError
+  SKIPPED // no resume, manually entered
+}
+
+// ─────────────────────────────────────────
+// APPLICATIONS
+//
+// FIX 3: @@unique([candidateId, requirementId]) removed.
+// A candidate rejected from a requirement must be re-appliable.
+// Enforce "one ACTIVE application per candidate per requirement"
+// at the DB level with a partial unique index via a migration:
+//
+//   CREATE UNIQUE INDEX application_active_unique
+//   ON "Application" ("candidateId", "requirementId")
+//   WHERE status NOT IN ('REJECTED','WITHDRAWN');
+//
+// Add this in a custom migration after `prisma migrate dev`.
+// ─────────────────────────────────────────
+
+model Application {
+  id            String      @id @default(uuid())
+  candidateId   String
+  candidate     Candidate   @relation(fields: [candidateId], references: [id])
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+  recruiterId String?
+  recruiter   User?   @relation("ApplicationRecruiter", fields: [recruiterId], references: [id])
+
+  status     ApplicationStatus @default(NEW)
+  source     CandidateSource   @default(MANUAL)
+  sourceNote String?
+
+  screeningNote   String?
+  screeningRating Int? // 1–5
+
+  vendorName  String?
+  vendorEmail String?
+
+  submittedToClientAt DateTime?
+  rejectedAt          DateTime?
+  rejectedReason      String?
+
+  interviews     Interview[]
+  offer          Offer?
+  statusHistory  ApplicationStatusHistory[]
+  communications CommunicationLog[]         @relation("CommApplication")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requirementId, status]) // most common query path
+  @@index([recruiterId, status])
+  @@index([candidateId])
+}
+
+model ApplicationStatusHistory {
+  id            String            @id @default(uuid())
+  applicationId String
+  application   Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStatus    ApplicationStatus
+  toStatus      ApplicationStatus
+  reason        String?
+
+  changedById String
+  changedBy   User     @relation("AppStatusChangedBy", fields: [changedById], references: [id])
+  changedAt   DateTime @default(now())
+
+  @@index([applicationId])
+}
+
+enum ApplicationStatus {
+  NEW
+  SCREENING
+  SHORTLISTED
+  SUBMITTED_TO_CLIENT
+  CLIENT_REVIEW
+  INTERVIEW_SCHEDULED
+  INTERVIEW_COMPLETED
+  OFFER_PENDING
+  OFFER_EXTENDED
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+  JOINED
+  NO_SHOW
+  REJECTED
+  WITHDRAWN
+  ON_HOLD
+}
+
+// ─────────────────────────────────────────
+// INTERVIEWS
+// ─────────────────────────────────────────
+
+model Interview {
+  id            String      @id @default(uuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  round  Int // 1, 2, 3...
+  title  String? // "HR Round", "Tech Round 1"
+  type   InterviewType
+  mode   InterviewMode
+  status InterviewStatus @default(SCHEDULED)
+
+  scheduledAt DateTime
+  durationMin Int // minutes
+
+  // Jitsi / Meet / Zoom — generated externally, stored here
+  meetingLink String?
+  meetingId   String?
+  meetingPass String?
+
+  location              String?
+  candidateInstructions String?
+
+  // FIX 6: renamed from Interview_Panel to InterviewPanelMember
+  interviewers InterviewPanelMember[]
+  feedback     InterviewFeedback[]
+
+  cancelledAt     DateTime?
+  cancelledReason String?
+
+  rescheduledFromId String?
+  rescheduledFrom   Interview?  @relation("InterviewReschedule", fields: [rescheduledFromId], references: [id])
+  rescheduledTo     Interview[] @relation("InterviewReschedule")
+
+  communications CommunicationLog[] @relation("CommInterview")
+
+  createdById String
+  createdBy   User   @relation("InterviewCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([applicationId, status])
+  @@index([scheduledAt])
+}
+
+// FIX 6: was Interview_Panel
+model InterviewPanelMember {
+  id          String    @id @default(uuid())
+  interviewId String
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation("InterviewPanelMember", fields: [userId], references: [id])
+  isPrimary   Boolean   @default(false)
+
+  @@unique([interviewId, userId])
+}
+
+model InterviewFeedback {
+  id          String    @id @default(uuid())
+  interviewId String
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  reviewerId  String
+  reviewer    User      @relation("InterviewFeedbackReviewer", fields: [reviewerId], references: [id])
+
+  rating     Int? // 1–5
+  verdict    FeedbackVerdict
+  strengths  String?
+  weaknesses String?
+  notes      String?
+
+  submittedAt DateTime @default(now())
+
+  @@unique([interviewId, reviewerId])
+}
+
+enum InterviewType {
+  SCREENING
+  TECHNICAL
+  HR
+  MANAGERIAL
+  CLIENT
+  FINAL
+  OTHER
+}
+
+enum InterviewMode {
+  VIDEO
+  PHONE
+  IN_PERSON
+  PANEL
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  RESCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum FeedbackVerdict {
+  STRONG_YES
+  YES
+  NEUTRAL
+  NO
+  STRONG_NO
+}
+
+// ─────────────────────────────────────────
+// OFFERS
+// ─────────────────────────────────────────
+
+model Offer {
+  id            String      @id @default(uuid())
+  applicationId String      @unique
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  status OfferStatus @default(DRAFT)
+
+  offeredSalary Float
+  salaryType    String  @default("ANNUAL")
+  currency      String  @default("INR")
+  joiningBonus  Float?
+  variablePay   Float?
+  otherBenefits String?
+
+  offerDate       DateTime?
+  expiryDate      DateTime?
+  expectedJoining DateTime?
+  actualJoining   DateTime?
+
+  respondedAt   DateTime?
+  declineReason String?
+  revisionNote  String?
+
+  // FIX 4: status history added
+  statusHistory OfferStatusHistory[]
+
+  onboarding Onboarding?
+
+  createdById  String
+  createdBy    User      @relation("OfferCreatedBy", fields: [createdById], references: [id])
+  approvedById String?
+  approvedBy   User?     @relation("OfferApprovedBy", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// FIX 4: new model — matches pattern of RequirementStatusHistory / ApplicationStatusHistory
+model OfferStatusHistory {
+  id         String      @id @default(uuid())
+  offerId    String
+  offer      Offer       @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  fromStatus OfferStatus
+  toStatus   OfferStatus
+  reason     String?
+
+  changedById String
+  changedBy   User     @relation("OfferStatusChangedBy", fields: [changedById], references: [id])
+  changedAt   DateTime @default(now())
+
+  @@index([offerId])
+}
+
+enum OfferStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  EXTENDED // sent to candidate
+  ACCEPTED
+  DECLINED
+  WITHDRAWN // company pulled back
+  REVISED // superseded by a new offer record
+  LAPSED // expiry passed, no response
+}
+
+// ─────────────────────────────────────────
+// ONBOARDING
+// ─────────────────────────────────────────
+
+model Onboarding {
+  id      String @id @default(uuid())
+  offerId String @unique
+  offer   Offer  @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  status OnboardingStatus @default(INITIATED)
+
+  joiningDate      DateTime?
+  actualJoinedDate DateTime?
+  noShowReason     String?
+  notes            String?
+
+  tasks OnboardingTask[]
+
+  assignedToId String?
+  assignedTo   User?   @relation("OnboardingAssignedTo", fields: [assignedToId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// FIX 2: fileAssetId removed — files are fetched via
+//   FileAsset where entityType=ONBOARDING and entityId=onboardingId
+model OnboardingTask {
+  id           String     @id @default(uuid())
+  onboardingId String
+  onboarding   Onboarding @relation(fields: [onboardingId], references: [id], onDelete: Cascade)
+
+  title      String
+  category   OnboardingTaskCategory
+  isRequired Boolean                @default(true)
+  isDone     Boolean                @default(false)
+  doneAt     DateTime?
+  dueDate    DateTime?
+  notes      String?
+
+  doneById String?
+  doneBy   User?   @relation("OnboardingTaskDoneBy", fields: [doneById], references: [id])
+
+  @@index([onboardingId])
+}
+
+enum OnboardingStatus {
+  INITIATED
+  IN_PROGRESS
+  JOINED
+  NO_SHOW
+  CANCELLED
+}
+
+enum OnboardingTaskCategory {
+  DOCUMENT_COLLECTION // ID proof, certificates
+  SYSTEM_ACCESS // email, tools, VPN
+  INDUCTION // HR / company orientation
+  COMPLIANCE // NDA, policies
+  OTHER
+}
+
+// ─────────────────────────────────────────
+// COMMUNICATION LOGS
+// ─────────────────────────────────────────
+
+model CommunicationLog {
+  id        String                 @id @default(uuid())
+  channel   CommunicationChannel
+  direction CommunicationDirection @default(OUTBOUND)
+  subject   String?
+  body      String?
+  sentAt    DateTime               @default(now())
+  status    CommStatus             @default(SENT)
+
+  candidateId   String?
+  candidate     Candidate?   @relation("CommCandidate", fields: [candidateId], references: [id])
+  applicationId String?
+  application   Application? @relation("CommApplication", fields: [applicationId], references: [id])
+  interviewId   String?
+  interview     Interview?   @relation("CommInterview", fields: [interviewId], references: [id])
+
+  sentById String?
+  sentBy   User?   @relation("CommSentBy", fields: [sentById], references: [id])
+
+  isSystemGenerated Boolean @default(false)
+  errorMessage      String?
+
+  createdAt DateTime @default(now())
+
+  @@index([candidateId])
+  @@index([applicationId])
+}
+
+enum CommunicationChannel {
+  EMAIL
+  PHONE
+  SMS
+  WHATSAPP
+  IN_APP
+  OTHER
+}
+
+enum CommunicationDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CommStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  BOUNCED
 }
