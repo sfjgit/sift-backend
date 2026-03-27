@@ -2,6 +2,7 @@ import {
   addTeamMembers,
   createTeam,
   getAllTeamMembers,
+  getSingleTeam,
   getTeams,
   removeTeamMembers,
   updateTeams,
@@ -12,6 +13,7 @@ import {
   addTeamMembersBodySchema,
   addTeamMembersParamsSchema,
   createTeamSchema,
+  getSingleTeamSchema,
   getTeamMembersParamsSchema,
   getTeamsSchema,
   removeTeamMembersParamsSchema,
@@ -47,6 +49,19 @@ router.get(
   // authorize("ADMIN"),
   validate.query(getTeamsSchema),
   getTeams,
+);
+
+/**
+ * @route   GET /api/teams/:id
+ * @desc    Get single team
+ * @access  Admin
+ */
+router.get(
+  "/:id",
+  authenticateUser,
+  // authorize("ADMIN"),
+  validate.params(getSingleTeamSchema),
+  getSingleTeam,
 );
 
 /**

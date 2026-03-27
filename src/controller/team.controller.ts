@@ -97,7 +97,7 @@ export const getTeams = async (req: Request, res: Response) => {
 
     const teams = await prisma.team.findMany({
       where,
-      orderBy: { createdAt: "desc" }, // optional but recommended
+      orderBy: { createdAt: "desc" },
     });
 
     return res.status(200).json({
@@ -111,6 +111,26 @@ export const getTeams = async (req: Request, res: Response) => {
       message: "Failed to fetch teams",
       error: error,
     });
+  }
+};
+
+export const getSingleTeam = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const team = await prisma.team.findUnique({
+      where: { id },
+      include: { clientAssignments: true, requirementAssignments: true },
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Team fetched successfully",
+      data: team,
+    });
+  } catch (error) {
+    console.error("Error getting team:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error getting team" });
   }
 };
 
@@ -192,6 +212,7 @@ export const addTeamMembers = async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       message: "Members added successfully",
+      data: result,
       count: result.count,
     });
   } catch (error) {
