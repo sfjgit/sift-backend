@@ -29,7 +29,6 @@ const router = Router();
 router.get(
   "/",
   authenticateUser,
-  // authorize("ADMIN", "SUPER_ADMIN"),
   validate.query(getAllUsersSchema),
   getAllUsers,
 );
@@ -42,7 +41,6 @@ router.get(
 router.get(
   "/:id",
   authenticateUser,
-  authorize("ADMIN", "SUPER_ADMIN"),
   validate.params(getSingleUsersSchema),
   getSingleUser,
 );
@@ -55,7 +53,7 @@ router.get(
 router.patch(
   "/:id",
   authenticateUser,
-  authorize("ADMIN", "SUPER_ADMIN"),
+  // authorize("ADMIN", "SUPER_ADMIN"),
   validate.params(userIdParamsSchema),
   validate.body(userUpdateBodySchema),
   updateUsers,
@@ -70,7 +68,7 @@ router.patch(
 router.patch(
   "/:id/deactivate",
   authenticateUser,
-  authorize("SUPER_ADMIN", "ADMIN"),
+  // authorize("SUPER_ADMIN", "ADMIN"),
   validate.params(deactivateUserParamsSchema),
   deactivateUser,
 );
@@ -83,7 +81,7 @@ router.patch(
 router.patch(
   "/:id/reporting-to",
   authenticateUser,
-  authorize("SUPER_ADMIN", "ADMIN"),
+  // authorize("SUPER_ADMIN", "ADMIN"),
   validate.params(userIdParamsSchema),
   validate.body(reportingManagerSchema),
   reportingManager,
@@ -97,7 +95,7 @@ router.patch(
 router.get(
   "/:id/subordinates",
   authenticateUser,
-  authorize("SUPER_ADMIN", "ADMIN", "USER"),
+  // authorize("SUPER_ADMIN", "ADMIN", "USER"),
   validate.params(userIdParamsSchema),
   subordinates,
 );
