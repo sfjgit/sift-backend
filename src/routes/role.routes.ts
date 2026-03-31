@@ -22,25 +22,14 @@ const router = Router();
  * @desc    Create new role
  * @access  Admin
  */
-router.post(
-  "/",
-  authenticateUser,
-  // authorize('ADMIN'),
-  validate.body(createRoleSchema),
-  createRole,
-);
+router.post("/", authenticateUser, validate.body(createRoleSchema), createRole);
 
 /**
  * @route   GET /api/roles
  * @desc    Get all roles
  * @access  Super Admin
  */
-router.get(
-  "/",
-  authenticateUser,
-  //  authorize("SUPER_ADMIN"),
-  getAllRoles,
-);
+router.get("/", authenticateUser, getAllRoles);
 
 /**
  * @route   DELETE /api/roles/:id
@@ -50,7 +39,6 @@ router.get(
 router.delete(
   "/:id",
   authenticateUser,
-  //   authorize("SUPER_ADMIN"),
   validate.params(deleteRoleSchema),
   deleteRole,
 );
@@ -58,7 +46,6 @@ router.delete(
 router.put(
   "/:id/permissions",
   authenticateUser,
-  //   authorize("SUPER_ADMIN"),
   validate.params(rolePermissionsParamsSchema),
   validate.body(rolePermissionsBodySchema),
   setRolePermissions,

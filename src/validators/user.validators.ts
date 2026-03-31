@@ -10,7 +10,7 @@ export const getAllUsersSchema = z.object({
 });
 
 export const getSingleUsersSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).default(1),
 });
