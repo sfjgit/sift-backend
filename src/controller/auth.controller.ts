@@ -90,10 +90,9 @@ export const login = async (req: Request, res: Response) => {
     if (!isPasswordValid) {
       return res.status(401).json({ message: "Invalid password" });
     }
+    // @ts-expect-error err
     const payload: JWTPayLoad = {
-      userId: user.id,
-      email: user.email,
-      roleId: user.roleId,
+      ...user,
       role: {
         name: user.role.name,
         permissions: user.role.permissions,
