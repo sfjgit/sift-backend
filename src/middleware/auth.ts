@@ -23,7 +23,7 @@ import { Request, Response, NextFunction } from "express";
 export const authenticateUser = async (
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) => {
   try {
     // Get access token from cookies or Authorization header
@@ -56,7 +56,7 @@ export const authenticateUser = async (
 
     // Verify access token
     const decoded = verifyAccessToken(accessToken);
-    console.log(decoded);
+    console.log("decoded", decoded);
 
     if (!decoded) {
       res.status(401).json({
@@ -69,7 +69,14 @@ export const authenticateUser = async (
 
     // Check if user exists and is active
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: decoded.id },
+      include: {
+        role: {
+          include: {
+            permissions: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -107,7 +114,7 @@ export const setTokenCookies = (
   res: Response,
   accessToken: string,
   refreshToken: string,
-  req: Request // pass req in so we can inspect the origin
+  req: Request, // pass req in so we can inspect the origin
 ) => {
   const origin = req.headers.origin || req.headers.referer || "";
 

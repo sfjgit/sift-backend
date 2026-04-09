@@ -36,7 +36,7 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
-  // authorize("SUPER_ADMIN", "ADMIN"),
+  authorize("clients", "canAdd"),
   validate.body(createClientSchema),
   createClient,
 );
@@ -49,7 +49,7 @@ router.post(
 router.get(
   "/",
   authenticateUser,
-  // authorize("SUPER_ADMIN", "ADMIN"),
+  authorize("clients", "canView"),
   validate.query(getAllClientsSchema),
   getAllClients,
 );
@@ -62,7 +62,7 @@ router.get(
 router.post(
   "/:id/approve",
   authenticateUser,
-  // authorize("SUPER_ADMIN", "ADMIN"),
+  authorize("clients", "canAdd"),
   validate.params(clientsIdSchema),
   approveClients,
 );
@@ -75,6 +75,7 @@ router.post(
 router.get(
   "/:id",
   authenticateUser,
+  authorize("clients", "canView"),
   validate.params(clientsIdSchema),
   getSingleClientDetails,
 );
@@ -87,6 +88,7 @@ router.get(
 router.post(
   "/:id/contacts",
   authenticateUser,
+  authorize("clients", "canAdd"),
   validate.params(clientsIdSchema),
   validate.body(spocContactSchema),
   spocContact,
@@ -100,9 +102,9 @@ router.post(
 router.post(
   "/:id/contacts/:contactId/handlers",
   authenticateUser,
+  authorize("clients", "canAdd"),
   validate.body(assignContactHandlerSchema),
   validate.params(contactHandlerParamsSchema),
-  // validate.body(spocHandlerSchema),
   assignContactHandler,
 );
 /**
@@ -113,6 +115,7 @@ router.post(
 router.post(
   "/:id/notes",
   authenticateUser,
+  authorize("clients", "canAdd"),
   validate.params(clientsIdSchema),
   validate.body(clientNoteSchema),
   clientNote,
