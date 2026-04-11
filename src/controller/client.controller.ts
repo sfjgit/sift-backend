@@ -91,14 +91,14 @@ export const getAllClients = async (req: Request, res: Response) => {
     };
 
     // sales can only see clients they created
-    if (req.user!.role === "SALES") {
-      where.createdBy = req.user!.id;
-    }
+    // if (req.user!.role === "SALES") {
+    //   where.createdBy = req.user!.id;
+    // }
 
     // delivery lead can only see clients in their BU
-    if (req.user!.role === "DELIVERY_LEAD") {
-      where.businessUnitId = req.user!.buId;
-    }
+    // if (req.user!.role === "DELIVERY_LEAD") {
+    //   where.businessUnitId = req.user!.buId;
+    // }
 
     // admin sees all — no extra filter
 
@@ -107,15 +107,21 @@ export const getAllClients = async (req: Request, res: Response) => {
         where,
         skip,
         take: limit,
-        select: {
-          id: true,
-          name: true,
-          category: true,
-          status: true,
-          businessUnit: { select: { id: true, name: true } },
-          teamAssignments: {
-            select: { teamId: true, team: { select: { name: true } } },
-          },
+        // select: {
+        //   id: true,
+        //   name: true,
+        //   category: true,
+        //   status: true,
+        //   businessUnit: { select: { id: true, name: true } },
+        //   teamAssignments: {
+        //     select: { teamId: true, team: { select: { name: true } } },
+        //   },
+        // },
+        include: {
+          businessUnit: true,
+          teamAssignments: true,
+          contacts: true,
+          handlers: true,
         },
         orderBy: { createdAt: "desc" },
       }),

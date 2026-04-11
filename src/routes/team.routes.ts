@@ -33,7 +33,7 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
-  // authorize("ADMIN"),
+  authorize("teams", "canAdd"),
   validate.body(createTeamSchema),
   createTeam,
 );
@@ -46,7 +46,7 @@ router.post(
 router.get(
   "/",
   authenticateUser,
-  // authorize("ADMIN"),
+  authorize("teams", "canView"),
   validate.query(getTeamsSchema),
   getTeams,
 );
@@ -59,7 +59,7 @@ router.get(
 router.get(
   "/:id",
   authenticateUser,
-  // authorize("ADMIN"),
+  authorize("teams", "canView"),
   validate.params(getSingleTeamSchema),
   getSingleTeam,
 );
@@ -72,7 +72,7 @@ router.get(
 router.patch(
   "/:id",
   authenticateUser,
-  // authorize("ADMIN"),
+  authorize("teams", "canEdit"),
   validate.params(updateTeamsParamsSchema),
   validate.body(updateTeamsBodySchema),
   updateTeams,
@@ -86,7 +86,7 @@ router.patch(
 router.post(
   "/:id/members",
   authenticateUser,
-  // authorize('ADMIN'),
+  authorize("teams", "canAdd"),
   validate.params(addTeamMembersParamsSchema),
   validate.body(addTeamMembersBodySchema),
   addTeamMembers,
@@ -100,7 +100,7 @@ router.post(
 router.delete(
   "/:id/members/:userId",
   authenticateUser,
-  // authorize('ADMIN'),
+  authorize("teams", "canDelete"),
   validate.params(removeTeamMembersParamsSchema),
   removeTeamMembers,
 );
@@ -113,7 +113,7 @@ router.delete(
 router.get(
   "/:id/members",
   authenticateUser,
-  // authorize('ADMIN'),
+  authorize("teams", "canView"),
   validate.params(getTeamMembersParamsSchema),
   getAllTeamMembers,
 );

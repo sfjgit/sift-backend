@@ -91,9 +91,7 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Invalid password" });
     }
     const payload: JWTPayLoad = {
-      userId: user.id,
-      email: user.email,
-      roleId: user.roleId,
+      ...user,
       role: {
         name: user.role.name,
         permissions: user.role.permissions,
@@ -166,7 +164,7 @@ export const refresh = async (req: Request, res: Response) => {
 
     // Fetch full user with role + permissions — same as login
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: decoded.id },
       include: {
         role: {
           include: {
@@ -184,7 +182,7 @@ export const refresh = async (req: Request, res: Response) => {
     }
 
     const payload: JWTPayLoad = {
-      userId: user.id,
+      id: user.id,
       email: user.email,
       roleId: user.roleId,
       role: {

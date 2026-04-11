@@ -2,6 +2,7 @@ import {
   createRole,
   deleteRole,
   getAllRoles,
+  getSingleRole,
   setRolePermissions,
 } from "@/controller/role.controller";
 import { authenticateUser } from "@/middleware/auth";
@@ -9,6 +10,7 @@ import { authorize } from "@/middleware/role";
 import {
   createRoleSchema,
   deleteRoleSchema,
+  getSingleRoleSchema,
   rolePermissionsBodySchema,
   rolePermissionsParamsSchema,
 } from "@/validators/role.validators";
@@ -32,6 +34,18 @@ router.post("/", authenticateUser, validate.body(createRoleSchema), createRole);
 router.get("/", authenticateUser, getAllRoles);
 
 /**
+ * @route   GET /api/roles/:id
+ * @desc    Get single role
+ * @access  Super Admin
+ */
+router.get(
+  "/:id",
+  authenticateUser,
+  validate.params(getSingleRoleSchema),
+  getSingleRole,
+);
+
+/**
  * @route   DELETE /api/roles/:id
  * @desc    Delete role
  * @access  Super Admin
@@ -40,7 +54,7 @@ router.delete(
   "/:id",
   authenticateUser,
   validate.params(deleteRoleSchema),
-  deleteRole
+  deleteRole,
 );
 
 router.put(
@@ -48,7 +62,7 @@ router.put(
   authenticateUser,
   validate.params(rolePermissionsParamsSchema),
   validate.body(rolePermissionsBodySchema),
-  setRolePermissions
+  setRolePermissions,
 );
 
 export default router;

@@ -1,30 +1,46 @@
 import { NextFunction, Request, Response } from "express";
 
-// export const authorize=(...allowedRoles:string[])=>{
-//     return (req: Request, res: Response, next: NextFunction) => {
-//        if (!req.user || !allowedRoles.includes(req.user.role)) {
-//           return res.status(403).json({
-//             success: false,
-//             message: "Insufficient permissions",
-//       });
-//     }
-//         next();
-//       };
-// }
+export const authorize = (module: string, action: string) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user;
 
-export const authorize=(...allowedRoles:any)=>{
-    return (req: Request, res: Response, next: NextFunction) => {
+      const permissions = user.role?.permissions;
 
-       console.log("User role:", req.user?.role);
-       console.log("Allowed roles:", allowedRoles);
+      if (!permissions || permissions.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "No permissions assigned",
+        });
+      }
 
-       if (!req.user || !allowedRoles.includes(req.user.role)) {
-          return res.status(403).json({
-            success: false,
-            message: "Insufficient permissions",
-          });
-       }
+      // Find module permission
+      const modulePermission = permissions.find(
+        (perm: any) => perm.module === module,
+      );
 
-       next();
-    };
-}
+      if (!modulePermission) {
+        return res.status(403).json({
+          success: false,
+          message: `No access to ${module}`,
+        });
+      }
+
+      // Check action (canView / canAdd / canEdit / canDelete)
+      if (!modulePermission[action]) {
+        return res.status(403).json({
+          success: false,
+          message: `You don't have permission to ${action} on ${module}`,
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error("Authorization error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
+    }
+  };
+};

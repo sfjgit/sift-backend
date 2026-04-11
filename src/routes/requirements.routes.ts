@@ -14,6 +14,7 @@ import {
   uploadDocument,
 } from "@/controller/requirement.controller";
 import { authenticateUser } from "@/middleware/auth";
+import { authorize } from "@/middleware/role";
 import {
   addNotesBodySchema,
   addNotesParamsSchema,
@@ -45,6 +46,7 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
+  authorize("requirements", "canAdd"),
   validate.body(createRequirementsSchema),
   createRequirements,
 );
@@ -57,6 +59,8 @@ router.post(
 router.get(
   "/",
   authenticateUser,
+  authorize("requirements", "canView"),
+  // applyScope("requirements"),
   validate.query(getAllRequirementsSchema),
   getAllRequirements,
 );
@@ -66,7 +70,12 @@ router.get(
  * @desc    Get requirements assigned to me
  * @access
  */
-router.get("/assigned-to-me", authenticateUser, getMyRequirements);
+router.get(
+  "/assigned-to-me",
+  authenticateUser,
+  authorize("requirements", "canView"),
+  getMyRequirements,
+);
 
 /**
  * @route   GET /api/requirements/:id
@@ -76,6 +85,7 @@ router.get("/assigned-to-me", authenticateUser, getMyRequirements);
 router.get(
   "/:id",
   authenticateUser,
+  authorize("requirements", "canView"),
   validate.params(getRequirementParamsSchema),
   getRequirement,
 );
@@ -88,6 +98,7 @@ router.get(
 router.patch(
   "/:id/approve",
   authenticateUser,
+  authorize("requirements", "canEdit"),
   validate.params(approveRequirementParamsSchema),
   validate.body(approveRequirementBodySchema),
   approveRequirement,
@@ -101,6 +112,7 @@ router.patch(
 router.patch(
   "/:id/status",
   authenticateUser,
+  authorize("requirements", "canEdit"),
   validate.params(changeRequirementStatusParamsSchema),
   validate.body(changeRequirementStatusBodySchema),
   changeRequirementStatus,
@@ -114,6 +126,7 @@ router.patch(
 router.post(
   "/:id/assign",
   authenticateUser,
+  authorize("requirements", "canAdd"),
   validate.params(assignRequirementParamsSchema),
   validate.body(assignRequirementBodySchema),
   assignRequirement,
@@ -127,7 +140,7 @@ router.post(
 router.post(
   "/:id/notes",
   authenticateUser,
-  // authorize('ADMIN'),
+  authorize("requirements", "canAdd"),
   validate.params(addNotesParamsSchema),
   validate.body(addNotesBodySchema),
   addNotes,
@@ -141,6 +154,7 @@ router.post(
 router.get(
   "/:id/history",
   authenticateUser,
+  authorize("requirements", "canView"),
   validate.params(getRequirementStatusHistoryParamsSchema),
   getRequirementStatusHistory,
 );
@@ -153,6 +167,7 @@ router.get(
 router.patch(
   "/:id/assignments/:assignmentId/fill",
   authenticateUser,
+  authorize("requirements", "canEdit"),
   validate.params(fillAssignmentParamsSchema),
   validate.body(fillAssignmentBodySchema),
   fillAssignment,
@@ -166,6 +181,7 @@ router.patch(
 router.post(
   "/:id/documents",
   authenticateUser,
+  authorize("requirements", "canAdd"),
   validate.params(uploadDocumentsParamsSchema),
   upload.single("file"),
   uploadDocument,
@@ -179,6 +195,7 @@ router.post(
 router.patch(
   "/:id/documents/:documentId/resolve",
   authenticateUser,
+  authorize("requirements", "canEdit"),
   validate.params(resolveIssuesParamsSchema),
   resolveIssue,
 );

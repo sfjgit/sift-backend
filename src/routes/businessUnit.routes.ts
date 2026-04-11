@@ -25,7 +25,7 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
-  // authorize('SUPER_ADMIN'),
+  authorize("business_units", "canAdd"),
   validate.body(createBusinessUnitSchema),
   createBusinessUnit,
 );
@@ -35,7 +35,12 @@ router.post(
  * @desc    Get all business units
  * @access  Admin
  */
-router.get("/", authenticateUser, getAllBusinessUnits);
+router.get(
+  "/",
+  authenticateUser,
+  authorize("business_units", "canView"),
+  getAllBusinessUnits,
+);
 
 /**
  * @route   PATCH /api/business-units/:id
@@ -45,7 +50,7 @@ router.get("/", authenticateUser, getAllBusinessUnits);
 router.patch(
   "/:id",
   authenticateUser,
-  //   authorize("SUPER_ADMIN"),
+  authorize("business_units", "canEdit"),
   validate.params(updateBusinessUnitParamsSchema),
   validate.body(updateBusinessUnitBodySchema),
   updateBusinessUnit,
@@ -59,6 +64,7 @@ router.patch(
 router.get(
   "/:id/tree",
   authenticateUser,
+  authorize("business_units", "canView"),
   validate.params(getBusinessUnitTreeSchema),
   getBusinessUnitTree,
 );

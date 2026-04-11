@@ -9,7 +9,7 @@ import jwt from "jsonwebtoken";
 //   };
 // }
 export interface JWTPayLoad {
-  userId: string;
+  id: string;
   email: string;
   roleId: string;
   role: {
