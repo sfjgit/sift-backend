@@ -1,6 +1,7 @@
 import {
   addTeamMembers,
   createTeam,
+  deleteTeams,
   getAllTeamMembers,
   getSingleTeam,
   getTeams,
@@ -20,7 +21,7 @@ import {
   updateTeamsBodySchema,
   updateTeamsParamsSchema,
 } from "@/validators/team.validators";
-import { validate } from "@/validators/validator";
+import { validate, validateParams } from "@/validators/validator";
 import { Router } from "express";
 
 const router = Router();
@@ -118,4 +119,15 @@ router.get(
   getAllTeamMembers,
 );
 
+/**
+ * @route   DELETE /api/teams
+ * @desc    delete team
+ * @access  Admin
+ */
+router.delete(
+  "/:id",
+  authenticateUser,
+  validateParams(updateTeamsParamsSchema),
+  deleteTeams,
+);
 export default router;

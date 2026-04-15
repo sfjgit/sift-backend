@@ -98,6 +98,30 @@ export const getTeams = async (req: Request, res: Response) => {
     const teams = await prisma.team.findMany({
       where,
       orderBy: { createdAt: "desc" },
+      include: {
+        businessUnit: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        members: {
+          where: {
+            isActive: true,
+          },
+          select: {
+            id: true,
+            teamRole: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     return res.status(200).json({
@@ -268,6 +292,34 @@ export const removeTeamMembers = async (req: Request, res: Response) => {
   }
 };
 
+export const deleteTeams = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const team = await prisma.team.findUnique({
+      where: { id },
+      include: {
+        members: { where: { isActive: true }, select: { id: true } },
+      },
+    });
+    if (!team) {
+      return res.status(404).json({ message: "Team not found" });
+    }
+    if (team.members.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "Can't delete when Team has members" });
+    }
+    const deletedTeam = await prisma.team.delete({
+      where: { id },
+    });
+    return res.status(200).json({ message: "Team deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting team:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error deleting team" });
+  }
+};
 export const getAllTeamMembers = async (req: Request, res: Response) => {
   try {
     const { id: teamId } = req.validatedParams;
