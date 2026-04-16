@@ -33,7 +33,7 @@ export const createRequirementsSchema = z.object({
   endDate: z.string().datetime().optional(),
   respondBy: z.string().datetime().optional(),
   turnaroundDays: z.number().int().optional(),
-  createdById: z.string(),
+  createdById: z.string().optional(),
   deliveryLeadId: z.string().uuid().optional(),
   teamLeadId: z.string().uuid().optional(),
 });

@@ -5,7 +5,14 @@ import { Request, Response } from "express";
 
 export const createRequirements = async (req: Request, res: Response) => {
   try {
-    const data = req.validatedBody;
+    const {
+      clientId,
+      clientContactId,
+      deliveryLeadId,
+      teamLeadId,
+      createdById,
+      ...rest
+    } = req.validatedBody;
 
     const lastRequirement = await prisma.requirement.findFirst({
       orderBy: { createdAt: "desc" },
@@ -23,8 +30,18 @@ export const createRequirements = async (req: Request, res: Response) => {
 
     const requirement = await prisma.requirement.create({
       data: {
-        ...data,
+        ...rest,
         reqCode,
+        createdBy: { connect: { id: req.user.id } },
+        // createdById: req.user.id,
+        client: { connect: { id: clientId } },
+        ...(clientContactId && {
+          clientContact: { connect: { id: clientContactId } },
+        }),
+        ...(deliveryLeadId && {
+          deliveryLead: { connect: { id: deliveryLeadId } },
+        }),
+        ...(teamLeadId && { teamLead: { connect: { id: teamLeadId } } }),
       },
     });
 
