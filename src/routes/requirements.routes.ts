@@ -60,7 +60,6 @@ router.get(
   "/",
   authenticateUser,
   authorize("requirements", "canView"),
-  // applyScope("requirements"),
   validate.query(getAllRequirementsSchema),
   getAllRequirements,
 );

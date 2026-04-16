@@ -181,10 +181,18 @@ export const refresh = async (req: Request, res: Response) => {
       });
     }
 
+    // const payload: JWTPayLoad = {
+    //   id: user.id,
+    //   email: user.email,
+    //   roleId: user.roleId,
+    //   role: {
+    //     name: user.role.name,
+    //     permissions: user.role.permissions,
+    //   },
+    // };
+
     const payload: JWTPayLoad = {
-      id: user.id,
-      email: user.email,
-      roleId: user.roleId,
+      ...user,
       role: {
         name: user.role.name,
         permissions: user.role.permissions,

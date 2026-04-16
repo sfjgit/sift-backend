@@ -56,7 +56,7 @@ export const authenticateUser = async (
 
     // Verify access token
     const decoded = verifyAccessToken(accessToken);
-    console.log("decoded", decoded);
+    console.log("decoded: ", decoded);
 
     if (!decoded) {
       res.status(401).json({
@@ -78,7 +78,7 @@ export const authenticateUser = async (
         },
       },
     });
-
+    console.log("Authenticated user: ", user);
     if (!user) {
       res.status(401).json({
         success: false,

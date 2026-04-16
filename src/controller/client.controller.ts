@@ -9,10 +9,8 @@ import {
   TGetAllClientsSchema,
   TspocContactSchema,
 } from "@/validators/client.validators";
-import { validateParams } from "@/validators/validator";
 import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
-import { success } from "zod";
 
 export const createClient = async (req: Request, res: Response) => {
   try {
@@ -206,6 +204,15 @@ export const getSingleClientDetails = async (req: Request, res: Response) => {
     const { id } = req.validatedParams as TClientsIdSchema;
     const existing = await prisma.client.findUnique({
       where: { id },
+      include: {
+        parentClient: true,
+        childClients: true,
+        contacts: true,
+        handlers: true,
+        teamAssignments: true,
+        requirements: true,
+        notes: true,
+      },
     });
     if (!existing) {
       return res
