@@ -88,33 +88,12 @@ export const getAllClients = async (req: Request, res: Response) => {
       ...(buId !== undefined && { businessUnitId: buId }),
     };
 
-    // sales can only see clients they created
-    // if (req.user!.role === "SALES") {
-    //   where.createdBy = req.user!.id;
-    // }
-
-    // delivery lead can only see clients in their BU
-    // if (req.user!.role === "DELIVERY_LEAD") {
-    //   where.businessUnitId = req.user!.buId;
-    // }
-
-    // admin sees all — no extra filter
-
     const [clients, total] = await Promise.all([
       prisma.client.findMany({
         where,
         skip,
         take: limit,
-        // select: {
-        //   id: true,
-        //   name: true,
-        //   category: true,
-        //   status: true,
-        //   businessUnit: { select: { id: true, name: true } },
-        //   teamAssignments: {
-        //     select: { teamId: true, team: { select: { name: true } } },
-        //   },
-        // },
+
         include: {
           businessUnit: true,
           teamAssignments: true,
@@ -125,12 +104,7 @@ export const getAllClients = async (req: Request, res: Response) => {
       }),
       prisma.client.count({ where }),
     ]);
-    // await createAuditLog({
-    //   actorId: req.user.id,
-    //   action: "GET",
-    //   module: "CLIENT",
-    //   recordId: getAllClients,
-    // });
+
     return res.status(200).json({
       success: true,
       data: clients,
