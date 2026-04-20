@@ -10,8 +10,8 @@ export const createTeamSchema = z.object({
     .min(2, { message: "Description must be at least 2 characters long" }),
   isActive: z.boolean().default(true),
   category: z.string().optional(),
-  parentTeamId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
+  parentTeamId: z.string().optional(),
+  businessUnitId: z.string().optional(),
 });
 
 export const getTeamsSchema = z.object({
@@ -50,7 +50,7 @@ export const updateTeamsBodySchema = z.object({
 });
 
 export const addTeamMembersParamsSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string(),
 });
 
 export const addTeamMembersBodySchema = z.array(
