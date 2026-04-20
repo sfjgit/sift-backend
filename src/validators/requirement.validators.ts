@@ -51,6 +51,7 @@ export const getAllRequirementsSchema = z.object({
     .optional(),
 
   clientId: z.string().uuid().optional(),
+  businessUnitId: z.string().uuid().optional(),
 
   priority: z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
 
