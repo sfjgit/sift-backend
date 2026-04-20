@@ -70,6 +70,32 @@ export const getAllBusinessUnits = async (req: Request, res: Response) => {
   }
 };
 
+export const getSingleBusinessUnit = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.validatedParams;
+    const businessUnit = await prisma.businessUnit.findUnique({
+      where: { id },
+      include: {
+        childBUs: true,
+        teams: true,
+        users: true,
+        clients: true,
+        requirements: true,
+      },
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Business unit fetched successfully",
+      data: businessUnit,
+    });
+  } catch (error) {
+    console.error("Error getting business unit:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error getting business unit" });
+  }
+};
+
 export const updateBusinessUnit = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
