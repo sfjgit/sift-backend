@@ -37,7 +37,7 @@ export const spocContactSchema = z.object({
   designation: z.string().min(1).optional(),
   email: z.string().email("Invalid Email"),
   phone: z.string().min(1).optional(),
-  linkedinUrl: z.string().url().optional(),
+  linkedinUrl: z.string().optional(),
   isPrimary: z.boolean().default(false).optional(),
 });
 export type TspocContactSchema = z.infer<typeof spocContactSchema>;
