@@ -96,7 +96,7 @@ export const getAllRequirements = async (req: Request, res: Response) => {
     }
 
     const requirements = await prisma.requirement.findMany({
-      where,
+      where: { clientId },
       include: {
         client: true,
         clientContact: true,
