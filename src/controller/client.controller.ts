@@ -207,8 +207,11 @@ export const getSingleClientDetails = async (req: Request, res: Response) => {
       include: {
         parentClient: true,
         childClients: true,
-        contacts: true,
-        handlers: true,
+        contacts: {
+          include: {
+            handlers: true,
+          },
+        },
         teamAssignments: true,
         requirements: true,
         notes: true,
@@ -219,15 +222,15 @@ export const getSingleClientDetails = async (req: Request, res: Response) => {
         .status(404)
         .json({ success: false, message: "Client doesn not exist" });
     }
-    if (req.user!.role === "SALES" && existing.createdById !== req.user!.id) {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-    if (
-      req.user!.role === "DELIVERY_LEAD" &&
-      existing.businessUnitId !== req.user!.id
-    ) {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
+    // if (req.user!.role === "SALES" && existing.createdById !== req.user!.id) {
+    //   return res.status(403).json({ success: false, message: "Access denied" });
+    // }
+    // if (
+    //   req.user!.role === "DELIVERY_LEAD" &&
+    //   existing.businessUnitId !== req.user!.id
+    // ) {
+    //   return res.status(403).json({ success: false, message: "Access denied" });
+    // }
     const client = await prisma.client.findMany({
       where: { id },
       select: {
