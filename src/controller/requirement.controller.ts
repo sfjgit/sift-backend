@@ -8,6 +8,7 @@ export const createRequirements = async (req: Request, res: Response) => {
     const {
       clientId,
       clientContactId,
+      businessUnitId,
       deliveryLeadId,
       teamLeadId,
       createdById,
@@ -35,6 +36,9 @@ export const createRequirements = async (req: Request, res: Response) => {
         createdBy: { connect: { id: req.user.id } },
         // createdById: req.user.id,
         client: { connect: { id: clientId } },
+        ...(businessUnitId && {
+          businessUnit: { connect: { id: businessUnitId } },
+        }),
         ...(clientContactId && {
           clientContact: { connect: { id: clientContactId } },
         }),
@@ -70,7 +74,8 @@ export const createRequirements = async (req: Request, res: Response) => {
 
 export const getAllRequirements = async (req: Request, res: Response) => {
   try {
-    const { status, clientId, priority, jobType, search } = req.validatedQuery;
+    const { status, clientId, businessUnitId, priority, jobType, search } =
+      req.validatedQuery;
 
     const where: any = {};
 
@@ -78,6 +83,10 @@ export const getAllRequirements = async (req: Request, res: Response) => {
     if (clientId) where.clientId = clientId;
     if (priority) where.priority = priority;
     if (jobType) where.jobType = jobType;
+
+    if (businessUnitId) {
+      where.OR = [{ businessUnitId }, { client: { businessUnitId } }];
+    }
 
     if (search) {
       where.OR = [
@@ -87,7 +96,7 @@ export const getAllRequirements = async (req: Request, res: Response) => {
     }
 
     const requirements = await prisma.requirement.findMany({
-      where,
+      where: { clientId },
       include: {
         client: true,
         clientContact: true,

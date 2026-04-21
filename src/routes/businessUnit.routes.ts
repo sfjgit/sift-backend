@@ -2,6 +2,7 @@ import {
   createBusinessUnit,
   getAllBusinessUnits,
   getBusinessUnitTree,
+  getSingleBusinessUnit,
   updateBusinessUnit,
 } from "@/controller/businessUnit.controller";
 import { authenticateUser } from "@/middleware/auth";
@@ -9,6 +10,7 @@ import { authorize } from "@/middleware/role";
 import {
   createBusinessUnitSchema,
   getBusinessUnitTreeSchema,
+  getSingleBusinessUnitParamsSchema,
   updateBusinessUnitBodySchema,
   updateBusinessUnitParamsSchema,
 } from "@/validators/businessUnit.validators";
@@ -40,6 +42,19 @@ router.get(
   authenticateUser,
   authorize("business_units", "canView"),
   getAllBusinessUnits,
+);
+
+/**
+ * @route   GET /api/business-units/:id
+ * @desc    Get single business unit by id
+ * @access  Admin
+ */
+router.get(
+  "/:id",
+  authenticateUser,
+  authorize("business_units", "canView"),
+  validate.params(getSingleBusinessUnitParamsSchema),
+  getSingleBusinessUnit,
 );
 
 /**
