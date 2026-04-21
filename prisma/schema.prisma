@@ -11,7 +11,8 @@ datasource db {
 // CORE SERVICE — prisma/schema.prisma
 //
 // Owns: Users, Roles, Permissions, Business Units,
-//       Teams, Clients, Requirements, OrgFlow, AuditLog
+//       Teams, Clients, Requirements, OrgFlow,
+//       Notifications, Activity Feed, AuditLog
 //
 // Does NOT own: Candidates, Applications, Interviews,
 //               Offers, Onboarding, Files, Communications
@@ -21,6 +22,10 @@ datasource db {
 // Cross-service note: recruiterId, changedById etc in
 // other services are plain strings referencing User.id
 // from this service. No FK constraints cross services.
+//
+// Stats note: filledOpenings, activeApplications etc on
+// Requirement are snapshots pushed by Recruitment Service
+// via internal API — not computed at query time.
 // ═════════════════════════════════════════
 
 // ─────────────────────────────────────────
@@ -65,38 +70,37 @@ model User {
   createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
   createdByMe User[]  @relation("UserCreatedBy")
 
-  // ── Core Service back-relations only ──
-  // All candidate/application/interview/offer relations
-  // have been removed — those services reference User.id
-  // as plain strings and call this service's API for display data.
+  // ── Notification + Activity ──
+  notifications         Notification[]        @relation("UserNotifications")
+  requirementActivities RequirementActivity[] @relation("RequirementActivityActor")
 
-  clientsCreated             Client[]                   @relation("ClientCreatedBy")
-  clientsApproved            Client[]                   @relation("ClientApprovedBy")
-  clientHandlerEntries       ClientHandler[]            @relation("ClientHandlerUser")
-  clientHandlersAssigned     ClientHandler[]            @relation("ClientHandlerAssignedBy")
-  clientTeamAssignmentsAssigned ClientTeamAssignment[]  @relation("ClientTeamAssignedBy")
-  contactHandlerEntries      ContactHandler[]           @relation("ContactHandlerUser")
-  contactHandlersAssigned    ContactHandler[]           @relation("ContactHandlerAssignedBy")
-  clientNotesAuthored        ClientNote[]               @relation("ClientNoteAuthor")
+  // ── Requirement back-relations ──
+  requirementsCreated               Requirement[]              @relation("RequirementCreatedBy")
+  requirementsApproved              Requirement[]              @relation("RequirementApprovedBy")
+  requirementsClosed                Requirement[]              @relation("RequirementClosedBy")
+  requirementDocsRaised             RequirementDocument[]      @relation("RequirementDocRaisedBy")
+  requirementDocsResolved           RequirementDocument[]      @relation("RequirementDocResolvedBy")
+  requirementNotesAuthored          RequirementNote[]          @relation("RequirementNoteAuthor")
+  requirementStatusChanges          RequirementStatusHistory[] @relation("RequirementStatusChangedBy")
+  requirementAssignmentsGiven       RequirementAssignment[]    @relation("RequirementAssignedBy")
+  requirementAssignmentsAsRecruiter RequirementAssignment[]    @relation("RequirementAssignmentRecruiter")
 
-  requirementsCreated        Requirement[]              @relation("RequirementCreatedBy")
-  requirementsApproved       Requirement[]              @relation("RequirementApprovedBy")
-  requirementsAsDeliveryLead Requirement[]              @relation("RequirementDeliveryLead")
-  requirementsAsTeamLead     Requirement[]              @relation("RequirementTeamLead")
-  requirementDocsRaised      RequirementDocument[]      @relation("RequirementDocRaisedBy")
-  requirementDocsResolved    RequirementDocument[]      @relation("RequirementDocResolvedBy")
-  requirementNotesAuthored   RequirementNote[]          @relation("RequirementNoteAuthor")
-  requirementStatusChanges   RequirementStatusHistory[] @relation("RequirementStatusChangedBy")
-  requirementAssignmentsGiven      RequirementAssignment[] @relation("RequirementAssignedBy")
-  requirementAssignmentsAsRecruiter RequirementAssignment[] @relation("RequirementAssignmentRecruiter")
+  // ── Client back-relations ──
+  clientsCreated                ClientClient[]         @relation("ClientCreatedBy")
+  clientsApproved               ClientClient[]         @relation("ClientApprovedBy")
+  clientHandlerEntries          ClientHandler[]        @relation("ClientHandlerUser")
+  clientHandlersAssigned        ClientHandler[]        @relation("ClientHandlerAssignedBy")
+  clientTeamAssignmentsAssigned ClientTeamAssignment[] @relation("ClientTeamAssignedBy")
+  clientNotesAuthored           ClientNote[]           @relation("ClientNoteAuthor")
 
-  teamMembersDeactivated     TeamMember[]               @relation("TeamMemberDeactivatedBy")
-  teamMembersReplaced        TeamMember[]               @relation("TeamMemberReplacedByUser")
+  // ── Team back-relations ──
+  teamMembersDeactivated TeamMember[] @relation("TeamMemberDeactivatedBy")
+  teamMembersReplaced    TeamMember[] @relation("TeamMemberReplacedByUser")
 
-  orgFlowsCreated            OrgFlow[]                  @relation("OrgFlowCreatedBy")
-  orgFlowsUpdated            OrgFlow[]                  @relation("OrgFlowUpdatedBy")
-
-  auditLogs                  AuditLog[]                 @relation("AuditLogActor")
+  // ── OrgFlow + Audit ──
+  orgFlowsCreated OrgFlow[]  @relation("OrgFlowCreatedBy")
+  orgFlowsUpdated OrgFlow[]  @relation("OrgFlowUpdatedBy")
+  auditLogs       AuditLog[] @relation("AuditLogActor")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -152,6 +156,7 @@ model RolePermission {
 enum PermissionScope {
   OWN
   TEAM
+  MANAGER   // ← sees all teams + recruiters under his assignments
   BU
   ALL
 }
@@ -171,7 +176,7 @@ model BusinessUnit {
 
   teams        Team[]
   users        User[]
-  clients      Client[]
+  clients      ClientClient[]
   requirements Requirement[]
 
   createdAt DateTime @default(now())
@@ -184,11 +189,11 @@ model BusinessUnit {
 // ─────────────────────────────────────────
 
 model Team {
-  id          String  @id @default(uuid())
+  id          String        @id @default(uuid())
   name        String
   description String?
-  isActive    Boolean @default(true)
-  category    String?
+  isActive    Boolean       @default(true)
+  category    TeamCategory?
 
   parentTeamId String?
   parentTeam   Team?   @relation("TeamHierarchy", fields: [parentTeamId], references: [id])
@@ -246,22 +251,29 @@ enum TeamDataPolicy {
   LEAD_ONLY
 }
 
+enum TeamCategory {
+  DELIVERY
+  SALES
+  SUPPORT
+  MANAGEMENT
+}
+
 // ─────────────────────────────────────────
 // CLIENTS
 // ─────────────────────────────────────────
 
-model Client {
-  id       String       @id @default(uuid())
+model ClientClient {
+  id       String          @id @default(uuid())
   name     String
   vmsName  String?
-  category String?
+  category ClientCategory?
   industry String?
   website  String?
-  country  String       @default("India")
+  country  String          @default("India")
   state    String?
   city     String?
   address  String?
-  status   ClientStatus @default(PENDING)
+  status   ClientStatus    @default(PENDING)
 
   businessUnitId String?
   businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
@@ -273,8 +285,8 @@ model Client {
   approvedAt   DateTime?
 
   parentClientId String?
-  parentClient   Client?  @relation("ClientFamily", fields: [parentClientId], references: [id])
-  childClients   Client[] @relation("ClientFamily")
+  parentClient   ClientClient?  @relation("ClientFamily", fields: [parentClientId], references: [id])
+  childClients   ClientClient[] @relation("ClientFamily")
 
   contacts        ClientContact[]
   handlers        ClientHandler[]
@@ -285,31 +297,35 @@ model Client {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@map("clients")
   @@index([status])
   @@index([businessUnitId])
 }
 
+// supports PRIMARY / SECONDARY / BACKUP per client
+// @@unique([clientId, role]) enforces only one of each role per client
 model ClientHandler {
-  id       String @id @default(uuid())
+  id       String            @id @default(uuid())
   clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client   ClientClient      @relation(fields: [clientId], references: [id], onDelete: Cascade)
   userId   String
-  user     User   @relation("ClientHandlerUser", fields: [userId], references: [id])
-  role     String // PRIMARY | SECONDARY | BACKUP
+  user     User              @relation("ClientHandlerUser", fields: [userId], references: [id])
+  role     ClientHandlerRole @default(PRIMARY)
 
   assignedById String
   assignedBy   User     @relation("ClientHandlerAssignedBy", fields: [assignedById], references: [id])
   assignedAt   DateTime @default(now())
 
   @@unique([clientId, userId])
+  @@unique([clientId, role])
 }
 
 model ClientTeamAssignment {
-  id       String @id @default(uuid())
+  id       String       @id @default(uuid())
   clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client   ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
   teamId   String
-  team     Team   @relation(fields: [teamId], references: [id])
+  team     Team         @relation(fields: [teamId], references: [id])
 
   assignedById String
   assignedBy   User     @relation("ClientTeamAssignedBy", fields: [assignedById], references: [id])
@@ -319,9 +335,9 @@ model ClientTeamAssignment {
 }
 
 model ClientContact {
-  id          String  @id @default(uuid())
+  id          String       @id @default(uuid())
   clientId    String
-  client      Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client      ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
   firstName   String
   lastName    String?
   designation String?
@@ -331,7 +347,6 @@ model ClientContact {
   isPrimary   Boolean @default(false)
   isActive    Boolean @default(true)
 
-  handlers     ContactHandler[]
   requirements Requirement[]
 
   createdAt DateTime @default(now())
@@ -339,26 +354,12 @@ model ClientContact {
   @@index([clientId, isActive])
 }
 
-model ContactHandler {
-  id        String        @id @default(uuid())
-  contactId String
-  contact   ClientContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  userId    String
-  user      User          @relation("ContactHandlerUser", fields: [userId], references: [id])
-
-  assignedById String
-  assignedBy   User     @relation("ContactHandlerAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
-
-  @@unique([contactId, userId])
-}
-
 model ClientNote {
-  id       String @id @default(uuid())
+  id       String       @id @default(uuid())
   clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client   ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
   authorId String
-  author   User   @relation("ClientNoteAuthor", fields: [authorId], references: [id])
+  author   User         @relation("ClientNoteAuthor", fields: [authorId], references: [id])
   content  String
 
   createdAt DateTime @default(now())
@@ -373,6 +374,22 @@ enum ClientStatus {
   INACTIVE
 }
 
+enum ClientHandlerRole {
+  PRIMARY
+  SECONDARY
+  BACKUP
+}
+
+enum ClientCategory {
+  PRODUCT
+  SERVICE
+  CONSULTING
+  STAFFING
+  GOVERNMENT
+  NGO
+  OTHER
+}
+
 // ─────────────────────────────────────────
 // REQUIREMENTS
 // ─────────────────────────────────────────
@@ -385,7 +402,7 @@ model Requirement {
   description String?
 
   clientId String
-  client   Client @relation(fields: [clientId], references: [id])
+  client   ClientClient @relation(fields: [clientId], references: [id])
 
   clientContactId String?
   clientContact   ClientContact? @relation(fields: [clientContactId], references: [id])
@@ -397,23 +414,28 @@ model Requirement {
   remoteType RemoteType
   priority   Priority        @default(MEDIUM)
 
-  totalOpenings  Int @default(1)
-  filledOpenings Int @default(0)
+  totalOpenings       Int @default(1)
+  filledOpenings      Int @default(0)
+  // snapshot stats — pushed by Recruitment Service via internal API
+  // never compute these at query time
+  activeApplications  Int @default(0)
+  interviewsScheduled Int @default(0)
+  offersRolledOut     Int @default(0)
 
   location String?
   country  String?
 
   salaryMin  Float?
   salaryMax  Float?
-  salaryType String?
+  salaryType SalaryType?
 
   startDate      DateTime?
   endDate        DateTime?
   respondBy      DateTime?
   turnaroundDays Int?
-  closedAt       DateTime?
 
-  status RequirementStatus @default(DRAFT)
+  status   RequirementStatus @default(DRAFT)
+  closedAt DateTime?
 
   createdById  String
   createdBy    User      @relation("RequirementCreatedBy", fields: [createdById], references: [id])
@@ -421,19 +443,15 @@ model Requirement {
   approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
   approvedAt   DateTime?
 
-  deliveryLeadId String?
-  deliveryLead   User?   @relation("RequirementDeliveryLead", fields: [deliveryLeadId], references: [id])
-  teamLeadId     String?
-  teamLead       User?   @relation("RequirementTeamLead", fields: [teamLeadId], references: [id])
+  // who manually closed this requirement
+  closedById String?
+  closedBy   User?   @relation("RequirementClosedBy", fields: [closedById], references: [id])
 
   assignments   RequirementAssignment[]
   documents     RequirementDocument[]
   notes         RequirementNote[]
   statusHistory RequirementStatusHistory[]
-
-  // No Application[] relation here —
-  // Applications live in Recruitment Service.
-  // Fetch application count via internal API call to Recruitment Service.
+  activities    RequirementActivity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -467,15 +485,6 @@ model RequirementDocument {
   @@index([requirementId])
 }
 
-enum DocumentEventType {
-  FILE_UPLOAD
-  STATUS_CHANGE
-  ISSUE_RAISED
-  NOTE
-  POSITION_FILLED
-  REQUIREMENT_CLOSED
-}
-
 model RequirementAssignment {
   id            String      @id @default(uuid())
   requirementId String
@@ -484,6 +493,10 @@ model RequirementAssignment {
   assignmentType AssignmentType
   status         AssignmentStatus @default(ACTIVE)
 
+  // recruiterId used for both MANAGER and INDIVIDUAL types
+  // MANAGER    → delivery manager User.id
+  // INDIVIDUAL → recruiter User.id
+  // TEAM       → null, teamId is set instead
   recruiterId String?
   recruiter   User?   @relation("RequirementAssignmentRecruiter", fields: [recruiterId], references: [id])
 
@@ -491,10 +504,19 @@ model RequirementAssignment {
   team   Team?   @relation(fields: [teamId], references: [id])
 
   allocatedOpenings Int?
-  filledOpenings    Int  @default(0)
+  filledOpenings    Int @default(0)
+  // per-recruiter snapshot stats — pushed by Recruitment Service
+  submissionsCount  Int @default(0)
+  interviewsCount   Int @default(0)
 
   isAutoRouted     Boolean @default(false)
   isSystemAssigned Boolean @default(false)
+
+  // full chain: INDIVIDUAL → parent TEAM → parent MANAGER → null
+  // use parentAssignmentId to reconstruct who assigned whom
+  parentAssignmentId String?
+  parentAssignment   RequirementAssignment?  @relation("AssignmentChain", fields: [parentAssignmentId], references: [id])
+  childAssignments   RequirementAssignment[] @relation("AssignmentChain")
 
   assignedById String?
   assignedBy   User?    @relation("RequirementAssignedBy", fields: [assignedById], references: [id])
@@ -505,17 +527,8 @@ model RequirementAssignment {
 
   @@index([requirementId, status])
   @@index([recruiterId, status])
-}
-
-enum AssignmentType {
-  INDIVIDUAL
-  TEAM
-}
-
-enum AssignmentStatus {
-  ACTIVE
-  REMOVED
-  REPLACED
+  @@index([teamId, status])
+  @@index([parentAssignmentId])
 }
 
 model RequirementNote {
@@ -548,32 +561,57 @@ model RequirementStatusHistory {
   @@index([requirementId])
 }
 
-enum RequirementType {
-  CONTRACT
-  PERMANENT
-  CONTRACT_TO_HIRE
-  FREELANCE
+// ─────────────────────────────────────────
+// ACTIVITY FEED
+// ─────────────────────────────────────────
+
+// Unified timeline per requirement.
+// One row per meaningful event, written in the same
+// transaction as the action that triggered it.
+// Powers the requirement detail page activity feed.
+model RequirementActivity {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  actorId String
+  actor   User   @relation("RequirementActivityActor", fields: [actorId], references: [id])
+
+  type    ActivityType
+  summary String       // human readable: "Assigned Team Alpha to this requirement"
+  meta    Json?        // structured extra data: old/new status, assignee name etc
+
+  createdAt DateTime @default(now())
+
+  @@index([requirementId, createdAt])
+  @@index([actorId])
 }
 
-enum RemoteType {
-  ONSITE
-  REMOTE
-  HYBRID
-}
+// ─────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────
 
-enum Priority {
-  LOW
-  MEDIUM
-  HIGH
-}
+// Per-user notification inbox — bell icon in nav.
+// Written in the same transaction as the action that triggered it.
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
 
-enum RequirementStatus {
-  DRAFT
-  PENDING_APPROVAL
-  ACTIVE
-  ON_HOLD
-  CLOSED
-  CANCELLED
+  type          NotificationType
+  title         String                    // "REQ-042 assigned to you"
+  body          String?                   // optional longer description
+
+  referenceId   String
+  referenceType NotificationReferenceType
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
 }
 
 // ─────────────────────────────────────────
@@ -604,16 +642,6 @@ model OrgFlow {
   @@index([toType, toId])
 }
 
-enum FlowNodeType {
-  BUSINESS_UNIT
-  TEAM
-  USER
-  CLIENT
-  REQUIREMENT
-  // CANDIDATE and APPLICATION removed —
-  // those node types live in their respective services
-}
-
 // ─────────────────────────────────────────
 // AUDIT LOG
 // ─────────────────────────────────────────
@@ -624,8 +652,8 @@ model AuditLog {
   actorId String
   actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
 
-  action    String  // CREATE | UPDATE | DELETE
-  module    String  // REQUIREMENT | CLIENT | USER | TEAM | BU etc
+  action    String // CREATE | UPDATE | DELETE
+  module    String // REQUIREMENT | CLIENT | USER | TEAM | BU etc
   recordId  String
   oldData   Json?
   newData   Json?
@@ -636,4 +664,104 @@ model AuditLog {
   @@index([module, recordId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum DocumentEventType {
+  FILE_UPLOAD
+  STATUS_CHANGE
+  ISSUE_RAISED
+  NOTE
+  POSITION_FILLED
+  REQUIREMENT_CLOSED
+}
+
+enum AssignmentType {
+  MANAGER    // delivery manager assigned by account manager
+  TEAM       // team assigned by delivery manager
+  INDIVIDUAL // recruiter assigned by team lead
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  REMOVED
+  REPLACED
+}
+
+enum RequirementType {
+  CONTRACT
+  PERMANENT
+  CONTRACT_TO_HIRE
+  FREELANCE
+}
+
+enum RemoteType {
+  ONSITE
+  REMOTE
+  HYBRID
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RequirementStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  ON_HOLD
+  CLOSED
+  CANCELLED
+}
+
+enum SalaryType {
+  MONTHLY
+  ANNUAL
+  HOURLY
+  DAILY
+}
+
+enum FlowNodeType {
+  BUSINESS_UNIT
+  TEAM
+  USER
+  CLIENT
+  REQUIREMENT
+}
+
+enum ActivityType {
+  REQUIREMENT_CREATED
+  REQUIREMENT_APPROVED
+  REQUIREMENT_CLOSED
+  STATUS_CHANGED
+  MANAGER_ASSIGNED
+  TEAM_ASSIGNED
+  RECRUITER_ASSIGNED
+  ASSIGNMENT_REMOVED
+  NOTE_ADDED
+  DOCUMENT_UPLOADED
+  ISSUE_RAISED
+  ISSUE_RESOLVED
+  STATS_UPDATED
+}
+
+enum NotificationType {
+  REQUIREMENT_ASSIGNED
+  TEAM_ASSIGNED
+  STATUS_CHANGED
+  REQUIREMENT_CLOSED
+  NOTE_ADDED
+  ISSUE_RAISED
+}
+
+enum NotificationReferenceType {
+  REQUIREMENT
+  ASSIGNMENT
+  NOTE
+  DOCUMENT
 }
