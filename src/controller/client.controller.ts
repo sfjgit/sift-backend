@@ -71,15 +71,101 @@ export const createClient = async (req: Request, res: Response) => {
   }
 };
 
+// export const getAllClients = async (req: Request, res: Response) => {
+//   try {
+//     const { name, status, category, buId, page, limit } =
+//       req.validatedQuery as TGetAllClientsSchema;
+
+//     const skip = (page - 1) * limit;
+
+//     // role-scoped filtering
+//     const where: Prisma.ClientWhereInput = {
+//       ...(name !== undefined && {
+//         name: { contains: name, mode: "insensitive" },
+//       }),
+//       ...(status !== undefined && { status }),
+//       ...(category !== undefined && { category }),
+//       ...(buId !== undefined && { businessUnitId: buId }),
+//     };
+
+//     const [clients, total] = await Promise.all([
+//       prisma.client.findMany({
+//         where,
+//         skip,
+//         take: limit,
+
+//         include: {
+//           businessUnit: true,
+//           teamAssignments: true,
+//           contacts: true,
+//           handlers: true,
+//         },
+//         orderBy: { createdAt: "desc" },
+//       }),
+//       prisma.client.count({ where }),
+//     ]);
+
+//     return res.status(200).json({
+//       success: true,
+//       data: clients,
+//       pagination: {
+//         total,
+//         page,
+//         limit,
+//         totalPages: Math.ceil(total / limit),
+//       },
+//     });
+//   } catch (error) {
+//     console.error("Error fetching clients:", error);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Internal server error" });
+//   }
+// };
+
 export const getAllClients = async (req: Request, res: Response) => {
   try {
     const { name, status, category, buId, page, limit } =
       req.validatedQuery as TGetAllClientsSchema;
 
     const skip = (page - 1) * limit;
+    const scope = req.permissionScope;
+    const user = req.user;
 
-    // role-scoped filtering
+    // build scope filter
+    let scopeFilter: Prisma.ClientWhereInput = {};
+
+    if (scope === "OWN") {
+      // only clients where this user is a handler
+      scopeFilter = {
+        handlers: {
+          some: { userId: user.id },
+        },
+      };
+    } else if (scope === "TEAM") {
+      // clients where any member of user's teams is a handler
+      const teamIds = user.teamMemberships.map((tm: any) => tm.teamId);
+      scopeFilter = {
+        handlers: {
+          some: {
+            user: {
+              teamMemberships: {
+                some: { teamId: { in: teamIds } },
+              },
+            },
+          },
+        },
+      };
+    } else if (scope === "BU") {
+      // clients in same BU
+      scopeFilter = {
+        businessUnitId: user.businessUnitId,
+      };
+    }
+    // scope === "ALL" → no filter, super admin sees everything
+
     const where: Prisma.ClientWhereInput = {
+      ...scopeFilter,
       ...(name !== undefined && {
         name: { contains: name, mode: "insensitive" },
       }),
@@ -93,7 +179,6 @@ export const getAllClients = async (req: Request, res: Response) => {
         where,
         skip,
         take: limit,
-
         include: {
           businessUnit: true,
           teamAssignments: true,

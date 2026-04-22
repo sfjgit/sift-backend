@@ -1,6 +1,7 @@
 import { createAuditLog } from "@/services/auditLogs.service";
 import { uploadToS3 } from "@/services/s3.service";
 import prisma from "@/utils/prisma/client";
+import { AssignmentType } from "@prisma/client";
 import { Request, Response } from "express";
 
 export const createRequirements = async (req: Request, res: Response) => {
@@ -243,7 +244,7 @@ export const getMyRequirements = async (req: Request, res: Response) => {
 export const approveRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
-    const { deliveryLeadId, teamLeadId } = req.validatedBody || {};
+    const { deliveryLeadId } = req.validatedBody || {};
 
     const requirement = await prisma.requirement.findUnique({
       where: { id },
@@ -261,9 +262,30 @@ export const approveRequirement = async (req: Request, res: Response) => {
       data: {
         status: "ACTIVE",
         ...(deliveryLeadId && { deliveryLeadId }),
-        ...(teamLeadId && { teamLeadId }),
       },
     });
+
+    if (!updatedRequirement) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update requirement",
+      });
+    }
+
+    const deliveryAssignment = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: id,
+        assignmentType: AssignmentType.TEAM,
+        recruiterId: req.user.id,
+      },
+    });
+
+    if (!deliveryAssignment) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to assign delivery lead",
+      });
+    }
 
     await createAuditLog({
       actorId: req.user.id,

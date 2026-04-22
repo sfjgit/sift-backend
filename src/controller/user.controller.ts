@@ -18,8 +18,7 @@ export const getAllUsers = async (req: Request, res: Response) => {
     //filters
     const where: Prisma.UserWhereInput = {
       ...(roleId !== undefined && { roleId }),
-      ...(buId !== undefined && { buId }),
-      ...(teamId !== undefined && { teamId }),
+      ...(buId !== undefined && { businessUnitId: buId }),
       ...(isActive !== undefined && { isActive }),
     };
 

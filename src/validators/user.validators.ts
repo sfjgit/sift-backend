@@ -6,7 +6,7 @@ export const getAllUsersSchema = z.object({
   teamId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  isActive: z.boolean().default(true),
+  isActive: z.coerce.boolean().default(true),
 });
 
 export const getSingleUsersSchema = z.object({
