@@ -1,6 +1,7 @@
 import { createAuditLog } from "@/services/auditLogs.service";
 import { uploadToS3 } from "@/services/s3.service";
 import prisma from "@/utils/prisma/client";
+import { AssignmentType } from "@prisma/client";
 import { Request, Response } from "express";
 
 export const createRequirements = async (req: Request, res: Response) => {
@@ -72,10 +73,92 @@ export const createRequirements = async (req: Request, res: Response) => {
   }
 };
 
+// export const getAllRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const { status, clientId, businessUnitId, priority, jobType, search } =
+//       req.validatedQuery;
+
+//     const where: any = {};
+
+//     if (status) where.status = status;
+//     if (clientId) where.clientId = clientId;
+//     if (priority) where.priority = priority;
+//     if (jobType) where.jobType = jobType;
+
+//     if (businessUnitId) {
+//       where.OR = [{ businessUnitId }, { client: { businessUnitId } }];
+//     }
+
+//     if (search) {
+//       where.OR = [
+//         { title: { contains: search, mode: "insensitive" } },
+//         { reqCode: { contains: search, mode: "insensitive" } },
+//       ];
+//     }
+
+//     const requirements = await prisma.requirement.findMany({
+//       where: { clientId },
+//       include: {
+//         client: true,
+//         clientContact: true,
+//         businessUnit: true,
+
+//         createdBy: {
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//           },
+//         },
+
+//         approvedBy: {
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//           },
+//         },
+
+//         deliveryLead: {
+//           select: {
+//             id: true,
+//             firstName: true,
+//           },
+//         },
+
+//         teamLead: {
+//           select: {
+//             id: true,
+//             firstName: true,
+//           },
+//         },
+//       },
+//       orderBy: {
+//         createdAt: "desc",
+//       },
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       count: requirements.length,
+//       data: requirements,
+//     });
+//   } catch (error) {
+//     console.error("Error fetching requirements:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Failed to fetch requirements",
+//     });
+//   }
+// };
+
 export const getAllRequirements = async (req: Request, res: Response) => {
   try {
     const { status, clientId, businessUnitId, priority, jobType, search } =
       req.validatedQuery;
+
+    const scope = req.permissionScope;
+    const user = req.user;
 
     const where: any = {};
 
@@ -84,10 +167,6 @@ export const getAllRequirements = async (req: Request, res: Response) => {
     if (priority) where.priority = priority;
     if (jobType) where.jobType = jobType;
 
-    if (businessUnitId) {
-      where.OR = [{ businessUnitId }, { client: { businessUnitId } }];
-    }
-
     if (search) {
       where.OR = [
         { title: { contains: search, mode: "insensitive" } },
@@ -95,8 +174,46 @@ export const getAllRequirements = async (req: Request, res: Response) => {
       ];
     }
 
+    let scopeFilter: any = {};
+
+    if (scope === "OWN") {
+      scopeFilter = {
+        createdById: user.id,
+      };
+    } else if (scope === "TEAM") {
+      const teamIds = user.teamMemberships.map((t: any) => t.teamId);
+
+      scopeFilter = {
+        assignments: {
+          some: {
+            teamId: { in: teamIds },
+          },
+        },
+      };
+    } else if (scope === "BU") {
+      scopeFilter = {
+        businessUnitId: user.businessUnitId,
+      };
+    }
+
+    if (businessUnitId) {
+      scopeFilter = {
+        AND: [
+          scopeFilter,
+          {
+            OR: [{ businessUnitId }, { client: { businessUnitId } }],
+          },
+        ],
+      };
+    }
+
+    const finalWhere = {
+      ...where,
+      ...scopeFilter,
+    };
+
     const requirements = await prisma.requirement.findMany({
-      where: { clientId },
+      where: finalWhere,
       include: {
         client: true,
         clientContact: true,
@@ -117,20 +234,7 @@ export const getAllRequirements = async (req: Request, res: Response) => {
             lastName: true,
           },
         },
-
-        deliveryLead: {
-          select: {
-            id: true,
-            firstName: true,
-          },
-        },
-
-        teamLead: {
-          select: {
-            id: true,
-            firstName: true,
-          },
-        },
+        assignments: true,
       },
       orderBy: {
         createdAt: "desc",
@@ -243,7 +347,7 @@ export const getMyRequirements = async (req: Request, res: Response) => {
 export const approveRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
-    const { deliveryLeadId, teamLeadId } = req.validatedBody || {};
+    const { deliveryLeadId } = req.validatedBody || {};
 
     const requirement = await prisma.requirement.findUnique({
       where: { id },
@@ -261,9 +365,30 @@ export const approveRequirement = async (req: Request, res: Response) => {
       data: {
         status: "ACTIVE",
         ...(deliveryLeadId && { deliveryLeadId }),
-        ...(teamLeadId && { teamLeadId }),
       },
     });
+
+    if (!updatedRequirement) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update requirement",
+      });
+    }
+
+    const deliveryAssignment = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: id,
+        assignmentType: AssignmentType.TEAM,
+        recruiterId: req.user.id,
+      },
+    });
+
+    if (!deliveryAssignment) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to assign delivery lead",
+      });
+    }
 
     await createAuditLog({
       actorId: req.user.id,
@@ -346,17 +471,72 @@ export const changeRequirementStatus = async (req: Request, res: Response) => {
   }
 };
 
+// export const assignRequirement = async (req: Request, res: Response) => {
+//   try {
+//     const { id: requirementId } = req.validatedParams;
+//     const {
+//       assignmentType,
+//       recruiterId,
+//       teamId,
+//       allocatedOpenings,
+//       isAutoRouted,
+//       isSystemAssigned,
+//     } = req.validatedBody;
+
+//     const userId = req.user?.id;
+
+//     const requirement = await prisma.requirement.findUnique({
+//       where: { id: requirementId },
+//     });
+
+//     if (!requirement) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Requirement not found",
+//       });
+//     }
+
+//     const assignment = await prisma.requirementAssignment.create({
+//       data: {
+//         requirementId,
+//         assignmentType,
+//         recruiterId,
+//         teamId,
+//         allocatedOpenings,
+//         isAutoRouted,
+//         isSystemAssigned,
+//         assignedById: userId,
+//       },
+//     });
+
+//     await createAuditLog({
+//       actorId: userId,
+//       action: "CREATE",
+//       module: "REQUIREMENT_ASSIGNMENT",
+//       recordId: assignment.id,
+//       oldData: null,
+//       newData: assignment,
+//       req,
+//     });
+
+//     return res.status(201).json({
+//       success: true,
+//       message: "Assignment created successfully",
+//       data: assignment,
+//     });
+//   } catch (error) {
+//     console.error("Error creating assignment:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Failed to create assignment",
+//     });
+//   }
+// };
+
 export const assignRequirement = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.validatedParams;
-    const {
-      assignmentType,
-      recruiterId,
-      teamId,
-      allocatedOpenings,
-      isAutoRouted,
-      isSystemAssigned,
-    } = req.validatedBody;
+    const { assignmentType, recruiterId, teamId } = req.validatedBody;
 
     const userId = req.user?.id;
 
@@ -377,9 +557,6 @@ export const assignRequirement = async (req: Request, res: Response) => {
         assignmentType,
         recruiterId,
         teamId,
-        allocatedOpenings,
-        isAutoRouted,
-        isSystemAssigned,
         assignedById: userId,
       },
     });
@@ -404,6 +581,7 @@ export const assignRequirement = async (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       message: "Failed to create assignment",
+      error,
     });
   }
 };

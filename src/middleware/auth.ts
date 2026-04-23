@@ -76,6 +76,7 @@ export const authenticateUser = async (
             permissions: true,
           },
         },
+        teamMemberships: true,
       },
     });
     console.log("Authenticated user: ", user);

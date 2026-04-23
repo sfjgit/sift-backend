@@ -79,8 +79,11 @@ export const getSingleBusinessUnit = async (req: Request, res: Response) => {
         childBUs: true,
         teams: true,
         users: true,
-        clients: true,
-        requirements: true,
+        clients: {
+          include: {
+            requirements: true,
+          },
+        },
       },
     });
     return res.status(200).json({

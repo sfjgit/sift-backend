@@ -125,7 +125,7 @@ router.patch(
 router.post(
   "/:id/assign",
   authenticateUser,
-  authorize("requirements", "canAdd"),
+  // authorize("requirements", "canAdd"),
   validate.params(assignRequirementParamsSchema),
   validate.body(assignRequirementBodySchema),
   assignRequirement,
