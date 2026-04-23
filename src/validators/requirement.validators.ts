@@ -60,6 +60,18 @@ export const getAllRequirementsSchema = z.object({
     .optional(),
 
   search: z.string().min(1).optional(),
+
+  page: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 1))
+    .pipe(z.number().int().min(1)),
+
+  limit: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 25))
+    .pipe(z.number().int().min(1).max(100)),
 });
 
 export const getRequirementParamsSchema = z.object({

@@ -1,3 +1,4 @@
+import { MODULES } from "@/constants/scopes";
 import {
   addTeamMembers,
   createTeam,
@@ -9,6 +10,7 @@ import {
   updateTeams,
 } from "@/controller/team.controller";
 import { authenticateUser } from "@/middleware/auth";
+import { checkPermission } from "@/middleware/checkPermission";
 import { authorize } from "@/middleware/role";
 import {
   addTeamMembersBodySchema,
@@ -34,7 +36,8 @@ const router = Router();
 router.post(
   "/",
   authenticateUser,
-  authorize("teams", "canAdd"),
+  // authorize("teams", "canAdd"),
+  checkPermission(MODULES.TEAMS, "canView"),
   validate.body(createTeamSchema),
   createTeam
 );

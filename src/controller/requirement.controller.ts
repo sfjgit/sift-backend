@@ -1,7 +1,7 @@
 import { createAuditLog } from "@/services/auditLogs.service";
 import { uploadToS3 } from "@/services/s3.service";
 import prisma from "@/utils/prisma/client";
-import { AssignmentType } from "@prisma/client";
+import { AssignmentType, Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 
 export const createRequirements = async (req: Request, res: Response) => {
@@ -154,19 +154,26 @@ export const createRequirements = async (req: Request, res: Response) => {
 
 export const getAllRequirements = async (req: Request, res: Response) => {
   try {
-    const { status, clientId, businessUnitId, priority, jobType, search } =
-      req.validatedQuery;
+    const {
+      status,
+      clientId,
+      businessUnitId,
+      priority,
+      jobType,
+      search,
+      page = 1,
+      limit = 25,
+    } = req.validatedQuery;
 
     const scope = req.permissionScope;
     const user = req.user;
 
-    const where: any = {};
-
+    // ── Base filters (explicit query params) ──────────────────────────
+    const where: Prisma.RequirementWhereInput = {};
     if (status) where.status = status;
     if (clientId) where.clientId = clientId;
     if (priority) where.priority = priority;
     if (jobType) where.jobType = jobType;
-
     if (search) {
       where.OR = [
         { title: { contains: search, mode: "insensitive" } },
@@ -174,84 +181,125 @@ export const getAllRequirements = async (req: Request, res: Response) => {
       ];
     }
 
-    let scopeFilter: any = {};
+    // ── Scope filter — drives what the user is ALLOWED to see ─────────
+    let scopeFilter: Prisma.RequirementWhereInput = {};
 
-    if (scope === "OWN") {
-      scopeFilter = {
-        createdById: user.id,
-      };
-    } else if (scope === "TEAM") {
-      const teamIds = user.teamMemberships.map((t: any) => t.teamId);
+    switch (scope) {
+      case "ALL":
+        // Super admin / global — no restriction, buFilter applied below if present
+        scopeFilter = {};
+        break;
 
-      scopeFilter = {
-        assignments: {
-          some: {
-            teamId: { in: teamIds },
+      case "BU":
+        // Admin — scoped to their own BU
+        scopeFilter = { businessUnitId: user.businessUnitId };
+        break;
+
+      case "MANAGER":
+        // Delivery manager — reqs where they have a MANAGER assignment row
+        scopeFilter = {
+          assignments: {
+            some: {
+              assignmentType: "MANAGER",
+              recruiterId: user.id,
+              status: "ACTIVE",
+            },
           },
-        },
-      };
-    } else if (scope === "BU") {
-      scopeFilter = {
-        businessUnitId: user.businessUnitId,
-      };
+        };
+        break;
+
+      case "TEAM":
+        // Team lead — reqs assigned to any team they lead/are in
+        const teamIds = (user?.teamMemberships ?? []).map((t: any) => t.teamId);
+        scopeFilter = {
+          assignments: {
+            some: {
+              assignmentType: "TEAM",
+              teamId: { in: teamIds },
+              status: "ACTIVE",
+            },
+          },
+        };
+        break;
+
+      case "OWN":
+      default:
+        // Recruiter → assigned to them individually
+        // Sales → created by them
+        const roleName = user.role?.name;
+        if (roleName === "SALES") {
+          scopeFilter = { createdById: user.id };
+        } else {
+          // RECRUITER — only individually assigned
+          scopeFilter = {
+            assignments: {
+              some: {
+                assignmentType: "INDIVIDUAL",
+                recruiterId: user.id,
+                status: "ACTIVE",
+              },
+            },
+          };
+        }
+        break;
     }
 
-    if (businessUnitId) {
-      scopeFilter = {
-        AND: [
-          scopeFilter,
-          {
-            OR: [{ businessUnitId }, { client: { businessUnitId } }],
-          },
-        ],
-      };
-    }
+    // ── Optional BU override from query param (super admin switching BU) ──
+    // Only apply if user's scope allows it (don't let BU-scoped user bypass their own BU)
+    const buOverride: Prisma.RequirementWhereInput =
+      businessUnitId && scope === "ALL" ? { businessUnitId } : {};
 
-    const finalWhere = {
+    const finalWhere: Prisma.RequirementWhereInput = {
       ...where,
       ...scopeFilter,
+      ...buOverride,
     };
 
-    const requirements = await prisma.requirement.findMany({
-      where: finalWhere,
-      include: {
-        client: true,
-        clientContact: true,
-        businessUnit: true,
+    // ── Pagination ────────────────────────────────────────────────────
+    const skip = (Number(page) - 1) * Number(limit);
+    const take = Number(limit);
 
-        createdBy: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-          },
+    const [requirements, total] = await Promise.all([
+      prisma.requirement.findMany({
+        where: finalWhere,
+        include: {
+          client: { select: { id: true, name: true } },
+          businessUnit: { select: { id: true, name: true } },
+          createdBy: { select: { id: true, firstName: true, lastName: true } },
+          approvedBy: { select: { id: true, firstName: true, lastName: true } },
+          // Only include assignment summary for non-ALL scopes (avoids N+1 for SA)
+          ...(scope !== "ALL" && {
+            assignments: {
+              where: { status: "ACTIVE" },
+              select: {
+                id: true,
+                assignmentType: true,
+                recruiterId: true,
+                teamId: true,
+                allocatedOpenings: true,
+              },
+            },
+          }),
         },
-
-        approvedBy: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-          },
-        },
-        assignments: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.requirement.count({ where: finalWhere }),
+    ]);
 
     return res.status(200).json({
       success: true,
-      count: requirements.length,
+      total,
+      page: Number(page),
+      limit: take,
       data: requirements,
     });
   } catch (error) {
     console.error("Error fetching requirements:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch requirements",
-    });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch requirements" });
   }
 };
 
@@ -631,7 +679,7 @@ export const addNotes = async (req: Request, res: Response) => {
 
 export const getRequirementStatusHistory = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { id } = req.validatedParams;

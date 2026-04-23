@@ -11,7 +11,7 @@ export const createTeamSchema = z.object({
   isActive: z.boolean().default(true),
   category: z.string().optional(),
   parentTeamId: z.string().optional(),
-  businessUnitId: z.string().optional(),
+  businessUnitId: z.string().min(1),
 });
 
 export const getTeamsSchema = z.object({
@@ -58,7 +58,7 @@ export const addTeamMembersBodySchema = z.array(
     userId: z.string(),
     teamRole: z.enum(TeamRole).optional(),
     isActive: z.boolean().optional(),
-  }),
+  })
 );
 
 export const removeTeamMembersParamsSchema = z.object({

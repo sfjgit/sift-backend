@@ -6,14 +6,29 @@
 //   const scopeFilter = await resolveRequirementScope(req.user, req.permissionScope);
 //   const reqs = await prisma.requirement.findMany({ where: { ...scopeFilter, ...otherFilters } });
 
-import { prisma } from "./prisma";
-import {
-  PERMISSION_SCOPE,
-  ASSIGNMENT_TYPE,
-  ASSIGNMENT_STATUS,
-} from "../constants";
-import { AuthUser } from "../middleware/authenticate";
+// import { prisma } from "./prisma";
+// import {
+//   PERMISSION_SCOPE,
+//   ASSIGNMENT_TYPE,
+//   ASSIGNMENT_STATUS,
+// } from "../constants";
+// import { AuthUser } from "../middleware/authenticate";
+import { ASSIGNMENT_TYPE, PERMISSION_SCOPE } from "@/constants/scopes";
+import prisma from "@/utils/prisma/client";
 
+// type ASSIGNMENT_STATUS = "ACTIVE" | "REMOVED" | "REPLACED";
+
+const ASSIGNMENT_STATUS = {
+  ACTIVE: "ACTIVE",
+  REMOVED: "REMOVED",
+  REPLACED: "REPLACED",
+};
+
+interface AuthUser {
+  id: string;
+  businessUnitId: string;
+  roleId: string;
+}
 // ── Base BU filter ────────────────────────────────────────────────────────────
 // Applied to EVERY query. Super admin / ALL scope skips it.
 // This is why Rakhi never sees TaaS data — it's automatic.
