@@ -5,6 +5,7 @@ declare global {
       validatedQuery: any;
       validatedParams: any;
       file: any;
+      permissionScope: any;
       user: {
         id: string;
         isActive: boolean;

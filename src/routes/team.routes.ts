@@ -36,7 +36,7 @@ router.post(
   authenticateUser,
   authorize("teams", "canAdd"),
   validate.body(createTeamSchema),
-  createTeam,
+  createTeam
 );
 
 /**
@@ -49,7 +49,7 @@ router.get(
   authenticateUser,
   authorize("teams", "canView"),
   validate.query(getTeamsSchema),
-  getTeams,
+  getTeams
 );
 
 /**
@@ -62,7 +62,7 @@ router.get(
   authenticateUser,
   authorize("teams", "canView"),
   validate.params(getSingleTeamSchema),
-  getSingleTeam,
+  getSingleTeam
 );
 
 /**
@@ -76,7 +76,7 @@ router.patch(
   authorize("teams", "canEdit"),
   validate.params(updateTeamsParamsSchema),
   validate.body(updateTeamsBodySchema),
-  updateTeams,
+  updateTeams
 );
 
 /**
@@ -90,7 +90,7 @@ router.post(
   authorize("teams", "canAdd"),
   validate.params(addTeamMembersParamsSchema),
   validate.body(addTeamMembersBodySchema),
-  addTeamMembers,
+  addTeamMembers
 );
 
 /**
@@ -103,7 +103,7 @@ router.delete(
   authenticateUser,
   authorize("teams", "canDelete"),
   validate.params(removeTeamMembersParamsSchema),
-  removeTeamMembers,
+  removeTeamMembers
 );
 
 /**
@@ -116,7 +116,7 @@ router.get(
   authenticateUser,
   authorize("teams", "canView"),
   validate.params(getTeamMembersParamsSchema),
-  getAllTeamMembers,
+  getAllTeamMembers
 );
 
 /**
@@ -128,6 +128,6 @@ router.delete(
   "/:id",
   authenticateUser,
   validateParams(updateTeamsParamsSchema),
-  deleteTeams,
+  deleteTeams
 );
 export default router;

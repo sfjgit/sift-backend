@@ -16,16 +16,12 @@ datasource db {
 //
 // Does NOT own: Candidates, Applications, Interviews,
 //               Offers, Onboarding, Files, Communications
-//               — those live in Candidate Service and
-//                 Recruitment Service respectively.
 //
-// Cross-service note: recruiterId, changedById etc in
-// other services are plain strings referencing User.id
-// from this service. No FK constraints cross services.
-//
-// Stats note: filledOpenings, activeApplications etc on
-// Requirement are snapshots pushed by Recruitment Service
-// via internal API — not computed at query time.
+// Ecosystem note: Team hierarchy via parentTeamId.
+// Admin creates a MANAGEMENT team as root (the ecosystem),
+// then SALES and DELIVERY teams under it via parentTeamId.
+// Controllers derive all cross-team relationships by walking
+// the tree — no junction table needed.
 // ═════════════════════════════════════════
 
 // ─────────────────────────────────────────
@@ -70,11 +66,12 @@ model User {
   createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
   createdByMe User[]  @relation("UserCreatedBy")
 
-  // ── Notification + Activity ──
+  // in User model
+  jdUploads RequirementJD[] @relation("JDUploadedBy")
+
   notifications         Notification[]        @relation("UserNotifications")
   requirementActivities RequirementActivity[] @relation("RequirementActivityActor")
 
-  // ── Requirement back-relations ──
   requirementsCreated               Requirement[]              @relation("RequirementCreatedBy")
   requirementsApproved              Requirement[]              @relation("RequirementApprovedBy")
   requirementsClosed                Requirement[]              @relation("RequirementClosedBy")
@@ -85,7 +82,6 @@ model User {
   requirementAssignmentsGiven       RequirementAssignment[]    @relation("RequirementAssignedBy")
   requirementAssignmentsAsRecruiter RequirementAssignment[]    @relation("RequirementAssignmentRecruiter")
 
-  // ── Client back-relations ──
   clientsCreated                ClientClient[]         @relation("ClientCreatedBy")
   clientsApproved               ClientClient[]         @relation("ClientApprovedBy")
   clientHandlerEntries          ClientHandler[]        @relation("ClientHandlerUser")
@@ -93,11 +89,9 @@ model User {
   clientTeamAssignmentsAssigned ClientTeamAssignment[] @relation("ClientTeamAssignedBy")
   clientNotesAuthored           ClientNote[]           @relation("ClientNoteAuthor")
 
-  // ── Team back-relations ──
   teamMembersDeactivated TeamMember[] @relation("TeamMemberDeactivatedBy")
   teamMembersReplaced    TeamMember[] @relation("TeamMemberReplacedByUser")
 
-  // ── OrgFlow + Audit ──
   orgFlowsCreated OrgFlow[]  @relation("OrgFlowCreatedBy")
   orgFlowsUpdated OrgFlow[]  @relation("OrgFlowUpdatedBy")
   auditLogs       AuditLog[] @relation("AuditLogActor")
@@ -156,7 +150,7 @@ model RolePermission {
 enum PermissionScope {
   OWN
   TEAM
-  MANAGER   // ← sees all teams + recruiters under his assignments
+  MANAGER
   BU
   ALL
 }
@@ -186,6 +180,13 @@ model BusinessUnit {
 
 // ─────────────────────────────────────────
 // TEAMS
+//
+// Ecosystem = MANAGEMENT team at root.
+// SALES + DELIVERY teams sit under it via parentTeamId.
+//
+// To find delivery teams for a SA:
+//   const parent = saTeam.parentTeamId  ← Rakhi's Unit
+//   findMany({ where: { parentTeamId: parent, category: DELIVERY } })
 // ─────────────────────────────────────────
 
 model Team {
@@ -202,8 +203,7 @@ model Team {
   businessUnitId String?
   businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
 
-  members    TeamMember[]
-  dataPolicy TeamDataPolicy @default(SHARED)
+  members TeamMember[]
 
   clientAssignments      ClientTeamAssignment[]
   requirementAssignments RequirementAssignment[]
@@ -213,6 +213,7 @@ model Team {
 
   @@index([isActive])
   @@index([businessUnitId])
+  @@index([parentTeamId])
 }
 
 model TeamMember {
@@ -244,11 +245,6 @@ enum TeamRole {
   LEAD
   CO_LEAD
   MEMBER
-}
-
-enum TeamDataPolicy {
-  SHARED
-  LEAD_ONLY
 }
 
 enum TeamCategory {
@@ -297,13 +293,11 @@ model ClientClient {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@map("clients")
   @@index([status])
   @@index([businessUnitId])
+  @@map("clients")
 }
 
-// supports PRIMARY / SECONDARY / BACKUP per client
-// @@unique([clientId, role]) enforces only one of each role per client
 model ClientHandler {
   id       String            @id @default(uuid())
   clientId String
@@ -344,8 +338,8 @@ model ClientContact {
   email       String
   phone       String?
   linkedinUrl String?
-  isPrimary   Boolean @default(false)
-  isActive    Boolean @default(true)
+  isPrimary   Boolean      @default(false)
+  isActive    Boolean      @default(true)
 
   requirements Requirement[]
 
@@ -416,8 +410,6 @@ model Requirement {
 
   totalOpenings       Int @default(1)
   filledOpenings      Int @default(0)
-  // snapshot stats — pushed by Recruitment Service via internal API
-  // never compute these at query time
   activeApplications  Int @default(0)
   interviewsScheduled Int @default(0)
   offersRolledOut     Int @default(0)
@@ -429,6 +421,10 @@ model Requirement {
   salaryMax  Float?
   salaryType SalaryType?
 
+  // ── Experience ──
+  experienceMin Float? // in years
+  experienceMax Float?
+
   startDate      DateTime?
   endDate        DateTime?
   respondBy      DateTime?
@@ -437,21 +433,29 @@ model Requirement {
   status   RequirementStatus @default(DRAFT)
   closedAt DateTime?
 
+  // ── Breach flags — set by BullMQ daily cron only ──
+  isRespondByBreached  Boolean @default(false)
+  isTurnaroundBreached Boolean @default(false)
+
   createdById  String
   createdBy    User      @relation("RequirementCreatedBy", fields: [createdById], references: [id])
   approvedById String?
   approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
   approvedAt   DateTime?
 
-  // who manually closed this requirement
-  closedById String?
-  closedBy   User?   @relation("RequirementClosedBy", fields: [closedById], references: [id])
-
+  closedById    String?
+  closedBy      User?                      @relation("RequirementClosedBy", fields: [closedById], references: [id])
+  // Requirement model
+  jd            RequirementJD[] // ← array, not singular, multiple versions exist
   assignments   RequirementAssignment[]
   documents     RequirementDocument[]
   notes         RequirementNote[]
   statusHistory RequirementStatusHistory[]
   activities    RequirementActivity[]
+
+  // ── JD ──
+  // jd            RequirementJD?
+  skills RequirementSkill[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -459,6 +463,63 @@ model Requirement {
   @@index([status])
   @@index([clientId])
   @@index([businessUnitId])
+  @@index([isRespondByBreached])
+  @@index([isTurnaroundBreached])
+}
+
+// ─────────────────────────────────────────
+// JD FILE
+//
+// One JD per requirement (@@unique on requirementId).
+// Stores S3 key for the actual file + extracted text for search.
+// Version history tracked via version field —
+// when SA uploads a new JD, old row is soft-replaced
+// (isLatest flipped, new row created) so history is preserved.
+// ─────────────────────────────────────────
+
+model RequirementJD {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  // S3 storage
+  fileKey       String // S3 object key  e.g. jd/kaas/req-001/v1-jd.pdf
+  fileName      String // original upload name
+  fileType      String // application/pdf | application/msword | etc
+  fileSizeBytes Int?
+
+  version  Int     @default(1)
+  isLatest Boolean @default(true)
+
+  // extracted plain text from PDF — for search / display
+  // null until extraction job runs
+  extractedText String?
+
+  uploadedById String
+  uploadedBy   User     @relation("JDUploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt   DateTime @default(now())
+
+  @@index([requirementId, isLatest])
+}
+
+// ─────────────────────────────────────────
+// SKILLS / TAGS ON REQUIREMENT
+//
+// Normalised skill tags — mandatory vs nice-to-have.
+// Recruiter sees: "Must have: Java, Spring Boot | Good to have: Kafka, Docker"
+// Stored as rows not a JSON array so they're queryable and filterable.
+// ─────────────────────────────────────────
+
+model RequirementSkill {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  skill       String // "Java", "Spring Boot", "AWS"
+  isMandatory Boolean @default(true) // false = nice to have
+  experience  Float? // years required for this specific skill, optional
+
+  @@index([requirementId])
 }
 
 model RequirementDocument {
@@ -493,10 +554,9 @@ model RequirementAssignment {
   assignmentType AssignmentType
   status         AssignmentStatus @default(ACTIVE)
 
-  // recruiterId used for both MANAGER and INDIVIDUAL types
-  // MANAGER    → delivery manager User.id
+  // MANAGER → delivery manager User.id
   // INDIVIDUAL → recruiter User.id
-  // TEAM       → null, teamId is set instead
+  // TEAM → null, teamId is set
   recruiterId String?
   recruiter   User?   @relation("RequirementAssignmentRecruiter", fields: [recruiterId], references: [id])
 
@@ -504,16 +564,14 @@ model RequirementAssignment {
   team   Team?   @relation(fields: [teamId], references: [id])
 
   allocatedOpenings Int?
-  filledOpenings    Int @default(0)
-  // per-recruiter snapshot stats — pushed by Recruitment Service
-  submissionsCount  Int @default(0)
-  interviewsCount   Int @default(0)
+  filledOpenings    Int  @default(0)
+  submissionsCount  Int  @default(0)
+  interviewsCount   Int  @default(0)
 
   isAutoRouted     Boolean @default(false)
   isSystemAssigned Boolean @default(false)
 
-  // full chain: INDIVIDUAL → parent TEAM → parent MANAGER → null
-  // use parentAssignmentId to reconstruct who assigned whom
+  // chain: INDIVIDUAL → parent TEAM → parent MANAGER → null
   parentAssignmentId String?
   parentAssignment   RequirementAssignment?  @relation("AssignmentChain", fields: [parentAssignmentId], references: [id])
   childAssignments   RequirementAssignment[] @relation("AssignmentChain")
@@ -525,10 +583,17 @@ model RequirementAssignment {
   removedAt     DateTime?
   removedReason String?
 
+  // ── Per-assignment deadline tracking — breach set by BullMQ cron only ──
+  deadline       DateTime?
+  deadlineMet    Boolean? // null = pending | true = on time | false = breached
+  breachedAt     DateTime?
+  reminderSentAt DateTime?
+
   @@index([requirementId, status])
   @@index([recruiterId, status])
   @@index([teamId, status])
   @@index([parentAssignmentId])
+  @@index([deadline])
 }
 
 model RequirementNote {
@@ -565,10 +630,6 @@ model RequirementStatusHistory {
 // ACTIVITY FEED
 // ─────────────────────────────────────────
 
-// Unified timeline per requirement.
-// One row per meaningful event, written in the same
-// transaction as the action that triggered it.
-// Powers the requirement detail page activity feed.
 model RequirementActivity {
   id            String      @id @default(uuid())
   requirementId String
@@ -578,8 +639,8 @@ model RequirementActivity {
   actor   User   @relation("RequirementActivityActor", fields: [actorId], references: [id])
 
   type    ActivityType
-  summary String       // human readable: "Assigned Team Alpha to this requirement"
-  meta    Json?        // structured extra data: old/new status, assignee name etc
+  summary String
+  meta    Json?
 
   createdAt DateTime @default(now())
 
@@ -591,16 +652,14 @@ model RequirementActivity {
 // NOTIFICATIONS
 // ─────────────────────────────────────────
 
-// Per-user notification inbox — bell icon in nav.
-// Written in the same transaction as the action that triggered it.
 model Notification {
   id     String @id @default(uuid())
   userId String
   user   User   @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
 
-  type          NotificationType
-  title         String                    // "REQ-042 assigned to you"
-  body          String?                   // optional longer description
+  type  NotificationType
+  title String
+  body  String?
 
   referenceId   String
   referenceType NotificationReferenceType
@@ -652,8 +711,8 @@ model AuditLog {
   actorId String
   actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
 
-  action    String // CREATE | UPDATE | DELETE
-  module    String // REQUIREMENT | CLIENT | USER | TEAM | BU etc
+  action    String
+  module    String
   recordId  String
   oldData   Json?
   newData   Json?
@@ -680,9 +739,9 @@ enum DocumentEventType {
 }
 
 enum AssignmentType {
-  MANAGER    // delivery manager assigned by account manager
-  TEAM       // team assigned by delivery manager
-  INDIVIDUAL // recruiter assigned by team lead
+  MANAGER
+  TEAM
+  INDIVIDUAL
 }
 
 enum AssignmentStatus {
@@ -757,6 +816,8 @@ enum NotificationType {
   REQUIREMENT_CLOSED
   NOTE_ADDED
   ISSUE_RAISED
+  DEADLINE_BREACHED
+  DEADLINE_REMINDER
 }
 
 enum NotificationReferenceType {

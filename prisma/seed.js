@@ -1,5 +1,7 @@
 // prisma/seed.js
-// Safe to run multiple times — upserts everything, migrates old role names
+// Safe to run multiple times — upserts everything.
+// Reflects new schema: no dataPolicy, no TeamConfig, no SalesDeliveryTeamLink.
+// Ecosystem lives in parentTeamId: MANAGEMENT → SALES + DELIVERY teams.
 
 const { PrismaClient } = require("@prisma/client");
 const bcrypt = require("bcrypt");
@@ -7,13 +9,13 @@ const bcrypt = require("bcrypt");
 const prisma = new PrismaClient();
 const hash = (p) => bcrypt.hashSync(p, 10);
 
-// ─── Role definitions ─────────────────────────────────────────────────────────
-// Single source of truth. Change here, runs everywhere.
+// ─────────────────────────────────────────
+// ROLES
+// ─────────────────────────────────────────
 
 const ROLES = [
   {
     name: "SUPER_ADMIN",
-    oldName: "Super Admin", // previous name in DB — will be migrated
     description: "Full access to everything",
     isSystem: true,
     permissions: [
@@ -77,7 +79,6 @@ const ROLES = [
   },
   {
     name: "ADMIN",
-    oldName: "Admin",
     description: "Manages users, clients, requirements within their BU",
     isSystem: true,
     permissions: [
@@ -140,9 +141,8 @@ const ROLES = [
     ],
   },
   {
-    name: "DELIVERY_LEAD",
-    oldName: "Delivery Lead",
-    description: "Oversees delivery across teams in their BU",
+    name: "DELIVERY_MANAGER",
+    description: "Receives requirements from sales, assigns to teams",
     isSystem: false,
     permissions: [
       {
@@ -151,7 +151,7 @@ const ROLES = [
         canAdd: false,
         canEdit: false,
         canDelete: false,
-        scope: "BU",
+        scope: "MANAGER",
       },
       {
         module: "teams",
@@ -159,7 +159,7 @@ const ROLES = [
         canAdd: false,
         canEdit: true,
         canDelete: false,
-        scope: "BU",
+        scope: "MANAGER",
       },
       {
         module: "clients",
@@ -167,7 +167,7 @@ const ROLES = [
         canAdd: false,
         canEdit: false,
         canDelete: false,
-        scope: "BU",
+        scope: "MANAGER",
       },
       {
         module: "requirements",
@@ -175,7 +175,7 @@ const ROLES = [
         canAdd: false,
         canEdit: true,
         canDelete: false,
-        scope: "BU",
+        scope: "MANAGER",
       },
       {
         module: "reports",
@@ -183,14 +183,13 @@ const ROLES = [
         canAdd: false,
         canEdit: false,
         canDelete: false,
-        scope: "BU",
+        scope: "MANAGER",
       },
     ],
   },
   {
     name: "TEAM_LEAD",
-    oldName: "Team Lead",
-    description: "Manages their team and assigns requirements to members",
+    description: "Manages their team and assigns requirements to recruiters",
     isSystem: false,
     permissions: [
       {
@@ -237,7 +236,6 @@ const ROLES = [
   },
   {
     name: "RECRUITER",
-    oldName: "Recruiter",
     description: "Works only on requirements assigned to them",
     isSystem: false,
     permissions: [
@@ -269,7 +267,6 @@ const ROLES = [
   },
   {
     name: "SALES",
-    oldName: "Sales",
     description: "Creates clients and raises requirements",
     isSystem: false,
     permissions: [
@@ -301,32 +298,16 @@ const ROLES = [
   },
 ];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 async function upsertRole(roleDef) {
-  const { oldName, permissions, ...roleData } = roleDef;
+  const { permissions, ...roleData } = roleDef;
 
-  // If old name exists in DB, rename it first
-  const existing = await prisma.role.findUnique({ where: { name: oldName } });
-  if (existing && oldName !== roleData.name) {
-    console.log(`  ↳ Renaming "${oldName}" → "${roleData.name}"`);
-    await prisma.role.update({
-      where: { name: oldName },
-      data: { name: roleData.name },
-    });
-  }
-
-  // Upsert the role
   const role = await prisma.role.upsert({
     where: { name: roleData.name },
-    update: {
-      description: roleData.description,
-      isSystem: roleData.isSystem,
-    },
+    update: { description: roleData.description, isSystem: roleData.isSystem },
     create: roleData,
   });
 
-  // Sync permissions — delete all and recreate for clean state
+  // wipe and recreate for clean state
   await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
   await prisma.rolePermission.createMany({
     data: permissions.map((p) => ({ ...p, roleId: role.id })),
@@ -335,24 +316,24 @@ async function upsertRole(roleDef) {
   return role;
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────
+// MAIN
+// ─────────────────────────────────────────
 
 async function main() {
-  console.log("🌱 Running migration seed...\n");
+  console.log("🌱 Seeding...\n");
 
   // ── Roles ──────────────────────────────────────────────────────────────────
-
-  console.log("📋 Upserting roles...");
+  console.log("📋 Roles...");
   const roles = {};
-  for (const roleDef of ROLES) {
-    const role = await upsertRole(roleDef);
+  for (const r of ROLES) {
+    const role = await upsertRole(r);
     roles[role.name] = role;
     console.log(`  ✅ ${role.name}`);
   }
 
   // ── Business Units ─────────────────────────────────────────────────────────
-
-  console.log("\n🏢 Upserting business units...");
+  console.log("\n🏢 Business Units...");
   const kaasBU = await prisma.businessUnit.upsert({
     where: { name: "KaaS BU" },
     update: {},
@@ -363,16 +344,10 @@ async function main() {
     update: {},
     create: { name: "TaaS BU", isActive: true },
   });
-  const oemBU = await prisma.businessUnit.upsert({
-    where: { name: "OEM BU" },
-    update: {},
-    create: { name: "OEM BU", isActive: true },
-  });
-  console.log("  ✅ KaaS BU, TaaS BU, OEM BU");
+  console.log("  ✅ KaaS BU, TaaS BU");
 
   // ── Users ──────────────────────────────────────────────────────────────────
-
-  console.log("\n👤 Upserting users...");
+  console.log("\n👤 Users...");
 
   const superAdmin = await prisma.user.upsert({
     where: { email: "superadmin@talentos.com" },
@@ -407,41 +382,26 @@ async function main() {
     },
   });
 
-  const taasAdmin = await prisma.user.upsert({
-    where: { email: "admin.taas@talentos.com" },
-    update: { roleId: roles["ADMIN"].id },
+  // Delivery Manager — MANAGER level in the assignment chain
+  const deliveryManager = await prisma.user.upsert({
+    where: { email: "dm.kaas@talentos.com" },
+    update: { roleId: roles["DELIVERY_MANAGER"].id },
     create: {
-      email: "admin.taas@talentos.com",
-      passwordHash: hash("Admin@123"),
-      passwordPlain: "Admin@123",
-      firstName: "Arjun",
-      lastName: "Sharma",
-      employeeId: "EMP-0003",
-      isActive: true,
-      roleId: roles["ADMIN"].id,
-      businessUnitId: taasBU.id,
-      createdById: superAdmin.id,
-    },
-  });
-
-  const deliveryLead = await prisma.user.upsert({
-    where: { email: "dl.kaas@talentos.com" },
-    update: { roleId: roles["DELIVERY_LEAD"].id },
-    create: {
-      email: "dl.kaas@talentos.com",
+      email: "dm.kaas@talentos.com",
       passwordHash: hash("Pass@123"),
       passwordPlain: "Pass@123",
       firstName: "Papitha",
       lastName: "Raj",
-      employeeId: "EMP-0004",
+      employeeId: "EMP-0003",
       isActive: true,
-      roleId: roles["DELIVERY_LEAD"].id,
+      roleId: roles["DELIVERY_MANAGER"].id,
       businessUnitId: kaasBU.id,
       reportingToId: kaasAdmin.id,
       createdById: kaasAdmin.id,
     },
   });
 
+  // Team Lead — CO_LEAD of delivery team, assigns to recruiters
   const teamLead = await prisma.user.upsert({
     where: { email: "tl.kaas@talentos.com" },
     update: { roleId: roles["TEAM_LEAD"].id },
@@ -451,11 +411,11 @@ async function main() {
       passwordPlain: "Pass@123",
       firstName: "Joe",
       lastName: "Thomas",
-      employeeId: "EMP-0005",
+      employeeId: "EMP-0004",
       isActive: true,
       roleId: roles["TEAM_LEAD"].id,
       businessUnitId: kaasBU.id,
-      reportingToId: deliveryLead.id,
+      reportingToId: deliveryManager.id,
       createdById: kaasAdmin.id,
     },
   });
@@ -469,7 +429,7 @@ async function main() {
       passwordPlain: "Pass@123",
       firstName: "Ritu",
       lastName: "Verma",
-      employeeId: "EMP-0006",
+      employeeId: "EMP-0005",
       isActive: true,
       roleId: roles["RECRUITER"].id,
       businessUnitId: kaasBU.id,
@@ -487,7 +447,7 @@ async function main() {
       passwordPlain: "Pass@123",
       firstName: "Karan",
       lastName: "Nair",
-      employeeId: "EMP-0007",
+      employeeId: "EMP-0006",
       isActive: true,
       roleId: roles["RECRUITER"].id,
       businessUnitId: kaasBU.id,
@@ -496,6 +456,7 @@ async function main() {
     },
   });
 
+  // Sales person — member of Sales team, raises requirements
   const salesUser = await prisma.user.upsert({
     where: { email: "sales1@talentos.com" },
     update: { roleId: roles["SALES"].id },
@@ -505,7 +466,7 @@ async function main() {
       passwordPlain: "Pass@123",
       firstName: "Sneha",
       lastName: "Pillai",
-      employeeId: "EMP-0008",
+      employeeId: "EMP-0007",
       isActive: true,
       roleId: roles["SALES"].id,
       businessUnitId: kaasBU.id,
@@ -514,49 +475,111 @@ async function main() {
     },
   });
 
-  console.log("  ✅ 8 users upserted");
+  console.log("  ✅ 7 users");
 
-  // ── Team ───────────────────────────────────────────────────────────────────
+  // ── Teams — Ecosystem via parentTeamId ─────────────────────────────────────
+  //
+  // Structure:
+  //   KaaS Ecosystem (MANAGEMENT) ← root, parentTeamId: null
+  //     ├── KaaS Sales Team (SALES)    ← parentTeamId: ecosystem.id
+  //     └── KaaS Delivery Team (DELIVERY) ← parentTeamId: ecosystem.id
+  //           └── Joe's Sub-Team (DELIVERY) ← parentTeamId: deliveryTeam.id
+  //
+  // Controllers walk this tree to derive cross-team relationships.
+  // No junction table needed.
+  // ───────────────────────────────────────────────────────────────────────────
 
-  console.log("\n👥 Upserting teams...");
-  const joesTeam = await prisma.team.upsert({
-    where: { id: "seed-team-001" },
-    update: {},
+  console.log("\n👥 Teams (ecosystem structure)...");
+
+  // Root — the ecosystem
+  const ecosystem = await prisma.team.upsert({
+    where: { id: "seed-team-ecosystem-kaas" },
+    update: { name: "KaaS Ecosystem" },
     create: {
-      id: "seed-team-001",
-      name: "Joe's Team",
-      category: "KaaS",
+      id: "seed-team-ecosystem-kaas",
+      name: "KaaS Ecosystem",
+      description: "Root ecosystem for KaaS BU — groups sales and delivery",
+      category: "MANAGEMENT",
       isActive: true,
       businessUnitId: kaasBU.id,
-      dataPolicy: "SHARED",
     },
   });
 
-  // Upsert team members individually (@@unique[userId, teamId] guard)
-  for (const [userId, teamRole] of [
-    [teamLead.id, "LEAD"],
-    [recruiter1.id, "MEMBER"],
-    [recruiter2.id, "MEMBER"],
-  ]) {
+  // Sales team — sits under ecosystem
+  const salesTeam = await prisma.team.upsert({
+    where: { id: "seed-team-sales-kaas" },
+    update: { name: "KaaS Sales Team" },
+    create: {
+      id: "seed-team-sales-kaas",
+      name: "KaaS Sales Team",
+      category: "SALES",
+      isActive: true,
+      businessUnitId: kaasBU.id,
+      parentTeamId: ecosystem.id, // ← ecosystem link
+    },
+  });
+
+  // Delivery team — sits under ecosystem, delivery manager is LEAD
+  const deliveryTeam = await prisma.team.upsert({
+    where: { id: "seed-team-delivery-kaas" },
+    update: { name: "KaaS Delivery Team" },
+    create: {
+      id: "seed-team-delivery-kaas",
+      name: "KaaS Delivery Team",
+      category: "DELIVERY",
+      isActive: true,
+      businessUnitId: kaasBU.id,
+      parentTeamId: ecosystem.id, // ← ecosystem link
+    },
+  });
+
+  // Joe's sub-team — sits under delivery team
+  const joesTeam = await prisma.team.upsert({
+    where: { id: "seed-team-joes-kaas" },
+    update: { name: "Joe's Team" },
+    create: {
+      id: "seed-team-joes-kaas",
+      name: "Joe's Team",
+      category: "DELIVERY",
+      isActive: true,
+      businessUnitId: kaasBU.id,
+      parentTeamId: deliveryTeam.id, // ← sits under delivery team
+    },
+  });
+
+  // Team memberships
+  const memberships = [
+    // Sales team
+    { userId: salesUser.id, teamId: salesTeam.id, teamRole: "MEMBER" },
+    // Delivery team — delivery manager is LEAD
+    { userId: deliveryManager.id, teamId: deliveryTeam.id, teamRole: "LEAD" },
+    // Joe's sub-team — TL is LEAD, recruiters are MEMBER
+    { userId: teamLead.id, teamId: joesTeam.id, teamRole: "LEAD" },
+    { userId: recruiter1.id, teamId: joesTeam.id, teamRole: "MEMBER" },
+    { userId: recruiter2.id, teamId: joesTeam.id, teamRole: "MEMBER" },
+  ];
+
+  for (const m of memberships) {
     await prisma.teamMember.upsert({
-      where: { userId_teamId: { userId, teamId: joesTeam.id } },
-      update: { teamRole },
-      create: { userId, teamId: joesTeam.id, teamRole },
+      where: { userId_teamId: { userId: m.userId, teamId: m.teamId } },
+      update: { teamRole: m.teamRole },
+      create: m,
     });
   }
-  console.log("  ✅ Joe's Team + 3 members");
+
+  console.log("  ✅ Ecosystem → Sales Team + Delivery Team → Joe's Team");
 
   // ── Client ─────────────────────────────────────────────────────────────────
+  console.log("\n🏭 Client...");
 
-  console.log("\n🏭 Upserting client...");
-  const client1 = await prisma.client.upsert({
+  const client1 = await prisma.clientClient.upsert({
     where: { id: "seed-client-001" },
     update: {},
     create: {
       id: "seed-client-001",
       name: "Infosys BPM",
       vmsName: "Infosys BPM Ltd",
-      category: "KaaS",
+      category: "SERVICE",
       industry: "IT Services",
       country: "India",
       state: "Karnataka",
@@ -569,7 +592,7 @@ async function main() {
     },
   });
 
-  // Contact
+  // Contact — findFirst guard since no unique on email per client
   const existingContact = await prisma.clientContact.findFirst({
     where: { clientId: client1.id, email: "amit.k@infosysbpm.com" },
   });
@@ -588,7 +611,7 @@ async function main() {
     });
   }
 
-  // Handler
+  // Handler — sales user is PRIMARY handler
   await prisma.clientHandler.upsert({
     where: { clientId_userId: { clientId: client1.id, userId: salesUser.id } },
     update: {},
@@ -600,21 +623,24 @@ async function main() {
     },
   });
 
-  // Team assignment
+  // Team assignment — delivery team handles this client
   await prisma.clientTeamAssignment.upsert({
-    where: { clientId_teamId: { clientId: client1.id, teamId: joesTeam.id } },
+    where: {
+      clientId_teamId: { clientId: client1.id, teamId: deliveryTeam.id },
+    },
     update: {},
     create: {
       clientId: client1.id,
-      teamId: joesTeam.id,
+      teamId: deliveryTeam.id,
       assignedById: kaasAdmin.id,
     },
   });
+
   console.log("  ✅ Infosys BPM + contact + handler + team assignment");
 
   // ── Requirement ────────────────────────────────────────────────────────────
+  console.log("\n📝 Requirement...");
 
-  console.log("\n📝 Upserting requirement...");
   const req1 = await prisma.requirement.upsert({
     where: { reqCode: "SFJ-R-10001" },
     update: {},
@@ -634,39 +660,62 @@ async function main() {
       country: "India",
       salaryMin: 800000,
       salaryMax: 1400000,
-      salaryType: "Per Year",
+      salaryType: "ANNUAL",
       status: "ACTIVE",
       createdById: salesUser.id,
       approvedById: kaasAdmin.id,
       approvedAt: new Date(),
-      deliveryLeadId: deliveryLead.id,
-      teamLeadId: teamLead.id,
     },
   });
 
-  // Assignments — check before create (no unique key on assignments)
+  // ── Assignment chain ───────────────────────────────────────────────────────
+  //
+  //  MANAGER row  → deliveryManager  (allocated: 3)
+  //    TEAM row   → joesTeam         (allocated: 3, parent: MANAGER row)
+  //      INDIVIDUAL → recruiter1     (allocated: 2, parent: TEAM row)
+  //      INDIVIDUAL → recruiter2     (allocated: 1, parent: TEAM row)
+  // ───────────────────────────────────────────────────────────────────────────
+
   const existingAssignments = await prisma.requirementAssignment.findMany({
     where: { requirementId: req1.id, status: "ACTIVE" },
   });
 
   if (existingAssignments.length === 0) {
+    // MANAGER row
+    const managerAssignment = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: req1.id,
+        assignmentType: "MANAGER",
+        recruiterId: deliveryManager.id,
+        allocatedOpenings: 3,
+        assignedById: kaasAdmin.id,
+        status: "ACTIVE",
+      },
+    });
+
+    // TEAM row — parent is MANAGER row
+    const teamAssignment = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: req1.id,
+        assignmentType: "TEAM",
+        teamId: joesTeam.id,
+        allocatedOpenings: 3,
+        assignedById: deliveryManager.id,
+        parentAssignmentId: managerAssignment.id,
+        status: "ACTIVE",
+      },
+    });
+
+    // INDIVIDUAL rows — parent is TEAM row
     await prisma.requirementAssignment.createMany({
       data: [
-        {
-          requirementId: req1.id,
-          assignmentType: "TEAM",
-          teamId: joesTeam.id,
-          isAutoRouted: true,
-          isSystemAssigned: true,
-          allocatedOpenings: 3,
-          status: "ACTIVE",
-        },
         {
           requirementId: req1.id,
           assignmentType: "INDIVIDUAL",
           recruiterId: recruiter1.id,
           allocatedOpenings: 2,
           assignedById: teamLead.id,
+          parentAssignmentId: teamAssignment.id,
           status: "ACTIVE",
         },
         {
@@ -675,13 +724,14 @@ async function main() {
           recruiterId: recruiter2.id,
           allocatedOpenings: 1,
           assignedById: teamLead.id,
+          parentAssignmentId: teamAssignment.id,
           status: "ACTIVE",
         },
       ],
     });
   }
 
-  // Status history — check before create
+  // Status history
   const existingHistory = await prisma.requirementStatusHistory.findMany({
     where: { requirementId: req1.id },
   });
@@ -706,23 +756,91 @@ async function main() {
     });
   }
 
-  console.log("  ✅ SFJ-R-10001 + assignments + status history");
+  // Activity feed entries
+  const existingActivities = await prisma.requirementActivity.findMany({
+    where: { requirementId: req1.id },
+  });
+
+  if (existingActivities.length === 0) {
+    await prisma.requirementActivity.createMany({
+      data: [
+        {
+          requirementId: req1.id,
+          actorId: salesUser.id,
+          type: "REQUIREMENT_CREATED",
+          summary: "Sneha Pillai created this requirement",
+        },
+        {
+          requirementId: req1.id,
+          actorId: kaasAdmin.id,
+          type: "REQUIREMENT_APPROVED",
+          summary: "Priya Menon approved this requirement",
+        },
+        {
+          requirementId: req1.id,
+          actorId: kaasAdmin.id,
+          type: "MANAGER_ASSIGNED",
+          summary: "Papitha Raj assigned as delivery manager",
+          meta: { assigneeId: deliveryManager.id, assigneeName: "Papitha Raj" },
+        },
+        {
+          requirementId: req1.id,
+          actorId: deliveryManager.id,
+          type: "TEAM_ASSIGNED",
+          summary: "Joe's Team assigned to this requirement",
+          meta: { teamId: joesTeam.id, teamName: "Joe's Team" },
+        },
+        {
+          requirementId: req1.id,
+          actorId: teamLead.id,
+          type: "RECRUITER_ASSIGNED",
+          summary: "Ritu Verma and Karan Nair assigned as recruiters",
+        },
+      ],
+    });
+  }
+
+  console.log("  ✅ SFJ-R-10001 + full assignment chain + history + activity");
 
   // ── Summary ────────────────────────────────────────────────────────────────
-
-  console.log("\n🎉 Migration seed complete\n");
-  console.log("┌─────────────────────────────────────────────────────┐");
-  console.log("│  Logins                                             │");
-  console.log("├─────────────────────────────────────────────────────┤");
-  console.log("│  superadmin@talentos.com  Admin@123  SUPER_ADMIN    │");
-  console.log("│  admin.kaas@talentos.com  Admin@123  ADMIN (KaaS)   │");
-  console.log("│  admin.taas@talentos.com  Admin@123  ADMIN (TaaS)   │");
-  console.log("│  dl.kaas@talentos.com     Pass@123   DELIVERY_LEAD  │");
-  console.log("│  tl.kaas@talentos.com     Pass@123   TEAM_LEAD      │");
-  console.log("│  ritu@talentos.com        Pass@123   RECRUITER      │");
-  console.log("│  karan@talentos.com       Pass@123   RECRUITER      │");
-  console.log("│  sales1@talentos.com      Pass@123   SALES          │");
-  console.log("└─────────────────────────────────────────────────────┘");
+  console.log("\n🎉 Seed complete\n");
+  console.log(
+    "┌──────────────────────────────────────────────────────────────┐"
+  );
+  console.log(
+    "│  Logins                                                      │"
+  );
+  console.log(
+    "├──────────────────────────────────────────────────────────────┤"
+  );
+  console.log(
+    "│  superadmin@talentos.com   Admin@123   SUPER_ADMIN           │"
+  );
+  console.log(
+    "│  admin.kaas@talentos.com   Admin@123   ADMIN (KaaS)          │"
+  );
+  console.log(
+    "│  dm.kaas@talentos.com      Pass@123    DELIVERY_MANAGER      │"
+  );
+  console.log(
+    "│  tl.kaas@talentos.com      Pass@123    TEAM_LEAD             │"
+  );
+  console.log(
+    "│  ritu@talentos.com         Pass@123    RECRUITER             │"
+  );
+  console.log(
+    "│  karan@talentos.com        Pass@123    RECRUITER             │"
+  );
+  console.log(
+    "│  sales1@talentos.com       Pass@123    SALES                 │"
+  );
+  console.log(
+    "└──────────────────────────────────────────────────────────────┘"
+  );
+  console.log("\n  Ecosystem: KaaS Ecosystem");
+  console.log("    ├── KaaS Sales Team    (Sneha)");
+  console.log("    └── KaaS Delivery Team (Papitha — LEAD)");
+  console.log("          └── Joe's Team   (Joe — LEAD, Ritu + Karan — MEMBER)");
 }
 
 main()
