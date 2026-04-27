@@ -306,6 +306,7 @@ export const getAllRequirements = async (req: Request, res: Response) => {
 export const getRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.validatedParams;
+
     const requirement = await prisma.requirement.findUnique({
       where: { id },
       include: {
@@ -317,54 +318,87 @@ export const getRequirement = async (req: Request, res: Response) => {
             id: true,
             firstName: true,
             lastName: true,
+            employeeId: true,
           },
         },
-
         approvedBy: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-          },
+          select: { id: true, firstName: true, lastName: true },
         },
-
-        deliveryLead: {
-          select: {
-            id: true,
-            firstName: true,
-          },
+        closedBy: {
+          select: { id: true, firstName: true, lastName: true },
         },
-
-        teamLead: {
-          select: {
-            id: true,
-            firstName: true,
-          },
+        skills: {
+          orderBy: [{ isMandatory: "desc" }, { skill: "asc" }],
         },
-        assignments: true,
-        documents: true,
-        notes: true,
-        statusHistory: true,
+        jd: {
+          where: { isLatest: true },
+          include: {
+            uploadedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          take: 1,
+        },
+        assignments: {
+          where: { status: "ACTIVE" },
+          include: {
+            recruiter: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+              },
+            },
+            team: { select: { id: true, name: true, category: true } },
+          },
+          orderBy: { assignedAt: "asc" },
+        },
+        notes: {
+          include: {
+            author: { select: { id: true, firstName: true, lastName: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        },
+        statusHistory: {
+          include: {
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { changedAt: "desc" },
+        },
+        activities: {
+          include: {
+            actor: { select: { id: true, firstName: true, lastName: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        },
+        documents: {
+          include: {
+            raisedBy: { select: { id: true, firstName: true, lastName: true } },
+            resolvedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+        },
       },
     });
 
     if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
     }
 
-    return res.status(200).json({
-      success: true,
-      data: requirement,
-    });
+    return res.status(200).json({ success: true, data: requirement });
   } catch (error) {
     console.error("Error fetching requirement:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch requirement",
-    });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch requirement" });
   }
 };
 

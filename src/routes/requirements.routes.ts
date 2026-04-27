@@ -48,7 +48,7 @@ router.post(
   authenticateUser,
   authorize("requirements", "canAdd"),
   validate.body(createRequirementsSchema),
-  createRequirements,
+  createRequirements
 );
 
 /**
@@ -61,7 +61,7 @@ router.get(
   authenticateUser,
   authorize("requirements", "canView"),
   validate.query(getAllRequirementsSchema),
-  getAllRequirements,
+  getAllRequirements
 );
 
 /**
@@ -73,7 +73,7 @@ router.get(
   "/assigned-to-me",
   authenticateUser,
   authorize("requirements", "canView"),
-  getMyRequirements,
+  getMyRequirements
 );
 
 /**
@@ -86,7 +86,7 @@ router.get(
   authenticateUser,
   authorize("requirements", "canView"),
   validate.params(getRequirementParamsSchema),
-  getRequirement,
+  getRequirement
 );
 
 /**
@@ -100,7 +100,7 @@ router.patch(
   authorize("requirements", "canEdit"),
   validate.params(approveRequirementParamsSchema),
   validate.body(approveRequirementBodySchema),
-  approveRequirement,
+  approveRequirement
 );
 
 /**
@@ -114,7 +114,7 @@ router.patch(
   authorize("requirements", "canEdit"),
   validate.params(changeRequirementStatusParamsSchema),
   validate.body(changeRequirementStatusBodySchema),
-  changeRequirementStatus,
+  changeRequirementStatus
 );
 
 /**
@@ -128,7 +128,7 @@ router.post(
   // authorize("requirements", "canAdd"),
   validate.params(assignRequirementParamsSchema),
   validate.body(assignRequirementBodySchema),
-  assignRequirement,
+  assignRequirement
 );
 
 /**
@@ -142,7 +142,7 @@ router.post(
   authorize("requirements", "canAdd"),
   validate.params(addNotesParamsSchema),
   validate.body(addNotesBodySchema),
-  addNotes,
+  addNotes
 );
 
 /**
@@ -155,7 +155,7 @@ router.get(
   authenticateUser,
   authorize("requirements", "canView"),
   validate.params(getRequirementStatusHistoryParamsSchema),
-  getRequirementStatusHistory,
+  getRequirementStatusHistory
 );
 
 /**
@@ -169,7 +169,7 @@ router.patch(
   authorize("requirements", "canEdit"),
   validate.params(fillAssignmentParamsSchema),
   validate.body(fillAssignmentBodySchema),
-  fillAssignment,
+  fillAssignment
 );
 
 /**
@@ -183,7 +183,7 @@ router.post(
   authorize("requirements", "canAdd"),
   validate.params(uploadDocumentsParamsSchema),
   upload.single("file"),
-  uploadDocument,
+  uploadDocument
 );
 
 /**
@@ -196,6 +196,6 @@ router.patch(
   authenticateUser,
   authorize("requirements", "canEdit"),
   validate.params(resolveIssuesParamsSchema),
-  resolveIssue,
+  resolveIssue
 );
 export default router;

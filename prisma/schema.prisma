@@ -7,144 +7,40 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ═════════════════════════════════════════
-// CORE SERVICE — prisma/schema.prisma
-//
-// Owns: Users, Roles, Permissions, Business Units,
-//       Teams, Clients, Requirements, OrgFlow,
-//       Notifications, Activity Feed, AuditLog
-//
-// Does NOT own: Candidates, Applications, Interviews,
-//               Offers, Onboarding, Files, Communications
-//
-// Ecosystem note: Team hierarchy via parentTeamId.
-// Admin creates a MANAGEMENT team as root (the ecosystem),
-// then SALES and DELIVERY teams under it via parentTeamId.
-// Controllers derive all cross-team relationships by walking
-// the tree — no junction table needed.
-// ═════════════════════════════════════════
-
 // ─────────────────────────────────────────
-// USERS
+// ENUMS
 // ─────────────────────────────────────────
 
-model User {
-  id            String  @id @default(uuid())
-  email         String  @unique
-  passwordHash  String
-  passwordPlain String?
-
-  firstName       String
-  lastName        String
-  middleName      String?
-  nickName        String?
-  displayName     String?
-  employeeId      String?   @unique
-  phone           String?
-  workingLocation String?
-  timezone        String?
-  dateOfBirth     DateTime?
-  dateOfJoin      DateTime?
-
-  isSuperAdmin Boolean @default(false)
-  isActive     Boolean @default(true)
-
-  roleId String
-  role   Role   @relation(fields: [roleId], references: [id])
-
-  reportingToId String?
-  reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
-  subordinates  User[]  @relation("ReportsTo")
-
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
-
-  teamMemberships TeamMember[]
-  refreshTokens   RefreshToken[]
-
-  createdById String?
-  createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdByMe User[]  @relation("UserCreatedBy")
-
-  // in User model
-  jdUploads RequirementJD[] @relation("JDUploadedBy")
-
-  notifications         Notification[]        @relation("UserNotifications")
-  requirementActivities RequirementActivity[] @relation("RequirementActivityActor")
-
-  requirementsCreated               Requirement[]              @relation("RequirementCreatedBy")
-  requirementsApproved              Requirement[]              @relation("RequirementApprovedBy")
-  requirementsClosed                Requirement[]              @relation("RequirementClosedBy")
-  requirementDocsRaised             RequirementDocument[]      @relation("RequirementDocRaisedBy")
-  requirementDocsResolved           RequirementDocument[]      @relation("RequirementDocResolvedBy")
-  requirementNotesAuthored          RequirementNote[]          @relation("RequirementNoteAuthor")
-  requirementStatusChanges          RequirementStatusHistory[] @relation("RequirementStatusChangedBy")
-  requirementAssignmentsGiven       RequirementAssignment[]    @relation("RequirementAssignedBy")
-  requirementAssignmentsAsRecruiter RequirementAssignment[]    @relation("RequirementAssignmentRecruiter")
-
-  clientsCreated                ClientClient[]         @relation("ClientCreatedBy")
-  clientsApproved               ClientClient[]         @relation("ClientApprovedBy")
-  clientHandlerEntries          ClientHandler[]        @relation("ClientHandlerUser")
-  clientHandlersAssigned        ClientHandler[]        @relation("ClientHandlerAssignedBy")
-  clientTeamAssignmentsAssigned ClientTeamAssignment[] @relation("ClientTeamAssignedBy")
-  clientNotesAuthored           ClientNote[]           @relation("ClientNoteAuthor")
-
-  teamMembersDeactivated TeamMember[] @relation("TeamMemberDeactivatedBy")
-  teamMembersReplaced    TeamMember[] @relation("TeamMemberReplacedByUser")
-
-  orgFlowsCreated OrgFlow[]  @relation("OrgFlowCreatedBy")
-  orgFlowsUpdated OrgFlow[]  @relation("OrgFlowUpdatedBy")
-  auditLogs       AuditLog[] @relation("AuditLogActor")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([email])
-  @@index([isActive])
-  @@index([roleId])
+enum TeamCategory {
+  DELIVERY
+  SALES
+  SUPPORT
+  MANAGEMENT
 }
 
-model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  @@index([userId])
+enum NodeType {
+  MANAGEMENT
+  GROUP
+  INDIVIDUAL
 }
 
-// ─────────────────────────────────────────
-// ROLES & PERMISSIONS
-// ─────────────────────────────────────────
-
-model Role {
-  id          String  @id @default(uuid())
-  name        String  @unique
-  description String?
-  isSystem    Boolean @default(false)
-
-  users       User[]
-  permissions RolePermission[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum TeamRole {
+  LEAD
+  CO_LEAD
+  MEMBER
 }
 
-model RolePermission {
-  id     String @id @default(uuid())
-  roleId String
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+enum EdgeType {
+  ASSIGNS_TO
+  REPORTS_TO
+  VISIBILITY
+}
 
-  module    String
-  canView   Boolean         @default(false)
-  canAdd    Boolean         @default(false)
-  canEdit   Boolean         @default(false)
-  canDelete Boolean         @default(false)
-  scope     PermissionScope @default(OWN)
-
-  @@unique([roleId, module])
+enum TeamMemberEvent {
+  JOINED
+  LEFT
+  REPLACED
+  DEACTIVATED
 }
 
 enum PermissionScope {
@@ -154,580 +50,6 @@ enum PermissionScope {
   BU
   ALL
 }
-
-// ─────────────────────────────────────────
-// BUSINESS UNITS
-// ─────────────────────────────────────────
-
-model BusinessUnit {
-  id       String  @id @default(uuid())
-  name     String  @unique
-  isActive Boolean @default(true)
-
-  parentBUId String?
-  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
-  childBUs   BusinessUnit[] @relation("BUHierarchy")
-
-  teams        Team[]
-  users        User[]
-  clients      ClientClient[]
-  requirements Requirement[]
-
-  createdAt DateTime @default(now())
-
-  @@index([isActive])
-}
-
-// ─────────────────────────────────────────
-// TEAMS
-//
-// Ecosystem = MANAGEMENT team at root.
-// SALES + DELIVERY teams sit under it via parentTeamId.
-//
-// To find delivery teams for a SA:
-//   const parent = saTeam.parentTeamId  ← Rakhi's Unit
-//   findMany({ where: { parentTeamId: parent, category: DELIVERY } })
-// ─────────────────────────────────────────
-
-model Team {
-  id          String        @id @default(uuid())
-  name        String
-  description String?
-  isActive    Boolean       @default(true)
-  category    TeamCategory?
-
-  parentTeamId String?
-  parentTeam   Team?   @relation("TeamHierarchy", fields: [parentTeamId], references: [id])
-  childTeams   Team[]  @relation("TeamHierarchy")
-
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
-
-  members TeamMember[]
-
-  clientAssignments      ClientTeamAssignment[]
-  requirementAssignments RequirementAssignment[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([isActive])
-  @@index([businessUnitId])
-  @@index([parentTeamId])
-}
-
-model TeamMember {
-  id       String   @id @default(uuid())
-  userId   String
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  teamId   String
-  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  teamRole TeamRole @default(MEMBER)
-  isActive Boolean  @default(true)
-  joinedAt DateTime @default(now())
-
-  deactivatedAt      DateTime?
-  deactivatedById    String?
-  deactivatedBy      User?     @relation("TeamMemberDeactivatedBy", fields: [deactivatedById], references: [id])
-  deactivationReason String?
-
-  replacedByUserId   String?
-  replacedByUser     User?        @relation("TeamMemberReplacedByUser", fields: [replacedByUserId], references: [id])
-  replacedByMemberId String?
-  replacedByMember   TeamMember?  @relation("MemberReplacement", fields: [replacedByMemberId], references: [id])
-  replacedMembers    TeamMember[] @relation("MemberReplacement")
-
-  @@unique([userId, teamId])
-  @@index([teamId, isActive])
-}
-
-enum TeamRole {
-  LEAD
-  CO_LEAD
-  MEMBER
-}
-
-enum TeamCategory {
-  DELIVERY
-  SALES
-  SUPPORT
-  MANAGEMENT
-}
-
-// ─────────────────────────────────────────
-// CLIENTS
-// ─────────────────────────────────────────
-
-model ClientClient {
-  id       String          @id @default(uuid())
-  name     String
-  vmsName  String?
-  category ClientCategory?
-  industry String?
-  website  String?
-  country  String          @default("India")
-  state    String?
-  city     String?
-  address  String?
-  status   ClientStatus    @default(PENDING)
-
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
-
-  createdById  String
-  createdBy    User      @relation("ClientCreatedBy", fields: [createdById], references: [id])
-  approvedById String?
-  approvedBy   User?     @relation("ClientApprovedBy", fields: [approvedById], references: [id])
-  approvedAt   DateTime?
-
-  parentClientId String?
-  parentClient   ClientClient?  @relation("ClientFamily", fields: [parentClientId], references: [id])
-  childClients   ClientClient[] @relation("ClientFamily")
-
-  contacts        ClientContact[]
-  handlers        ClientHandler[]
-  teamAssignments ClientTeamAssignment[]
-  requirements    Requirement[]
-  notes           ClientNote[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status])
-  @@index([businessUnitId])
-  @@map("clients")
-}
-
-model ClientHandler {
-  id       String            @id @default(uuid())
-  clientId String
-  client   ClientClient      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  userId   String
-  user     User              @relation("ClientHandlerUser", fields: [userId], references: [id])
-  role     ClientHandlerRole @default(PRIMARY)
-
-  assignedById String
-  assignedBy   User     @relation("ClientHandlerAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
-
-  @@unique([clientId, userId])
-  @@unique([clientId, role])
-}
-
-model ClientTeamAssignment {
-  id       String       @id @default(uuid())
-  clientId String
-  client   ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  teamId   String
-  team     Team         @relation(fields: [teamId], references: [id])
-
-  assignedById String
-  assignedBy   User     @relation("ClientTeamAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
-
-  @@unique([clientId, teamId])
-}
-
-model ClientContact {
-  id          String       @id @default(uuid())
-  clientId    String
-  client      ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  firstName   String
-  lastName    String?
-  designation String?
-  email       String
-  phone       String?
-  linkedinUrl String?
-  isPrimary   Boolean      @default(false)
-  isActive    Boolean      @default(true)
-
-  requirements Requirement[]
-
-  createdAt DateTime @default(now())
-
-  @@index([clientId, isActive])
-}
-
-model ClientNote {
-  id       String       @id @default(uuid())
-  clientId String
-  client   ClientClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  authorId String
-  author   User         @relation("ClientNoteAuthor", fields: [authorId], references: [id])
-  content  String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([clientId])
-}
-
-enum ClientStatus {
-  PENDING
-  ACTIVE
-  INACTIVE
-}
-
-enum ClientHandlerRole {
-  PRIMARY
-  SECONDARY
-  BACKUP
-}
-
-enum ClientCategory {
-  PRODUCT
-  SERVICE
-  CONSULTING
-  STAFFING
-  GOVERNMENT
-  NGO
-  OTHER
-}
-
-// ─────────────────────────────────────────
-// REQUIREMENTS
-// ─────────────────────────────────────────
-
-model Requirement {
-  id      String @id @default(uuid())
-  reqCode String @unique
-
-  title       String
-  description String?
-
-  clientId String
-  client   ClientClient @relation(fields: [clientId], references: [id])
-
-  clientContactId String?
-  clientContact   ClientContact? @relation(fields: [clientContactId], references: [id])
-
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
-
-  jobType    RequirementType
-  remoteType RemoteType
-  priority   Priority        @default(MEDIUM)
-
-  totalOpenings       Int @default(1)
-  filledOpenings      Int @default(0)
-  activeApplications  Int @default(0)
-  interviewsScheduled Int @default(0)
-  offersRolledOut     Int @default(0)
-
-  location String?
-  country  String?
-
-  salaryMin  Float?
-  salaryMax  Float?
-  salaryType SalaryType?
-
-  // ── Experience ──
-  experienceMin Float? // in years
-  experienceMax Float?
-
-  startDate      DateTime?
-  endDate        DateTime?
-  respondBy      DateTime?
-  turnaroundDays Int?
-
-  status   RequirementStatus @default(DRAFT)
-  closedAt DateTime?
-
-  // ── Breach flags — set by BullMQ daily cron only ──
-  isRespondByBreached  Boolean @default(false)
-  isTurnaroundBreached Boolean @default(false)
-
-  createdById  String
-  createdBy    User      @relation("RequirementCreatedBy", fields: [createdById], references: [id])
-  approvedById String?
-  approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
-  approvedAt   DateTime?
-
-  closedById    String?
-  closedBy      User?                      @relation("RequirementClosedBy", fields: [closedById], references: [id])
-  // Requirement model
-  jd            RequirementJD[] // ← array, not singular, multiple versions exist
-  assignments   RequirementAssignment[]
-  documents     RequirementDocument[]
-  notes         RequirementNote[]
-  statusHistory RequirementStatusHistory[]
-  activities    RequirementActivity[]
-
-  // ── JD ──
-  // jd            RequirementJD?
-  skills RequirementSkill[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status])
-  @@index([clientId])
-  @@index([businessUnitId])
-  @@index([isRespondByBreached])
-  @@index([isTurnaroundBreached])
-}
-
-// ─────────────────────────────────────────
-// JD FILE
-//
-// One JD per requirement (@@unique on requirementId).
-// Stores S3 key for the actual file + extracted text for search.
-// Version history tracked via version field —
-// when SA uploads a new JD, old row is soft-replaced
-// (isLatest flipped, new row created) so history is preserved.
-// ─────────────────────────────────────────
-
-model RequirementJD {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  // S3 storage
-  fileKey       String // S3 object key  e.g. jd/kaas/req-001/v1-jd.pdf
-  fileName      String // original upload name
-  fileType      String // application/pdf | application/msword | etc
-  fileSizeBytes Int?
-
-  version  Int     @default(1)
-  isLatest Boolean @default(true)
-
-  // extracted plain text from PDF — for search / display
-  // null until extraction job runs
-  extractedText String?
-
-  uploadedById String
-  uploadedBy   User     @relation("JDUploadedBy", fields: [uploadedById], references: [id])
-  uploadedAt   DateTime @default(now())
-
-  @@index([requirementId, isLatest])
-}
-
-// ─────────────────────────────────────────
-// SKILLS / TAGS ON REQUIREMENT
-//
-// Normalised skill tags — mandatory vs nice-to-have.
-// Recruiter sees: "Must have: Java, Spring Boot | Good to have: Kafka, Docker"
-// Stored as rows not a JSON array so they're queryable and filterable.
-// ─────────────────────────────────────────
-
-model RequirementSkill {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  skill       String // "Java", "Spring Boot", "AWS"
-  isMandatory Boolean @default(true) // false = nice to have
-  experience  Float? // years required for this specific skill, optional
-
-  @@index([requirementId])
-}
-
-model RequirementDocument {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  type     DocumentEventType
-  fileName String?
-  fileUrl  String?
-  fileType String?
-  content  String?
-
-  isIssue       Boolean   @default(false)
-  issueResolved Boolean   @default(false)
-  resolvedById  String?
-  resolvedBy    User?     @relation("RequirementDocResolvedBy", fields: [resolvedById], references: [id])
-  resolvedAt    DateTime?
-
-  raisedById String
-  raisedBy   User     @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
-  createdAt  DateTime @default(now())
-
-  @@index([requirementId])
-}
-
-model RequirementAssignment {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  assignmentType AssignmentType
-  status         AssignmentStatus @default(ACTIVE)
-
-  // MANAGER → delivery manager User.id
-  // INDIVIDUAL → recruiter User.id
-  // TEAM → null, teamId is set
-  recruiterId String?
-  recruiter   User?   @relation("RequirementAssignmentRecruiter", fields: [recruiterId], references: [id])
-
-  teamId String?
-  team   Team?   @relation(fields: [teamId], references: [id])
-
-  allocatedOpenings Int?
-  filledOpenings    Int  @default(0)
-  submissionsCount  Int  @default(0)
-  interviewsCount   Int  @default(0)
-
-  isAutoRouted     Boolean @default(false)
-  isSystemAssigned Boolean @default(false)
-
-  // chain: INDIVIDUAL → parent TEAM → parent MANAGER → null
-  parentAssignmentId String?
-  parentAssignment   RequirementAssignment?  @relation("AssignmentChain", fields: [parentAssignmentId], references: [id])
-  childAssignments   RequirementAssignment[] @relation("AssignmentChain")
-
-  assignedById String?
-  assignedBy   User?    @relation("RequirementAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
-
-  removedAt     DateTime?
-  removedReason String?
-
-  // ── Per-assignment deadline tracking — breach set by BullMQ cron only ──
-  deadline       DateTime?
-  deadlineMet    Boolean? // null = pending | true = on time | false = breached
-  breachedAt     DateTime?
-  reminderSentAt DateTime?
-
-  @@index([requirementId, status])
-  @@index([recruiterId, status])
-  @@index([teamId, status])
-  @@index([parentAssignmentId])
-  @@index([deadline])
-}
-
-model RequirementNote {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-  authorId      String
-  author        User        @relation("RequirementNoteAuthor", fields: [authorId], references: [id])
-  content       String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([requirementId])
-}
-
-model RequirementStatusHistory {
-  id            String            @id @default(uuid())
-  requirementId String
-  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-  fromStatus    RequirementStatus
-  toStatus      RequirementStatus
-
-  changedById String
-  changedBy   User   @relation("RequirementStatusChangedBy", fields: [changedById], references: [id])
-
-  reason    String?
-  changedAt DateTime @default(now())
-
-  @@index([requirementId])
-}
-
-// ─────────────────────────────────────────
-// ACTIVITY FEED
-// ─────────────────────────────────────────
-
-model RequirementActivity {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  actorId String
-  actor   User   @relation("RequirementActivityActor", fields: [actorId], references: [id])
-
-  type    ActivityType
-  summary String
-  meta    Json?
-
-  createdAt DateTime @default(now())
-
-  @@index([requirementId, createdAt])
-  @@index([actorId])
-}
-
-// ─────────────────────────────────────────
-// NOTIFICATIONS
-// ─────────────────────────────────────────
-
-model Notification {
-  id     String @id @default(uuid())
-  userId String
-  user   User   @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
-
-  type  NotificationType
-  title String
-  body  String?
-
-  referenceId   String
-  referenceType NotificationReferenceType
-
-  isRead Boolean   @default(false)
-  readAt DateTime?
-
-  createdAt DateTime @default(now())
-
-  @@index([userId, isRead])
-  @@index([userId, createdAt])
-}
-
-// ─────────────────────────────────────────
-// ORG FLOW
-// ─────────────────────────────────────────
-
-model OrgFlow {
-  id        String       @id @default(uuid())
-  fromType  FlowNodeType
-  fromId    String
-  fromLabel String
-  toType    FlowNodeType
-  toId      String
-  toLabel   String
-  relation  String
-  isActive  Boolean      @default(true)
-
-  createdById String
-  createdBy   User    @relation("OrgFlowCreatedBy", fields: [createdById], references: [id])
-  updatedById String?
-  updatedBy   User?   @relation("OrgFlowUpdatedBy", fields: [updatedById], references: [id])
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([fromType, fromId, toType, toId, relation])
-  @@index([fromType, fromId])
-  @@index([toType, toId])
-}
-
-// ─────────────────────────────────────────
-// AUDIT LOG
-// ─────────────────────────────────────────
-
-model AuditLog {
-  id String @id @default(uuid())
-
-  actorId String
-  actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
-
-  action    String
-  module    String
-  recordId  String
-  oldData   Json?
-  newData   Json?
-  ip        String?
-  userAgent String?
-  createdAt DateTime @default(now())
-
-  @@index([module, recordId])
-  @@index([actorId])
-  @@index([createdAt])
-}
-
-// ─────────────────────────────────────────
-// ENUMS
-// ─────────────────────────────────────────
 
 enum DocumentEventType {
   FILE_UPLOAD
@@ -785,14 +107,6 @@ enum SalaryType {
   DAILY
 }
 
-enum FlowNodeType {
-  BUSINESS_UNIT
-  TEAM
-  USER
-  CLIENT
-  REQUIREMENT
-}
-
 enum ActivityType {
   REQUIREMENT_CREATED
   REQUIREMENT_APPROVED
@@ -825,4 +139,825 @@ enum NotificationReferenceType {
   ASSIGNMENT
   NOTE
   DOCUMENT
+}
+
+enum ClientStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+}
+
+enum ClientHandlerRole {
+  PRIMARY
+  SECONDARY
+  BACKUP
+}
+
+enum ClientHandlerStatus {
+  ACTIVE
+  REMOVED
+  REPLACED
+}
+
+enum ClientContactStatus {
+  ACTIVE
+  INACTIVE
+  REMOVED
+}
+
+enum ClientCategory {
+  PRODUCT
+  SERVICE
+  CONSULTING
+  STAFFING
+  GOVERNMENT
+  NGO
+  OTHER
+}
+
+// ─────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────
+
+model User {
+  id           String @id @default(uuid())
+  email        String @unique
+  passwordHash String
+
+  firstName       String
+  lastName        String
+  middleName      String?
+  nickName        String?
+  displayName     String?
+  employeeId      String?   @unique
+  phone           String?
+  workingLocation String?
+  timezone        String?
+  dateOfBirth     DateTime?
+  dateOfJoin      DateTime?
+
+  isSuperAdmin Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  reportingToId String?
+  reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
+  subordinates  User[]  @relation("ReportsTo")
+
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  teamMemberships TeamMember[]
+  refreshTokens   RefreshToken[]
+
+  createdById String?
+  createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdByMe User[]  @relation("UserCreatedBy")
+
+  jdUploads RequirementJD[] @relation("JDUploadedBy")
+
+  notifications         Notification[]        @relation("UserNotifications")
+  requirementActivities RequirementActivity[] @relation("RequirementActivityActor")
+
+  requirementsCreated      Requirement[]              @relation("RequirementCreatedBy")
+  requirementsApproved     Requirement[]              @relation("RequirementApprovedBy")
+  requirementsClosed       Requirement[]              @relation("RequirementClosedBy")
+  requirementStatusChanges RequirementStatusHistory[] @relation("RequirementStatusChangedBy")
+
+  requirementAssignmentsGiven       RequirementAssignment[] @relation("RequirementAssignedBy")
+  requirementAssignmentsAsRecruiter RequirementAssignment[] @relation("RequirementAssignmentRecruiter")
+
+  requirementDocsRaised   RequirementDocument[] @relation("RequirementDocRaisedBy")
+  requirementDocsResolved RequirementDocument[] @relation("RequirementDocResolvedBy")
+
+  requirementNotesAuthored RequirementNote[] @relation("RequirementNoteAuthor")
+
+  clientsCreated         Client[]        @relation("ClientCreatedBy")
+  clientsApproved        Client[]        @relation("ClientApprovedBy")
+  clientHandlerEntries   ClientHandler[] @relation("ClientHandlerUser")
+  clientHandlersAssigned ClientHandler[] @relation("ClientHandlerAssignedBy")
+  clientNotesAuthored    ClientNote[]    @relation("ClientNoteAuthor")
+
+  clientContactsOwned ClientContact[] @relation("ClientContactOwner")
+
+  clientTeamAssignmentsAssigned ClientTeamAssignment[] @relation("ClientTeamAssignedBy")
+
+  teamMembersDeactivated TeamMember[] @relation("TeamMemberDeactivatedBy")
+  teamMembersReplaced    TeamMember[] @relation("TeamMemberReplacedByUser")
+
+  teamMemberHistoriesAsUser    TeamMemberHistory[] @relation("TeamMemberHistoryUser")
+  teamMemberHistoriesPerformed TeamMemberHistory[] @relation("TeamMemberHistoryPerformedBy")
+
+  teamUnlinksDone TeamUnlinkHistory[] @relation("TeamUnlinkedBy")
+
+  auditLogs AuditLog[] @relation("AuditLogActor")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([isActive])
+  @@index([roleId])
+  @@index([businessUnitId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────
+// ROLES & PERMISSIONS
+// ─────────────────────────────────────────
+
+model Role {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String?
+  isSystem    Boolean @default(false)
+
+  users       User[]
+  permissions RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RolePermission {
+  id     String @id @default(uuid())
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  module    String
+  canView   Boolean         @default(false)
+  canAdd    Boolean         @default(false)
+  canEdit   Boolean         @default(false)
+  canDelete Boolean         @default(false)
+  scope     PermissionScope @default(OWN)
+
+  @@unique([roleId, module])
+}
+
+// ─────────────────────────────────────────
+// BUSINESS UNITS
+// ─────────────────────────────────────────
+
+model BusinessUnit {
+  id       String  @id @default(uuid())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  parentBUId String?
+  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
+  childBUs   BusinessUnit[] @relation("BUHierarchy")
+
+  teams        Team[]
+  users        User[]
+  clients      Client[]
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
+
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────
+// TEAMS
+// Two models coexist — different purposes, no overlap:
+//
+// parentTeamId  = STRUCTURAL navigation only
+//                 Use for: child listing, BU-scoped
+//                 tree walks, simple parent lookups.
+//                 NEVER derive business logic from this.
+//
+// TeamEdge      = SEMANTIC relationships
+//                 ASSIGNS_TO = work / requirement routing
+//                 REPORTS_TO = org reporting line
+//                 VISIBILITY = data access scope
+//
+// Rule: walk the tree with parentTeamId.
+//       answer "who can see / route what" with TeamEdge.
+// ─────────────────────────────────────────
+
+model Team {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean       @default(true)
+  nodeType    NodeType      @default(GROUP)
+  category    TeamCategory?
+
+  parentTeamId String?
+  parentTeam   Team?   @relation("TeamHierarchy", fields: [parentTeamId], references: [id])
+  childTeams   Team[]  @relation("TeamHierarchy")
+
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  members          TeamMember[]
+  visibilityConfig TeamVisibilityConfig?
+
+  parentEdges TeamEdge[] @relation("EdgeChild")
+  childEdges  TeamEdge[] @relation("EdgeParent")
+
+  clientAssignments      ClientTeamAssignment[]
+  requirementAssignments RequirementAssignment[]
+
+  memberHistories     TeamMemberHistory[]
+  unlinkHistory       TeamUnlinkHistory[] @relation("UnlinkedTeam")
+  unlinkedFromHistory TeamUnlinkHistory[] @relation("UnlinkedFromTeam")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([businessUnitId])
+  @@index([parentTeamId])
+  @@index([nodeType])
+}
+
+// ─────────────────────────────────────────
+// TEAM EDGE
+// Handles semantics only — not tree traversal.
+// Every connected node pair gets exactly 3 rows:
+// ASSIGNS_TO, REPORTS_TO, VISIBILITY
+// Tree traversal → use parentTeamId instead.
+// ─────────────────────────────────────────
+
+model TeamEdge {
+  id       String   @id @default(uuid())
+  parentId String
+  parent   Team     @relation("EdgeParent", fields: [parentId], references: [id], onDelete: Cascade)
+  childId  String
+  child    Team     @relation("EdgeChild", fields: [childId], references: [id], onDelete: Cascade)
+  edgeType EdgeType
+  isActive Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@unique([parentId, childId, edgeType])
+  @@index([parentId, edgeType])
+  @@index([childId, edgeType])
+}
+
+// ─────────────────────────────────────────
+// TEAM MEMBER
+// ─────────────────────────────────────────
+
+model TeamMember {
+  id       String   @id @default(uuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamRole TeamRole @default(MEMBER)
+  isActive Boolean  @default(true)
+  joinedAt DateTime @default(now())
+
+  deactivatedAt      DateTime?
+  deactivatedById    String?
+  deactivatedBy      User?     @relation("TeamMemberDeactivatedBy", fields: [deactivatedById], references: [id])
+  deactivationReason String?
+
+  replacedByUserId   String?
+  replacedByUser     User?        @relation("TeamMemberReplacedByUser", fields: [replacedByUserId], references: [id])
+  replacedByMemberId String?
+  replacedByMember   TeamMember?  @relation("MemberReplacement", fields: [replacedByMemberId], references: [id])
+  replacedMembers    TeamMember[] @relation("MemberReplacement")
+
+  assignments RequirementAssignment[]
+  history     TeamMemberHistory[]
+
+  @@unique([userId, teamId])
+  @@index([userId])           // FIX: added — "all teams for a user" queries
+  @@index([teamId, isActive])
+}
+
+// ─────────────────────────────────────────
+// TEAM MEMBER HISTORY
+// ─────────────────────────────────────────
+
+model TeamMemberHistory {
+  id            String          @id @default(uuid())
+  teamMemberId  String
+  teamMember    TeamMember      @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User            @relation("TeamMemberHistoryUser", fields: [userId], references: [id])
+  teamId        String
+  team          Team            @relation(fields: [teamId], references: [id])
+  event         TeamMemberEvent
+  eventAt       DateTime        @default(now())
+  performedById String?
+  performedBy   User?           @relation("TeamMemberHistoryPerformedBy", fields: [performedById], references: [id])
+  reason        String?
+
+  @@index([teamMemberId])
+  @@index([teamId])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────
+// TEAM VISIBILITY CONFIG
+// ─────────────────────────────────────────
+
+model TeamVisibilityConfig {
+  id     String @id @default(uuid())
+  teamId String @unique
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  membersCanSeePeerReqs Boolean @default(false)
+  leadCanSeeChildReqs   Boolean @default(true)
+  canSeeInboundReqs     Boolean @default(true)
+  canSeeOutboundReqs    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────
+// TEAM UNLINK HISTORY
+// ─────────────────────────────────────────
+
+model TeamUnlinkHistory {
+  id     String @id @default(uuid())
+  teamId String
+  team   Team   @relation("UnlinkedTeam", fields: [teamId], references: [id])
+
+  unlinkedFromTeamId String
+  unlinkedFromTeam   Team   @relation("UnlinkedFromTeam", fields: [unlinkedFromTeamId], references: [id])
+
+  unlinkedAt              DateTime @default(now())
+  reason                  String?
+  pendingAssignmentsCount Int      @default(0)
+
+  unlinkedById String
+  unlinkedBy   User   @relation("TeamUnlinkedBy", fields: [unlinkedById], references: [id])
+
+  @@index([teamId])
+  @@index([unlinkedFromTeamId])
+}
+
+// ─────────────────────────────────────────
+// CLIENTS
+// ─────────────────────────────────────────
+
+model Client {
+  id       String          @id @default(uuid())
+  name     String
+  vmsName  String?
+  category ClientCategory?
+  industry String?
+  website  String?
+  country  String?
+  state    String?
+  city     String?
+  address  String?
+  status   ClientStatus    @default(PENDING)
+
+  deletedAt DateTime?
+
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  createdById  String
+  createdBy    User      @relation("ClientCreatedBy", fields: [createdById], references: [id])
+  approvedById String?
+  approvedBy   User?     @relation("ClientApprovedBy", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+
+  parentClientId String?
+  parentClient   Client?  @relation("ClientFamily", fields: [parentClientId], references: [id])
+  childClients   Client[] @relation("ClientFamily")
+
+  contacts        ClientContact[]
+  handlers        ClientHandler[]
+  teamAssignments ClientTeamAssignment[]
+  requirements    Requirement[]
+  notes           ClientNote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([businessUnitId])
+  @@index([deletedAt])
+}
+
+// ─────────────────────────────────────────
+// CLIENT HANDLER
+// No @@unique on [clientId, userId] — history rows
+// stay with status REMOVED / REPLACED.
+// Application enforces only one ACTIVE per (clientId, userId).
+// ─────────────────────────────────────────
+
+model ClientHandler {
+  id       String              @id @default(uuid())
+  clientId String
+  client   Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User                @relation("ClientHandlerUser", fields: [userId], references: [id])
+  role     ClientHandlerRole   @default(PRIMARY)
+  status   ClientHandlerStatus @default(ACTIVE)
+
+  assignedById String
+  assignedBy   User     @relation("ClientHandlerAssignedBy", fields: [assignedById], references: [id])
+  assignedAt   DateTime @default(now())
+
+  removedAt     DateTime?
+  removedReason String?
+
+  // FIX: was @@unique([clientId, userId]) — blocked re-assignment after removal
+  @@index([clientId, userId, status])
+  @@index([clientId, status])
+}
+
+model ClientTeamAssignment {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  teamId   String
+  team     Team   @relation(fields: [teamId], references: [id])
+
+  assignedById String
+  assignedBy   User     @relation("ClientTeamAssignedBy", fields: [assignedById], references: [id])
+  assignedAt   DateTime @default(now())
+
+  @@unique([clientId, teamId])
+}
+
+// ─────────────────────────────────────────
+// CLIENT CONTACT
+// ─────────────────────────────────────────
+
+model ClientContact {
+  id          String              @id @default(uuid())
+  clientId    String
+  client      Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  firstName   String
+  lastName    String?
+  designation String?
+  email       String
+  phone       String?
+  linkedinUrl String?
+  isPrimary   Boolean             @default(false)
+  status      ClientContactStatus @default(ACTIVE)
+
+  ownerId String?
+  owner   User?   @relation("ClientContactOwner", fields: [ownerId], references: [id])
+
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId, status])
+}
+
+model ClientNote {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  authorId String
+  author   User   @relation("ClientNoteAuthor", fields: [authorId], references: [id])
+  content  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+}
+
+// ─────────────────────────────────────────
+// SKILLS
+// Canonical skill registry — prevents free-text
+// duplication ("React" vs "ReactJS" vs "react js").
+// aliases holds alternate names for search/matching.
+// ─────────────────────────────────────────
+
+model Skill {
+  id            String   @id @default(uuid())
+  canonicalName String   @unique
+  aliases       String[]
+
+  requirementSkills RequirementSkill[]
+
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────────────────────────
+// REQUIREMENTS
+// ─────────────────────────────────────────
+
+model Requirement {
+  id      String @id @default(uuid())
+  reqCode String @unique
+
+  title       String
+  description String?
+
+  deletedAt DateTime?
+
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id])
+
+  clientContactId String?
+  clientContact   ClientContact? @relation(fields: [clientContactId], references: [id])
+
+  businessUnitId String?
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+
+  jobType    RequirementType
+  remoteType RemoteType
+  priority   Priority        @default(MEDIUM)
+
+  totalOpenings       Int @default(1)
+  filledOpenings      Int @default(0)
+  activeApplications  Int @default(0)
+  interviewsScheduled Int @default(0)
+  offersRolledOut     Int @default(0)
+
+  location String?
+  country  String?
+
+  salaryMin  Float?
+  salaryMax  Float?
+  salaryType SalaryType?
+
+  experienceMin Float?
+  experienceMax Float?
+
+  startDate      DateTime?
+  endDate        DateTime?
+  respondBy      DateTime?
+  turnaroundDays Int?
+
+  status   RequirementStatus @default(DRAFT)
+  closedAt DateTime?
+
+  isRespondByBreached  Boolean @default(false)
+  isTurnaroundBreached Boolean @default(false)
+
+  createdById  String
+  createdBy    User      @relation("RequirementCreatedBy", fields: [createdById], references: [id])
+  approvedById String?
+  approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+
+  closedById String?
+  closedBy   User?   @relation("RequirementClosedBy", fields: [closedById], references: [id])
+
+  jd            RequirementJD[]
+  assignments   RequirementAssignment[]
+  documents     RequirementDocument[]
+  notes         RequirementNote[]
+  statusHistory RequirementStatusHistory[]
+  activities    RequirementActivity[]
+  skills        RequirementSkill[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([clientId])
+  @@index([businessUnitId])
+  @@index([isRespondByBreached])
+  @@index([isTurnaroundBreached])
+  @@index([deletedAt])
+}
+
+model RequirementJD {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  fileKey       String
+  fileName      String
+  fileType      String
+  fileSizeBytes Int?
+
+  version  Int     @default(1)
+  isLatest Boolean @default(true)
+
+  extractedText String?
+
+  uploadedById String
+  uploadedBy   User     @relation("JDUploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt   DateTime @default(now())
+
+  // FIX: added — prevents duplicate version numbers on concurrent uploads
+  @@unique([requirementId, version])
+  @@index([requirementId, isLatest])
+}
+
+// ─────────────────────────────────────────
+// REQUIREMENT SKILL
+// References canonical Skill — no free text.
+// ─────────────────────────────────────────
+
+model RequirementSkill {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  // FIX: was String (free text) — now FK to canonical Skill registry
+  skillId     String
+  skill       Skill   @relation(fields: [skillId], references: [id])
+  isMandatory Boolean @default(true)
+  experience  Float?
+
+  @@unique([requirementId, skillId])
+  @@index([requirementId])
+}
+
+model RequirementDocument {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  type     DocumentEventType
+  fileName String?
+  fileKey  String?
+  fileType String?
+  content  String?
+
+  isIssue       Boolean   @default(false)
+  issueResolved Boolean   @default(false)
+  resolvedById  String?
+  resolvedBy    User?     @relation("RequirementDocResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt    DateTime?
+
+  raisedById String
+  raisedBy   User     @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([requirementId])
+}
+
+// ─────────────────────────────────────────
+// REQUIREMENT ASSIGNMENT
+// Assignment chain max depth = 3
+// Valid chains:
+//   MANAGER only
+//   MANAGER → TEAM
+//   MANAGER → INDIVIDUAL (DM assigns direct, no TL)
+//   MANAGER → TEAM → INDIVIDUAL
+// SALES user routes to MANAGER only
+// DM can assign to TEAM or INDIVIDUAL directly
+// TL can assign to INDIVIDUAL only
+// Null enforcement (teamId/teamMemberId/recruiterId)
+// must be handled at the service layer.
+// ─────────────────────────────────────────
+
+model RequirementAssignment {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  assignmentType AssignmentType
+  status         AssignmentStatus @default(ACTIVE)
+
+  recruiterId String?
+  recruiter   User?   @relation("RequirementAssignmentRecruiter", fields: [recruiterId], references: [id])
+
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id])
+
+  teamMemberId String?
+  teamMember   TeamMember? @relation(fields: [teamMemberId], references: [id])
+
+  allocatedOpenings Int?
+  filledOpenings    Int  @default(0)
+  submissionsCount  Int  @default(0)
+  interviewsCount   Int  @default(0)
+
+  isAutoRouted     Boolean @default(false)
+  isSystemAssigned Boolean @default(false)
+
+  parentAssignmentId String?
+  parentAssignment   RequirementAssignment?  @relation("AssignmentChain", fields: [parentAssignmentId], references: [id])
+  childAssignments   RequirementAssignment[] @relation("AssignmentChain")
+
+  assignedById String?
+  assignedBy   User?    @relation("RequirementAssignedBy", fields: [assignedById], references: [id])
+  assignedAt   DateTime @default(now())
+
+  removedAt     DateTime?
+  removedReason String?
+
+  deadline       DateTime?
+  deadlineMet    Boolean?
+  breachedAt     DateTime?
+  reminderSentAt DateTime?
+
+  @@index([requirementId, status])
+  @@index([recruiterId, status])
+  @@index([teamId, status])
+  @@index([teamMemberId, status])
+  @@index([parentAssignmentId])
+  @@index([assignedById])
+  @@index([deadline])
+}
+
+model RequirementNote {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User        @relation("RequirementNoteAuthor", fields: [authorId], references: [id])
+  content       String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requirementId])
+}
+
+model RequirementStatusHistory {
+  id            String            @id @default(uuid())
+  requirementId String
+  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  fromStatus    RequirementStatus
+  toStatus      RequirementStatus
+
+  changedById String
+  changedBy   User   @relation("RequirementStatusChangedBy", fields: [changedById], references: [id])
+
+  reason    String?
+  changedAt DateTime @default(now())
+
+  @@index([requirementId])
+}
+
+model RequirementActivity {
+  id            String      @id @default(uuid())
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  actorId String
+  actor   User   @relation("RequirementActivityActor", fields: [actorId], references: [id])
+
+  type    ActivityType
+  summary String
+  meta    Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([requirementId, createdAt])
+  @@index([actorId])
+}
+
+// ─────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  type  NotificationType
+  title String
+  body  String?
+
+  referenceId   String
+  referenceType NotificationReferenceType
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  actorId String
+  actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
+
+  action    String
+  module    String
+  recordId  String
+  oldData   Json?
+  newData   Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([module, recordId])
+  @@index([actorId])
+  @@index([createdAt])
 }
