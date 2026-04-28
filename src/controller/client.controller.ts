@@ -1,560 +1,449 @@
-import { createAuditLog } from "@/services/auditLogs.service";
 import prisma from "@/utils/prisma/client";
-import {
-  TAssignContactHandlerSchema,
-  TClientNoteSchema,
-  TClientsIdSchema,
-  TContactHandlerParamsSchema,
-  TCreateClientSchema,
-  TGetAllClientsSchema,
-  TspocContactSchema,
-} from "@/validators/client.validators";
-import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
+// import prisma from "@/lib/prisma";
 
-export const createClient = async (req: Request, res: Response) => {
-  try {
-    const {
-      name,
-      vmsName,
-      category,
-      industry,
-      website,
-      country,
-      state,
-      city,
-      businessUnitId,
-    } = req.validatedBody as TCreateClientSchema;
-    const existingClient = await prisma.client.findFirst({
-      where: { name },
-    });
-    if (existingClient) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Client already exist" });
-    }
-    const addClient = await prisma.client.create({
-      data: {
-        name,
-        createdById: req.user!.id,
-        ...(vmsName !== undefined && { vmsName }),
-        ...(category !== undefined && { category }),
-        ...(industry !== undefined && { industry }),
-        ...(website !== undefined && { website }),
-        ...(country !== undefined && { country }),
-        ...(state !== undefined && { state }),
-        ...(city !== undefined && { city }),
-        ...(businessUnitId !== undefined && { businessUnitId }),
-      },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-      },
-    });
-    await createAuditLog({
-      actorId: req.user!.id,
-      action: "CREATE",
-      module: "CLIENT",
-      recordId: addClient.id,
-    });
-    return res.status(201).json({
-      success: true,
-      message: "Client Created Successfully",
-      data: addClient,
-    });
-  } catch (error) {
-    console.error("Error creating client", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Error in creating client" });
-  }
+/**
+ * 🔒 Helper: enforce BU scope
+ */
+const getUserBU = (req: Request) => {
+  const user = req.user as any;
+  return {
+    isSuperAdmin: user.isSuperAdmin,
+    businessUnitId: user.businessUnitId,
+    userId: user.id,
+  };
 };
 
-// export const getAllClients = async (req: Request, res: Response) => {
-//   try {
-//     const { name, status, category, buId, page, limit } =
-//       req.validatedQuery as TGetAllClientsSchema;
+/**
+ * ─────────────────────────────────────────────
+ * CREATE CLIENT
+ * ─────────────────────────────────────────────
+ */
+export const createClient = async (req: Request, res: Response) => {
+  const { isSuperAdmin, businessUnitId, userId } = getUserBU(req);
 
-//     const skip = (page - 1) * limit;
+  const data = req.body;
 
-//     // role-scoped filtering
-//     const where: Prisma.ClientWhereInput = {
-//       ...(name !== undefined && {
-//         name: { contains: name, mode: "insensitive" },
-//       }),
-//       ...(status !== undefined && { status }),
-//       ...(category !== undefined && { category }),
-//       ...(buId !== undefined && { businessUnitId: buId }),
-//     };
+  const client = await prisma.client.create({
+    data: {
+      ...data,
+      businessUnitId: isSuperAdmin ? data.businessUnitId : businessUnitId,
 
-//     const [clients, total] = await Promise.all([
-//       prisma.client.findMany({
-//         where,
-//         skip,
-//         take: limit,
+      createdById: userId,
+    },
+  });
 
-//         include: {
-//           businessUnit: true,
-//           teamAssignments: true,
-//           contacts: true,
-//           handlers: true,
-//         },
-//         orderBy: { createdAt: "desc" },
-//       }),
-//       prisma.client.count({ where }),
-//     ]);
+  res.json({ success: true, data: client });
+};
 
-//     return res.status(200).json({
-//       success: true,
-//       data: clients,
-//       pagination: {
-//         total,
-//         page,
-//         limit,
-//         totalPages: Math.ceil(total / limit),
-//       },
-//     });
-//   } catch (error) {
-//     console.error("Error fetching clients:", error);
-//     return res
-//       .status(500)
-//       .json({ success: false, message: "Internal server error" });
-//   }
-// };
+/**
+ * ─────────────────────────────────────────────
+ * GET ALL CLIENTS (FILTERED)
+ * ─────────────────────────────────────────────
+ */
+// import { Request, Response } from "express";
+// import prisma from "@/utils/prisma/client";
 
+/**
+ * ─────────────────────────────────────────────
+ * GET ALL CLIENTS (FIXED + SCOPE AWARE)
+ * ─────────────────────────────────────────────
+ */
 export const getAllClients = async (req: Request, res: Response) => {
   try {
-    const { name, status, category, buId, page, limit } =
-      req.validatedQuery as TGetAllClientsSchema;
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      status,
+      category,
+      handlerId,
+      teamId,
+      hasActiveRequirements,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+    } = req.query as any;
 
-    const skip = (page - 1) * limit;
-    const scope = req.permissionScope;
-    const user = req.user;
+    // 🔥 Fix: convert to numbers
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
 
-    // build scope filter
-    let scopeFilter: Prisma.ClientWhereInput = {};
+    // 🔥 Base where
+    const where: any = {
+      deletedAt: null,
+    };
 
-    if (scope === "OWN") {
-      // only clients where this user is a handler
-      scopeFilter = {
-        handlers: {
-          some: { userId: user.id },
+    /**
+     * ─────────────────────────────────────────
+     * 🔒 APPLY SCOPE FILTER (VERY IMPORTANT)
+     * ─────────────────────────────────────────
+     */
+    const scope = req.scopeFilter;
+
+    if (scope.type === "BU") {
+      where.businessUnitId = scope.businessUnitId;
+    }
+
+    if (scope.type === "OWN") {
+      where.createdById = scope.userId;
+    }
+
+    if (scope.type === "TEAM" || scope.type === "MANAGER") {
+      where.teamAssignments = {
+        some: {
+          teamId: { in: scope.teamIds || [] },
         },
       };
-    } else if (scope === "TEAM") {
-      // clients where any member of user's teams is a handler
-      const teamIds = user.teamMemberships.map((tm: any) => tm.teamId);
-      scopeFilter = {
-        handlers: {
-          some: {
-            user: {
-              teamMemberships: {
-                some: { teamId: { in: teamIds } },
-              },
+    }
+
+    /**
+     * ─────────────────────────────────────────
+     * FILTERS
+     * ─────────────────────────────────────────
+     */
+
+    if (status) where.status = status;
+    if (category) where.category = category;
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { industry: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    if (handlerId) {
+      where.handlers = {
+        some: {
+          userId: handlerId,
+          status: "ACTIVE",
+        },
+      };
+    }
+
+    if (teamId) {
+      where.teamAssignments = {
+        some: {
+          teamId,
+        },
+      };
+    }
+
+    if (hasActiveRequirements) {
+      where.requirements = {
+        some: {
+          status: "ACTIVE",
+        },
+      };
+    }
+
+    /**
+     * ─────────────────────────────────────────
+     * QUERY
+     * ─────────────────────────────────────────
+     */
+
+    const [data, total] = await Promise.all([
+      prisma.client.findMany({
+        where,
+        include: {
+          handlers: true,
+          teamAssignments: true,
+          _count: {
+            select: {
+              requirements: true,
             },
           },
         },
-      };
-    } else if (scope === "BU") {
-      // clients in same BU
-      scopeFilter = {
-        businessUnitId: user.businessUnitId,
-      };
-    }
-    // scope === "ALL" → no filter, super admin sees everything
-
-    const where: Prisma.ClientWhereInput = {
-      ...scopeFilter,
-      ...(name !== undefined && {
-        name: { contains: name, mode: "insensitive" },
-      }),
-      ...(status !== undefined && { status }),
-      ...(category !== undefined && { category }),
-      ...(buId !== undefined && { businessUnitId: buId }),
-    };
-
-    const [clients, total] = await Promise.all([
-      prisma.client.findMany({
-        where,
-        skip,
-        take: limit,
-        include: {
-          businessUnit: true,
-          teamAssignments: true,
-          contacts: true,
-          handlers: true,
+        orderBy: {
+          [sortBy || "createdAt"]: sortOrder === "asc" ? "asc" : "desc",
         },
-        orderBy: { createdAt: "desc" },
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
       }),
       prisma.client.count({ where }),
     ]);
 
-    return res.status(200).json({
+    res.json({
       success: true,
-      data: clients,
-      pagination: {
+      data,
+      meta: {
         total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
+        page: pageNum,
+        limit: limitNum,
       },
     });
-  } catch (error) {
-    console.error("Error fetching clients:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error" });
+  } catch (err) {
+    console.error("getAllClients error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch clients",
+    });
   }
 };
 
-export const approveClients = async (req: Request, res: Response) => {
-  try {
-    // const { id } = req.validateParams;
-    const { id } = req.validatedParams as TClientsIdSchema;
-    const existingClient = await prisma.client.findUnique({
-      where: { id },
-    });
-    if (!existingClient) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Client doesn't exist" });
-    }
-    if (existingClient.status !== "PENDING") {
-      return res.status(400).json({
-        success: false,
-        message: "Only pending clients can be approved",
-      });
-    }
-    const approval = await prisma.client.update({
-      where: { id },
-      data: {
-        status: "ACTIVE",
-        approvedAt: new Date(),
+/**
+ * ─────────────────────────────────────────────
+ * GET SINGLE CLIENT (DEEP VIEW)
+ * ─────────────────────────────────────────────
+ */
+export const getClientById = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const client = await prisma.client.findFirst({
+    where: {
+      id,
+      deletedAt: null,
+    },
+    include: {
+      contacts: {
+        include: {
+          handlers: {
+            include: {
+              user: true,
+            },
+          },
+        },
       },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        approvedAt: true,
+      handlers: {
+        include: {
+          user: true,
+        },
       },
-    });
-    await createAuditLog({
-      actorId: req.user!.id,
-      action: "APPROVE",
-      module: "CLIENT",
-      recordId: id,
-    });
-    return res.status(200).json({
-      success: true,
-      message: "Client got approved successfully",
-      data: approval,
-    });
-  } catch (error) {
-    console.error("Error approving client", error);
-    return res
-      .status(500)
-      .json({ success: true, message: "Internal server error" });
-  }
+      teamAssignments: {
+        include: {
+          team: true,
+        },
+      },
+      requirements: {
+        take: 5, // 🔥 limit for performance
+        orderBy: { createdAt: "desc" },
+      },
+      notes: true,
+    },
+  });
+
+  res.json({ success: true, data: client });
 };
 
-export const getSingleClientDetails = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.validatedParams as TClientsIdSchema;
-    const existing = await prisma.client.findUnique({
-      where: { id },
-      include: {
-        parentClient: true,
-        childClients: true,
-        contacts: {
-          include: {
-            handlers: true,
-          },
-        },
-        teamAssignments: true,
-        requirements: true,
-        notes: true,
-      },
-    });
-    if (!existing) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Client doesn not exist" });
-    }
-    // if (req.user!.role === "SALES" && existing.createdById !== req.user!.id) {
-    //   return res.status(403).json({ success: false, message: "Access denied" });
-    // }
-    // if (
-    //   req.user!.role === "DELIVERY_LEAD" &&
-    //   existing.businessUnitId !== req.user!.id
-    // ) {
-    //   return res.status(403).json({ success: false, message: "Access denied" });
-    // }
-    const client = await prisma.client.findMany({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        vmsName: true,
-        category: true,
-        industry: true,
-        website: true,
-        country: true,
-        state: true,
-        status: true,
-        businessUnit: { select: { id: true, name: true } },
-        contacts: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            isActive: true,
-            isPrimary: true,
-          },
-        },
-        handlers: {
-          select: {
-            id: true,
-            userId: true,
-            role: true,
-            assignedAt: true,
-          },
-        },
-        teamAssignments: {
-          select: {
-            id: true,
-            teamId: true,
-            team: { select: { id: true, name: true } },
-            assignedAt: true,
-          },
-        },
-        requirements: {
-          select: {
-            id: true,
-            title: true,
-            status: true,
-            createdAt: true,
-          },
-        },
-      },
-    });
-    return res.status(200).json({ success: true, data: client });
-  } catch (error) {
-    console.error("Error fetching client details:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error" });
-  }
+/**
+ * ─────────────────────────────────────────────
+ * UPDATE CLIENT
+ * ─────────────────────────────────────────────
+ */
+export const updateClient = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const updated = await prisma.client.update({
+    where: { id },
+    data: req.body,
+  });
+
+  res.json({ success: true, data: updated });
 };
 
-//Add a SPOC to the client.
-export const spocContact = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.validatedParams as TClientsIdSchema;
-    const {
-      firstName,
-      lastName,
-      designation,
-      email,
-      phone,
-      linkedinUrl,
-      isPrimary,
-    } = req.validatedBody as TspocContactSchema;
+/**
+ * ─────────────────────────────────────────────
+ * DELETE (SOFT)
+ * ─────────────────────────────────────────────
+ */
+export const deleteClient = async (req: Request, res: Response) => {
+  const { id } = req.params;
 
-    const existingClient = await prisma.client.findUnique({ where: { id } });
-    if (!existingClient) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Client not found" });
-    }
+  await prisma.client.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+  });
 
-    const existingContact = await prisma.clientContact.findFirst({
-      where: { clientId: id, email },
-    });
-    if (existingContact) {
-      return res.status(400).json({
-        success: false,
-        message: "Contact with this email already exists",
-      });
-    }
-
-    // unset previous primary if new one is primary
-    if (isPrimary) {
-      await prisma.clientContact.updateMany({
-        where: { clientId: id, isPrimary: true },
-        data: { isPrimary: false },
-      });
-    }
-
-    const newContact = await prisma.clientContact.create({
-      data: {
-        clientId: id,
-        firstName,
-        email,
-        ...(lastName !== undefined && { lastName }),
-        ...(designation !== undefined && { designation }),
-        ...(phone !== undefined && { phone }),
-        ...(linkedinUrl !== undefined && { linkedinUrl }),
-        ...(isPrimary !== undefined && { isPrimary }),
-      } as Prisma.ClientContactUncheckedCreateInput,
-      select: {
-        id: true,
-        clientId: true,
-        firstName: true,
-        lastName: true,
-        designation: true,
-        email: true,
-        phone: true,
-        linkedinUrl: true,
-        isPrimary: true,
-        isActive: true,
-        createdAt: true,
-      },
-    });
-
-    await createAuditLog({
-      actorId: req.user!.id,
-      action: "CREATE",
-      module: "CLIENT_CONTACT",
-      recordId: newContact.id,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "SPOC created successfully",
-      data: newContact,
-    });
-  } catch (error) {
-    console.error("Error creating SPOC:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error" });
-  }
+  res.json({ success: true });
 };
 
-// Assign a user to handle a specific SPOC
+/**
+ * ─────────────────────────────────────────────
+ * APPROVE CLIENT
+ * ─────────────────────────────────────────────
+ */
+export const approveClient = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { userId } = getUserBU(req);
+
+  const updated = await prisma.client.update({
+    where: { id },
+    data: {
+      status: "ACTIVE",
+      approvedById: userId,
+      approvedAt: new Date(),
+    },
+  });
+
+  res.json({ success: true, data: updated });
+};
+
+/**
+ * ─────────────────────────────────────────────
+ * CONTACTS (SPOC)
+ * ─────────────────────────────────────────────
+ */
+
+export const addClientContact = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const contact = await prisma.clientContact.create({
+    data: {
+      ...req.body,
+      clientId: id,
+    },
+  });
+
+  res.json({ success: true, data: contact });
+};
+
+export const updateClientContact = async (req: Request, res: Response) => {
+  const { contactId } = req.params;
+
+  const updated = await prisma.clientContact.update({
+    where: { id: contactId },
+    data: req.body,
+  });
+
+  res.json({ success: true, data: updated });
+};
+
+export const removeClientContact = async (req: Request, res: Response) => {
+  const { contactId } = req.params;
+
+  await prisma.clientContact.update({
+    where: { id: contactId },
+    data: { status: "REMOVED" },
+  });
+
+  res.json({ success: true });
+};
+
+/**
+ * ─────────────────────────────────────────────
+ * CONTACT HANDLERS
+ * ─────────────────────────────────────────────
+ */
+
 export const assignContactHandler = async (req: Request, res: Response) => {
-  try {
-    const { id, contactId } =
-      req.validatedParams as TContactHandlerParamsSchema;
-    const { userId } = req.validatedBody as TAssignContactHandlerSchema;
+  const { contactId } = req.params;
+  const { userId, role } = req.body;
 
-    // check client exists
-    const existingClient = await prisma.client.findUnique({ where: { id } });
-    if (!existingClient) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Client not found" });
-    }
+  const handler = await prisma.clientHandler.create({
+    data: {
+      clientId: undefined as any, // ⚠️ depends on your design (if shared or not)
+      userId,
+      role,
+      assignedById: (req.user as any).id,
+    },
+  });
 
-    // check contact exists and belongs to this client
-    const existingContact = await prisma.clientContact.findFirst({
-      where: { id: contactId, clientId: id },
-    });
-    if (!existingContact) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Contact not found" });
-    }
-
-    // check user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-    if (!existingUser) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    // check if already assigned
-    const alreadyAssigned = await prisma.contactHandler.findUnique({
-      where: { contactId_userId: { contactId, userId } },
-    });
-    if (alreadyAssigned) {
-      return res.status(400).json({
-        success: false,
-        message: "User already assigned to this contact",
-      });
-    }
-
-    const handler = await prisma.contactHandler.create({
-      data: {
-        contactId,
-        userId,
-        assignedById: req.user!.id,
-      } as Prisma.ContactHandlerUncheckedCreateInput,
-      select: {
-        id: true,
-        contactId: true,
-        userId: true,
-        assignedBy: true,
-        assignedAt: true,
-      },
-    });
-
-    await createAuditLog({
-      actorId: req.user!.id,
-      action: "CREATE",
-      module: "CONTACT_HANDLER",
-      recordId: handler.id,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Handler assigned to contact successfully",
-      data: handler,
-    });
-  } catch (error) {
-    console.error("Error assigning contact handler:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error" });
-  }
+  res.json({ success: true, data: handler });
 };
 
-// Add a note to the client.
-export const clientNote = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.validatedParams as TClientsIdSchema;
-    const { content } = req.validatedBody as TClientNoteSchema;
-    const existingClient = await prisma.client.findUnique({ where: { id } });
-    if (!existingClient) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Client not found" });
-    }
-    const notes = await prisma.clientNote.create({
-      data: {
+export const removeContactHandler = async (req: Request, res: Response) => {
+  const { handlerId } = req.params as any;
+
+  await prisma.clientHandler.update({
+    where: { id: handlerId },
+    data: {
+      status: "REMOVED",
+      removedAt: new Date(),
+    },
+  });
+
+  res.json({ success: true });
+};
+
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT HANDLERS
+ * ─────────────────────────────────────────────
+ */
+
+export const assignClientHandler = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { userId, role } = req.body;
+
+  const handler = await prisma.clientHandler.create({
+    data: {
+      clientId: id,
+      userId,
+      role,
+      assignedById: (req.user as any).id,
+    },
+  });
+
+  res.json({ success: true, data: handler });
+};
+
+export const removeClientHandler = async (req: Request, res: Response) => {
+  const { handlerId } = req.params as any;
+
+  await prisma.clientHandler.update({
+    where: { id: handlerId },
+    data: {
+      status: "REMOVED",
+      removedAt: new Date(),
+    },
+  });
+
+  res.json({ success: true });
+};
+
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT ↔ TEAM
+ * ─────────────────────────────────────────────
+ */
+
+export const assignClientToTeam = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { teamId } = req.body;
+
+  const assignment = await prisma.clientTeamAssignment.create({
+    data: {
+      clientId: id,
+      teamId,
+      assignedById: (req.user as any).id,
+    },
+  });
+
+  res.json({ success: true, data: assignment });
+};
+
+export const removeClientFromTeam = async (req: Request, res: Response) => {
+  const { id, teamId } = req.params;
+
+  await prisma.clientTeamAssignment.delete({
+    where: {
+      clientId_teamId: {
         clientId: id,
-        authorId: req.user!.id,
-        content,
-      } as Prisma.ClientNoteUncheckedCreateInput,
-      select: {
-        id: true,
-        clientId: true,
-        authorId: true,
-        content: true,
-        createdAt: true,
+        teamId,
       },
-    });
-    await createAuditLog({
-      actorId: req.user!.id,
-      action: "CREATE",
-      module: "CLIENT_NOTE",
-      recordId: notes.id,
-    });
-    return res.status(201).json({
-      success: true,
-      message: "Added a note successfully",
-      data: notes,
-    });
-  } catch (error) {
-    console.error("Error Adding note to client");
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal Server Error" });
-  }
+    },
+  });
+
+  res.json({ success: true });
+};
+
+/**
+ * ─────────────────────────────────────────────
+ * NOTES
+ * ─────────────────────────────────────────────
+ */
+
+export const addClientNote = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const note = await prisma.clientNote.create({
+    data: {
+      clientId: id,
+      authorId: (req.user as any).id,
+      content: req.body.content,
+    },
+  });
+
+  res.json({ success: true, data: note });
 };

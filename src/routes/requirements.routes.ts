@@ -1,201 +1,188 @@
-import { upload } from "@/config/multer.config";
-import {
-  addNotes,
-  approveRequirement,
-  assignRequirement,
-  changeRequirementStatus,
-  createRequirements,
-  fillAssignment,
-  getAllRequirements,
-  getMyRequirements,
-  getRequirement,
-  getRequirementStatusHistory,
-  resolveIssue,
-  uploadDocument,
-} from "@/controller/requirement.controller";
-import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/role";
-import {
-  addNotesBodySchema,
-  addNotesParamsSchema,
-  approveRequirementBodySchema,
-  approveRequirementParamsSchema,
-  assignRequirementBodySchema,
-  assignRequirementParamsSchema,
-  changeRequirementStatusBodySchema,
-  changeRequirementStatusParamsSchema,
-  createRequirementsSchema,
-  fillAssignmentBodySchema,
-  fillAssignmentParamsSchema,
-  getAllRequirementsSchema,
-  getRequirementParamsSchema,
-  getRequirementStatusHistoryParamsSchema,
-  resolveIssuesParamsSchema,
-  uploadDocumentsParamsSchema,
-} from "@/validators/requirement.validators";
-import { validate } from "@/validators/validator";
 import { Router } from "express";
+import { authenticateUser } from "@/middleware/auth";
+// import { scopeFilter, checkPermission } from "@/middleware/scope";
+import { validate } from "@/validators/validator";
+import {
+  getRequirementsSchema,
+  getReqByIdSchema,
+  createRequirementSchema,
+  updateRequirementSchema,
+  updateStatusSchema,
+  createAssignmentSchema,
+  updateAssignmentSchema,
+  updateProgressSchema,
+  addNoteSchema,
+  calendarSchema,
+} from "@/validators/requirement.validators";
+import {
+  getRequirements,
+  getRequirementById,
+  createRequirement,
+  updateRequirement,
+  updateRequirementStatus,
+  createAssignment,
+  removeAssignment,
+  updateAssignment,
+  updateProgress,
+  addNote,
+  deleteNote,
+  getMyQueue,
+  getRequirementsCalendar,
+  getRequirementStats,
+} from "@/controller/requirement.controller";
+import {
+  checkPermission,
+  scopeFilter,
+} from "@/middleware/scopeFilter.middleware";
 
 const router = Router();
+const scope = scopeFilter("requirements");
 
-/**
- * @route   POST /api/requirements
- * @desc    Create new requirements
- * @access
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregates — must be BEFORE /:id to avoid param clash
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /requirements/stats        — dashboard counts scoped to caller
+router.get("/stats", authenticateUser, scope, getRequirementStats);
+
+// // GET /requirements/my-queue     — caller's personal work queue
+router.get("/my-queue", authenticateUser, scope, getMyQueue);
+
+// // GET /requirements/calendar     — respondBy calendar view
+router.get(
+  "/calendar",
+  authenticateUser,
+  scope,
+  validate.query(calendarSchema),
+  getRequirementsCalendar
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collection
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET  /requirements
+router.get(
+  "/",
+  authenticateUser,
+  scope,
+  validate.query(getRequirementsSchema),
+  getRequirements
+);
+
+// POST /requirements
 router.post(
   "/",
   authenticateUser,
-  authorize("requirements", "canAdd"),
-  validate.body(createRequirementsSchema),
-  createRequirements
+  scope,
+  checkPermission("canAdd"),
+  validate.body(createRequirementSchema),
+  createRequirement
 );
 
-/**
- * @route   GET /api/requirements
- * @desc    Get all requirements
- * @access
- */
-router.get(
-  "/",
-  authenticateUser,
-  authorize("requirements", "canView"),
-  validate.query(getAllRequirementsSchema),
-  getAllRequirements
-);
+// ─────────────────────────────────────────────────────────────────────────────
+// Single requirement
+// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @route   GET /api/requirements/assigned-to-me
- * @desc    Get requirements assigned to me
- * @access
- */
-router.get(
-  "/assigned-to-me",
-  authenticateUser,
-  authorize("requirements", "canView"),
-  getMyRequirements
-);
-
-/**
- * @route   GET /api/requirements/:id
- * @desc    Get single requirement
- * @access
- */
+// GET  /requirements/:id
 router.get(
   "/:id",
   authenticateUser,
-  authorize("requirements", "canView"),
-  validate.params(getRequirementParamsSchema),
-  getRequirement
+  scope,
+  validate.params(getReqByIdSchema),
+  getRequirementById
 );
 
-/**
- * @route   PATCH /api/requirements/:id/approve
- * @desc    Approve requirement
- * @access
- */
-router.patch(
-  "/:id/approve",
+// PUT  /requirements/:id
+router.put(
+  "/:id",
   authenticateUser,
-  authorize("requirements", "canEdit"),
-  validate.params(approveRequirementParamsSchema),
-  validate.body(approveRequirementBodySchema),
-  approveRequirement
+  scope,
+  checkPermission("canEdit"),
+  validate.params(getReqByIdSchema),
+  validate.body(updateRequirementSchema),
+  updateRequirement
 );
 
-/**
- * @route   PATCH /api/requirements/:id/status
- * @desc    Change requirement status
- * @access
- */
+// PATCH /requirements/:id/status
 router.patch(
   "/:id/status",
   authenticateUser,
-  authorize("requirements", "canEdit"),
-  validate.params(changeRequirementStatusParamsSchema),
-  validate.body(changeRequirementStatusBodySchema),
-  changeRequirementStatus
+  scope,
+  checkPermission("canEdit"),
+  validate.params(getReqByIdSchema),
+  validate.body(updateStatusSchema),
+  updateRequirementStatus
 );
 
-/**
- * @route   POST /api/requirements/:id/assign
- * @desc    Assign requirement
- * @access
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Assignments
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST   /requirements/:id/assign
 router.post(
   "/:id/assign",
   authenticateUser,
-  // authorize("requirements", "canAdd"),
-  validate.params(assignRequirementParamsSchema),
-  validate.body(assignRequirementBodySchema),
-  assignRequirement
+  scope,
+  checkPermission("canEdit"),
+  validate.params(getReqByIdSchema),
+  validate.body(createAssignmentSchema),
+  createAssignment
 );
 
-/**
- * @route   POST /api/requirements/:id/notes
- * @desc    Add notes
- * @access
- */
+// PATCH  /requirements/:id/assignments/:assignmentId
+router.patch(
+  "/:id/assignments/:assignmentId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.params(getReqByIdSchema),
+  validate.body(updateAssignmentSchema),
+  updateAssignment
+);
+
+// DELETE /requirements/:id/assignments/:assignmentId
+router.delete(
+  "/:id/assignments/:assignmentId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.params(getReqByIdSchema),
+  removeAssignment
+);
+
+// PATCH  /requirements/:id/assignments/:assignmentId/progress
+// Only the assigned recruiter calls this — no canEdit check, controller guards by recruiterId
+router.patch(
+  "/:id/assignments/:assignmentId/progress",
+  authenticateUser,
+  scope,
+  validate.params(getReqByIdSchema),
+  validate.body(updateProgressSchema),
+  updateProgress
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST   /requirements/:id/notes
 router.post(
   "/:id/notes",
   authenticateUser,
-  authorize("requirements", "canAdd"),
-  validate.params(addNotesParamsSchema),
-  validate.body(addNotesBodySchema),
-  addNotes
+  scope,
+  validate.params(getReqByIdSchema),
+  validate.body(addNoteSchema),
+  addNote
 );
 
-/**
- * @route   GET /api/requirements/:id/history
- * @desc    Get requirement status history
- * @access
- */
-router.get(
-  "/:id/history",
+// DELETE /requirements/:id/notes/:noteId
+router.delete(
+  "/:id/notes/:noteId",
   authenticateUser,
-  authorize("requirements", "canView"),
-  validate.params(getRequirementStatusHistoryParamsSchema),
-  getRequirementStatusHistory
+  scope,
+  validate.params(getReqByIdSchema),
+  deleteNote
 );
 
-/**
- * @route   PATCH /api/requirements/:id/assignments/:assignmentId/fill
- * @desc    Fill assignment
- * @access
- */
-router.patch(
-  "/:id/assignments/:assignmentId/fill",
-  authenticateUser,
-  authorize("requirements", "canEdit"),
-  validate.params(fillAssignmentParamsSchema),
-  validate.body(fillAssignmentBodySchema),
-  fillAssignment
-);
-
-/**
- * @route   POST /api/requirements/:id/documents
- * @desc    Upload document
- * @access
- */
-router.post(
-  "/:id/documents",
-  authenticateUser,
-  authorize("requirements", "canAdd"),
-  validate.params(uploadDocumentsParamsSchema),
-  upload.single("file"),
-  uploadDocument
-);
-
-/**
- * @route   PATCH /api/requirements/:id/documents/:documentId/resolve
- * @desc    Resolve issue
- * @access
- */
-router.patch(
-  "/:id/documents/:documentId/resolve",
-  authenticateUser,
-  authorize("requirements", "canEdit"),
-  validate.params(resolveIssuesParamsSchema),
-  resolveIssue
-);
 export default router;

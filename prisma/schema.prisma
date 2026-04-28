@@ -7,9 +7,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // ENUMS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 enum TeamCategory {
   DELIVERY
@@ -31,9 +31,9 @@ enum TeamRole {
 }
 
 enum EdgeType {
-  ASSIGNS_TO
-  REPORTS_TO
-  VISIBILITY
+  ASSIGNS_TO  // defines hierarchy — parent assigns work downstream, also drives canvas layout
+  REPORTS_TO  // org reporting line — no effect on layout
+  VISIBILITY  // data access — no effect on layout
 }
 
 enum TeamMemberEvent {
@@ -175,9 +175,9 @@ enum ClientCategory {
   OTHER
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // USER
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model User {
   id           String @id @default(uuid())
@@ -274,9 +274,9 @@ model RefreshToken {
   @@index([userId])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // ROLES & PERMISSIONS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Role {
   id          String  @id @default(uuid())
@@ -306,9 +306,9 @@ model RolePermission {
   @@unique([roleId, module])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // BUSINESS UNITS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model BusinessUnit {
   id       String  @id @default(uuid())
@@ -320,6 +320,7 @@ model BusinessUnit {
   childBUs   BusinessUnit[] @relation("BUHierarchy")
 
   teams        Team[]
+  teamArcs     TeamArc[]
   users        User[]
   clients      Client[]
   requirements Requirement[]
@@ -329,23 +330,44 @@ model BusinessUnit {
   @@index([isActive])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TEAM ARC
+// Named chain-of-command inside a BU.
+// One BU → multiple arcs.
+// Arc is purely a grouping container — all structure comes from TeamEdge.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TeamArc {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+
+  businessUnitId String
+  businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id])
+
+  teams Team[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([businessUnitId, name])
+  @@index([businessUnitId])
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TEAMS
-// Two models coexist — different purposes, no overlap:
 //
-// parentTeamId  = STRUCTURAL navigation only
-//                 Use for: child listing, BU-scoped
-//                 tree walks, simple parent lookups.
-//                 NEVER derive business logic from this.
+// NO parentTeamId. Hierarchy comes entirely from TeamEdge.ASSIGNS_TO.
 //
-// TeamEdge      = SEMANTIC relationships
-//                 ASSIGNS_TO = work / requirement routing
-//                 REPORTS_TO = org reporting line
-//                 VISIBILITY = data access scope
+// A team with no incoming ASSIGNS_TO edges = root node in the canvas.
+// A team with an incoming ASSIGNS_TO edge from team X = X is its parent.
+// The canvas layout engine reads ASSIGNS_TO edges to position nodes.
 //
-// Rule: walk the tree with parentTeamId.
-//       answer "who can see / route what" with TeamEdge.
-// ─────────────────────────────────────────
+// To link two teams: create a TeamEdge (ASSIGNS_TO).
+// To unlink:         delete that edge (logged in TeamUnlinkHistory).
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Team {
   id          String        @id @default(uuid())
@@ -355,9 +377,8 @@ model Team {
   nodeType    NodeType      @default(GROUP)
   category    TeamCategory?
 
-  parentTeamId String?
-  parentTeam   Team?   @relation("TeamHierarchy", fields: [parentTeamId], references: [id])
-  childTeams   Team[]  @relation("TeamHierarchy")
+  teamArcId String
+  teamArc   TeamArc @relation(fields: [teamArcId], references: [id])
 
   businessUnitId String?
   businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
@@ -365,7 +386,9 @@ model Team {
   members          TeamMember[]
   visibilityConfig TeamVisibilityConfig?
 
+  // incoming edges — other teams that point TO this team
   parentEdges TeamEdge[] @relation("EdgeChild")
+  // outgoing edges — this team points TO other teams
   childEdges  TeamEdge[] @relation("EdgeParent")
 
   clientAssignments      ClientTeamAssignment[]
@@ -380,17 +403,27 @@ model Team {
 
   @@index([isActive])
   @@index([businessUnitId])
-  @@index([parentTeamId])
+  @@index([teamArcId])
   @@index([nodeType])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // TEAM EDGE
-// Handles semantics only — not tree traversal.
-// Every connected node pair gets exactly 3 rows:
-// ASSIGNS_TO, REPORTS_TO, VISIBILITY
-// Tree traversal → use parentTeamId instead.
-// ─────────────────────────────────────────
+//
+// Single source of truth for all team relationships.
+//
+// ASSIGNS_TO — defines hierarchy AND drives canvas layout.
+//   parent assigns work downstream to child.
+//   canvas reads these to know who is "above" whom.
+//
+// REPORTS_TO — org line. No layout effect.
+// VISIBILITY — data access. No layout effect.
+//
+// Rules:
+//   Max 3 rows per pair (one per EdgeType).
+//   Each independently toggled via isActive.
+//   Deleting ASSIGNS_TO IS the unlink operation → logs TeamUnlinkHistory.
+// ─────────────────────────────────────────────────────────────────────────────
 
 model TeamEdge {
   id       String   @id @default(uuid())
@@ -408,9 +441,9 @@ model TeamEdge {
   @@index([childId, edgeType])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // TEAM MEMBER
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model TeamMember {
   id       String   @id @default(uuid())
@@ -437,13 +470,9 @@ model TeamMember {
   history     TeamMemberHistory[]
 
   @@unique([userId, teamId])
-  @@index([userId])           // FIX: added — "all teams for a user" queries
+  @@index([userId])
   @@index([teamId, isActive])
 }
-
-// ─────────────────────────────────────────
-// TEAM MEMBER HISTORY
-// ─────────────────────────────────────────
 
 model TeamMemberHistory {
   id            String          @id @default(uuid())
@@ -464,10 +493,6 @@ model TeamMemberHistory {
   @@index([userId])
 }
 
-// ─────────────────────────────────────────
-// TEAM VISIBILITY CONFIG
-// ─────────────────────────────────────────
-
 model TeamVisibilityConfig {
   id     String @id @default(uuid())
   teamId String @unique
@@ -482,9 +507,12 @@ model TeamVisibilityConfig {
   updatedAt DateTime @updatedAt
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // TEAM UNLINK HISTORY
-// ─────────────────────────────────────────
+// Logged when an ASSIGNS_TO edge is hard-deleted.
+// teamId             = child team (unlinked)
+// unlinkedFromTeamId = parent team (unlinked from)
+// ─────────────────────────────────────────────────────────────────────────────
 
 model TeamUnlinkHistory {
   id     String @id @default(uuid())
@@ -505,9 +533,9 @@ model TeamUnlinkHistory {
   @@index([unlinkedFromTeamId])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // CLIENTS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Client {
   id       String          @id @default(uuid())
@@ -551,13 +579,6 @@ model Client {
   @@index([deletedAt])
 }
 
-// ─────────────────────────────────────────
-// CLIENT HANDLER
-// No @@unique on [clientId, userId] — history rows
-// stay with status REMOVED / REPLACED.
-// Application enforces only one ACTIVE per (clientId, userId).
-// ─────────────────────────────────────────
-
 model ClientHandler {
   id       String              @id @default(uuid())
   clientId String
@@ -574,7 +595,6 @@ model ClientHandler {
   removedAt     DateTime?
   removedReason String?
 
-  // FIX: was @@unique([clientId, userId]) — blocked re-assignment after removal
   @@index([clientId, userId, status])
   @@index([clientId, status])
 }
@@ -592,10 +612,6 @@ model ClientTeamAssignment {
 
   @@unique([clientId, teamId])
 }
-
-// ─────────────────────────────────────────
-// CLIENT CONTACT
-// ─────────────────────────────────────────
 
 model ClientContact {
   id          String              @id @default(uuid())
@@ -634,12 +650,9 @@ model ClientNote {
   @@index([clientId])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // SKILLS
-// Canonical skill registry — prevents free-text
-// duplication ("React" vs "ReactJS" vs "react js").
-// aliases holds alternate names for search/matching.
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Skill {
   id            String   @id @default(uuid())
@@ -651,9 +664,9 @@ model Skill {
   createdAt DateTime @default(now())
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENTS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Requirement {
   id      String @id @default(uuid())
@@ -751,22 +764,15 @@ model RequirementJD {
   uploadedBy   User     @relation("JDUploadedBy", fields: [uploadedById], references: [id])
   uploadedAt   DateTime @default(now())
 
-  // FIX: added — prevents duplicate version numbers on concurrent uploads
   @@unique([requirementId, version])
   @@index([requirementId, isLatest])
 }
-
-// ─────────────────────────────────────────
-// REQUIREMENT SKILL
-// References canonical Skill — no free text.
-// ─────────────────────────────────────────
 
 model RequirementSkill {
   id            String      @id @default(uuid())
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
 
-  // FIX: was String (free text) — now FK to canonical Skill registry
   skillId     String
   skill       Skill   @relation(fields: [skillId], references: [id])
   isMandatory Boolean @default(true)
@@ -799,21 +805,6 @@ model RequirementDocument {
 
   @@index([requirementId])
 }
-
-// ─────────────────────────────────────────
-// REQUIREMENT ASSIGNMENT
-// Assignment chain max depth = 3
-// Valid chains:
-//   MANAGER only
-//   MANAGER → TEAM
-//   MANAGER → INDIVIDUAL (DM assigns direct, no TL)
-//   MANAGER → TEAM → INDIVIDUAL
-// SALES user routes to MANAGER only
-// DM can assign to TEAM or INDIVIDUAL directly
-// TL can assign to INDIVIDUAL only
-// Null enforcement (teamId/teamMemberId/recruiterId)
-// must be handled at the service layer.
-// ─────────────────────────────────────────
 
 model RequirementAssignment {
   id            String      @id @default(uuid())
@@ -913,9 +904,9 @@ model RequirementActivity {
   @@index([actorId])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // NOTIFICATIONS
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Notification {
   id     String @id @default(uuid())
@@ -938,9 +929,9 @@ model Notification {
   @@index([userId, createdAt])
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // AUDIT LOG
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
   id String @id @default(uuid())

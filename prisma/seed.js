@@ -1,11 +1,8 @@
 // prisma/seed.js
-// Fresh seed — written against the final schema.
-// All UUIDs are hardcoded so the seed is fully idempotent.
-// Safe to run multiple times.
+// Hierarchy via ASSIGNS_TO edges ONLY. No parentTeamId anywhere.
 
 const { PrismaClient } = require("@prisma/client");
 const bcrypt = require("bcrypt");
-
 const prisma = new PrismaClient();
 const hash = (p) => bcrypt.hashSync(p, 10);
 
@@ -15,1249 +12,1065 @@ function daysAgo(n) {
   return d;
 }
 
-// ─────────────────────────────────────────
-// HARDCODED UUIDs — every entity has a stable ID
-// ─────────────────────────────────────────
-
 const ID = {
-  // Roles
   role: {
-    superAdmin: "role-0001-0000-0000-000000000001",
-    admin: "role-0002-0000-0000-000000000002",
-    deliveryManager: "role-0003-0000-0000-000000000003",
-    teamLead: "role-0004-0000-0000-000000000004",
-    recruiter: "role-0005-0000-0000-000000000005",
-    sales: "role-0006-0000-0000-000000000006",
+    superAdmin: "a1b2c3d4-0001-0001-0001-000000000001",
+    admin: "a1b2c3d4-0002-0002-0002-000000000002",
+    deliveryManager: "a1b2c3d4-0003-0003-0003-000000000003",
+    teamLead: "a1b2c3d4-0004-0004-0004-000000000004",
+    recruiter: "a1b2c3d4-0005-0005-0005-000000000005",
+    sales: "a1b2c3d4-0006-0006-0006-000000000006",
   },
-
-  // Business Units
   bu: {
-    kaas: "bu000001-0000-0000-0000-000000000001",
-    taas: "bu000002-0000-0000-0000-000000000002",
+    kaas: "b1000001-0000-0000-0000-000000000001",
+    taas: "b1000002-0000-0000-0000-000000000002",
   },
-
-  // Users — KaaS
+  arc: {
+    kaasSales: "c1000001-0000-0000-0000-000000000001",
+    kaasDelivery: "c1000002-0000-0000-0000-000000000002",
+    taasSales: "c1000003-0000-0000-0000-000000000003",
+    taasDelivery: "c1000004-0000-0000-0000-000000000004",
+  },
   user: {
-    superAdmin: "user0001-0000-0000-0000-000000000001",
-    kaasAdmin: "user0002-0000-0000-0000-000000000002",
-    taasAdmin: "user0003-0000-0000-0000-000000000003",
-    kaasDM1: "user0004-0000-0000-0000-000000000004", // Papitha Raj
-    kaasDM2: "user0005-0000-0000-0000-000000000005", // Nandini Krishnan
-    kaasDM3: "user0006-0000-0000-0000-000000000006", // Suresh Balakrishnan
-    kaasTL1: "user0007-0000-0000-0000-000000000007", // Joe Thomas
-    kaasTL2: "user0008-0000-0000-0000-000000000008", // Ananya Reddy
-    kaasTL3: "user0009-0000-0000-0000-000000000009", // Vikram Patel
-    kaasTL4: "user0010-0000-0000-0000-000000000010", // Divya Sharma
-    kaasSales1: "user0011-0000-0000-0000-000000000011", // Sneha Pillai
-    kaasSales2: "user0012-0000-0000-0000-000000000012", // Rohan Joshi
-    kaasSales3: "user0013-0000-0000-0000-000000000013", // Kavya Rao
-    kaasSales4: "user0014-0000-0000-0000-000000000014", // Aakash Shetty
-    kaasSales5: "user0015-0000-0000-0000-000000000015", // Meera Kamath
-    kaasR1: "user0016-0000-0000-0000-000000000016", // Ritu Verma
-    kaasR2: "user0017-0000-0000-0000-000000000017", // Karan Nair
-    kaasR3: "user0018-0000-0000-0000-000000000018", // Arjun Kumar
-    kaasR4: "user0019-0000-0000-0000-000000000019", // Pooja Iyer
-    kaasR5: "user0020-0000-0000-0000-000000000020", // Rahul Menon
-    kaasR6: "user0021-0000-0000-0000-000000000021", // Swathi Nair
-    kaasR7: "user0022-0000-0000-0000-000000000022", // Ajay Pillai
-    kaasR8: "user0023-0000-0000-0000-000000000023", // Harish Venkat
-    kaasR9: "user0024-0000-0000-0000-000000000024", // Lakshmi Ganesan
-    kaasR10: "user0025-0000-0000-0000-000000000025", // Sanjay Ramasamy
-    kaasR11: "user0026-0000-0000-0000-000000000026", // Asha Natarajan
-    kaasR12: "user0027-0000-0000-0000-000000000027", // Vinod Rajan
-    kaasR13: "user0028-0000-0000-0000-000000000028", // Geetha Sundaram
-    kaasR14: "user0029-0000-0000-0000-000000000029", // Nikhil Raghunathan
-    // TaaS
-    taasDM1: "user0030-0000-0000-0000-000000000030", // Karthik Subramaniam
-    taasDM2: "user0031-0000-0000-0000-000000000031", // Revathi Parthasarathy
-    taasTL1: "user0032-0000-0000-0000-000000000032", // Varun Dakshinamurthy
-    taasTL2: "user0033-0000-0000-0000-000000000033", // Naveen Subramanian
-    taasTL3: "user0034-0000-0000-0000-000000000034", // Yamini Murugesan
-    taasSales1: "user0035-0000-0000-0000-000000000035", // Balaji Narayanan
-    taasSales2: "user0036-0000-0000-0000-000000000036", // Chithra Krishnan
-    taasSales3: "user0037-0000-0000-0000-000000000037", // Dinesh Venkataraman
-    taasSales4: "user0038-0000-0000-0000-000000000038", // Hema Balakrishnan
-    taasR1: "user0039-0000-0000-0000-000000000039", // Mohan Ramasamy
-    taasR2: "user0040-0000-0000-0000-000000000040", // Pavithra Rajan
-    taasR3: "user0041-0000-0000-0000-000000000041", // Ganesh Sundaram
-    taasR4: "user0042-0000-0000-0000-000000000042", // Janani Natarajan
-    taasR5: "user0043-0000-0000-0000-000000000043", // Ramesh Annamalai
-    taasR6: "user0044-0000-0000-0000-000000000044", // Vijaya Chandrasekaran
-    taasR7: "user0045-0000-0000-0000-000000000045", // Venkat Dakshinamurthy
-    taasR8: "user0046-0000-0000-0000-000000000046", // Padma Parthasarathy
-    taasR9: "user0047-0000-0000-0000-000000000047", // Murugan Subramanian
-    taasR10: "user0048-0000-0000-0000-000000000048", // Usha Venkataraman
-    taasR11: "user0049-0000-0000-0000-000000000049", // Gopal Narayanan
-    taasR12: "user0050-0000-0000-0000-000000000050", // Sumathi Balakrishnan
+    superAdmin: "d1000001-0000-0000-0000-000000000001",
+    kaasAdmin: "d1000002-0000-0000-0000-000000000002",
+    taasAdmin: "d1000003-0000-0000-0000-000000000003",
+    kaasSalesHead: "d1000004-0000-0000-0000-000000000004",
+    kaasSales1: "d1000005-0000-0000-0000-000000000005",
+    kaasSales2: "d1000006-0000-0000-0000-000000000006",
+    kaasSales3: "d1000007-0000-0000-0000-000000000007",
+    kaasSales4: "d1000008-0000-0000-0000-000000000008",
+    kaasDM1: "d1000009-0000-0000-0000-000000000009",
+    kaasDM2: "d1000010-0000-0000-0000-000000000010",
+    kaasDM3: "d1000011-0000-0000-0000-000000000011",
+    kaasTL1: "d1000012-0000-0000-0000-000000000012",
+    kaasTL2: "d1000013-0000-0000-0000-000000000013",
+    kaasTL3: "d1000014-0000-0000-0000-000000000014",
+    kaasTL4: "d1000015-0000-0000-0000-000000000015",
+    kaasR1: "d1000016-0000-0000-0000-000000000016",
+    kaasR2: "d1000017-0000-0000-0000-000000000017",
+    kaasR3: "d1000018-0000-0000-0000-000000000018",
+    kaasR4: "d1000019-0000-0000-0000-000000000019",
+    kaasR5: "d1000020-0000-0000-0000-000000000020",
+    kaasR6: "d1000021-0000-0000-0000-000000000021",
+    kaasR7: "d1000022-0000-0000-0000-000000000022",
+    kaasR8: "d1000023-0000-0000-0000-000000000023",
+    kaasR9: "d1000024-0000-0000-0000-000000000024",
+    kaasR10: "d1000025-0000-0000-0000-000000000025",
+    kaasR11: "d1000026-0000-0000-0000-000000000026",
+    kaasR12: "d1000027-0000-0000-0000-000000000027",
+    kaasR13: "d1000028-0000-0000-0000-000000000028",
+    kaasR14: "d1000029-0000-0000-0000-000000000029",
+    taasSalesHead: "d1000030-0000-0000-0000-000000000030",
+    taasSales1: "d1000031-0000-0000-0000-000000000031",
+    taasSales2: "d1000032-0000-0000-0000-000000000032",
+    taasSales3: "d1000033-0000-0000-0000-000000000033",
+    taasDM1: "d1000034-0000-0000-0000-000000000034",
+    taasDM2: "d1000035-0000-0000-0000-000000000035",
+    taasTL1: "d1000036-0000-0000-0000-000000000036",
+    taasTL2: "d1000037-0000-0000-0000-000000000037",
+    taasTL3: "d1000038-0000-0000-0000-000000000038",
+    taasR1: "d1000039-0000-0000-0000-000000000039",
+    taasR2: "d1000040-0000-0000-0000-000000000040",
+    taasR3: "d1000041-0000-0000-0000-000000000041",
+    taasR4: "d1000042-0000-0000-0000-000000000042",
+    taasR5: "d1000043-0000-0000-0000-000000000043",
+    taasR6: "d1000044-0000-0000-0000-000000000044",
+    taasR7: "d1000045-0000-0000-0000-000000000045",
+    taasR8: "d1000046-0000-0000-0000-000000000046",
+    taasR9: "d1000047-0000-0000-0000-000000000047",
+    taasR10: "d1000048-0000-0000-0000-000000000048",
+    taasR11: "d1000049-0000-0000-0000-000000000049",
+    taasR12: "d1000050-0000-0000-0000-000000000050",
   },
-
-  // Teams — KaaS
   team: {
-    kaasRoot: "team0001-0000-0000-0000-000000000001",
-    kaasSales: "team0002-0000-0000-0000-000000000002",
-    kaasDelivery: "team0003-0000-0000-0000-000000000003",
-    joesTeam: "team0004-0000-0000-0000-000000000004",
-    alphaSquad: "team0005-0000-0000-0000-000000000005",
-    betaSquad: "team0006-0000-0000-0000-000000000006",
-    // TaaS
-    taasRoot: "team0007-0000-0000-0000-000000000007",
-    taasSales: "team0008-0000-0000-0000-000000000008",
-    taasDelivery: "team0009-0000-0000-0000-000000000009",
-    deltaTeam: "team0010-0000-0000-0000-000000000010",
-    gammaTeam: "team0011-0000-0000-0000-000000000011",
+    // KaaS Sales Arc — flat, Sales Head is the single root
+    kaasSalesHead: "e1000001-0000-0000-0000-000000000001",
+    kaasSalesTeam: "e1000002-0000-0000-0000-000000000002",
+    // KaaS Delivery Arc — 3 DM nodes as roots, each owns squads
+    kaasDM1Node: "e1000003-0000-0000-0000-000000000003",
+    kaasDM2Node: "e1000004-0000-0000-0000-000000000004",
+    kaasDM3Node: "e1000005-0000-0000-0000-000000000005",
+    kaasJoesSquad: "e1000006-0000-0000-0000-000000000006",
+    kaasAlphaSquad: "e1000007-0000-0000-0000-000000000007",
+    kaasBetaSquad: "e1000008-0000-0000-0000-000000000008",
+    kaasGammaSquad: "e1000009-0000-0000-0000-000000000009",
+    kaasDeltaSquad: "e1000010-0000-0000-0000-000000000010",
+    // TaaS Sales Arc
+    taasSalesHead: "e1000011-0000-0000-0000-000000000011",
+    taasSalesTeam: "e1000012-0000-0000-0000-000000000012",
+    // TaaS Delivery Arc
+    taasDM1Node: "e1000013-0000-0000-0000-000000000013",
+    taasDM2Node: "e1000014-0000-0000-0000-000000000014",
+    taasDeltaTeam: "e1000015-0000-0000-0000-000000000015",
+    taasGammaTeam: "e1000016-0000-0000-0000-000000000016",
+    taasSigmaTeam: "e1000017-0000-0000-0000-000000000017",
+    taasOmegaTeam: "e1000018-0000-0000-0000-000000000018",
   },
-
-  // Skills
   skill: {
-    java: "skil0001-0000-0000-0000-000000000001",
-    springBoot: "skil0002-0000-0000-0000-000000000002",
-    microservices: "skil0003-0000-0000-0000-000000000003",
-    docker: "skil0004-0000-0000-0000-000000000004",
-    kafka: "skil0005-0000-0000-0000-000000000005",
-    react: "skil0006-0000-0000-0000-000000000006",
-    typescript: "skil0007-0000-0000-0000-000000000007",
-    nextjs: "skil0008-0000-0000-0000-000000000008",
-    tailwind: "skil0009-0000-0000-0000-000000000009",
-    aws: "skil0010-0000-0000-0000-000000000010",
-    terraform: "skil0011-0000-0000-0000-000000000011",
-    cicd: "skil0012-0000-0000-0000-000000000012",
-    kubernetes: "skil0013-0000-0000-0000-000000000013",
-    python: "skil0014-0000-0000-0000-000000000014",
-    spark: "skil0015-0000-0000-0000-000000000015",
-    airflow: "skil0016-0000-0000-0000-000000000016",
-    sql: "skil0017-0000-0000-0000-000000000017",
-    nodejs: "skil0018-0000-0000-0000-000000000018",
-    express: "skil0019-0000-0000-0000-000000000019",
-    postgresql: "skil0020-0000-0000-0000-000000000020",
-    redis: "skil0021-0000-0000-0000-000000000021",
-    azure: "skil0022-0000-0000-0000-000000000022",
-    aks: "skil0023-0000-0000-0000-000000000023",
-    golang: "skil0024-0000-0000-0000-000000000024",
-    grpc: "skil0025-0000-0000-0000-000000000025",
-    helm: "skil0026-0000-0000-0000-000000000026",
-    tensorflow: "skil0027-0000-0000-0000-000000000027",
-    mlflow: "skil0028-0000-0000-0000-000000000028",
-    sapHana: "skil0029-0000-0000-0000-000000000029",
-    abap: "skil0030-0000-0000-0000-000000000030",
-    fico: "skil0031-0000-0000-0000-000000000031",
-    springCloud: "skil0032-0000-0000-0000-000000000032",
-    angular: "skil0033-0000-0000-0000-000000000033",
-    salesforce: "skil0034-0000-0000-0000-000000000034",
-    oracleDba: "skil0035-0000-0000-0000-000000000035",
-    tableau: "skil0036-0000-0000-0000-000000000036",
+    java: "f1000001-0000-0000-0000-000000000001",
+    springBoot: "f1000002-0000-0000-0000-000000000002",
+    microservices: "f1000003-0000-0000-0000-000000000003",
+    docker: "f1000004-0000-0000-0000-000000000004",
+    kafka: "f1000005-0000-0000-0000-000000000005",
+    react: "f1000006-0000-0000-0000-000000000006",
+    typescript: "f1000007-0000-0000-0000-000000000007",
+    nextjs: "f1000008-0000-0000-0000-000000000008",
+    tailwind: "f1000009-0000-0000-0000-000000000009",
+    aws: "f1000010-0000-0000-0000-000000000010",
+    terraform: "f1000011-0000-0000-0000-000000000011",
+    cicd: "f1000012-0000-0000-0000-000000000012",
+    kubernetes: "f1000013-0000-0000-0000-000000000013",
+    python: "f1000014-0000-0000-0000-000000000014",
+    spark: "f1000015-0000-0000-0000-000000000015",
+    airflow: "f1000016-0000-0000-0000-000000000016",
+    sql: "f1000017-0000-0000-0000-000000000017",
+    nodejs: "f1000018-0000-0000-0000-000000000018",
+    express: "f1000019-0000-0000-0000-000000000019",
+    postgresql: "f1000020-0000-0000-0000-000000000020",
+    redis: "f1000021-0000-0000-0000-000000000021",
+    azure: "f1000022-0000-0000-0000-000000000022",
+    aks: "f1000023-0000-0000-0000-000000000023",
+    golang: "f1000024-0000-0000-0000-000000000024",
+    grpc: "f1000025-0000-0000-0000-000000000025",
+    helm: "f1000026-0000-0000-0000-000000000026",
+    tensorflow: "f1000027-0000-0000-0000-000000000027",
+    mlflow: "f1000028-0000-0000-0000-000000000028",
+    sapHana: "f1000029-0000-0000-0000-000000000029",
+    abap: "f1000030-0000-0000-0000-000000000030",
+    fico: "f1000031-0000-0000-0000-000000000031",
+    springCloud: "f1000032-0000-0000-0000-000000000032",
+    angular: "f1000033-0000-0000-0000-000000000033",
+    salesforce: "f1000034-0000-0000-0000-000000000034",
+    oracleDba: "f1000035-0000-0000-0000-000000000035",
+    tableau: "f1000036-0000-0000-0000-000000000036",
   },
-
-  // Clients
   client: {
-    infosys: "clnt0001-0000-0000-0000-000000000001",
-    wipro: "clnt0002-0000-0000-0000-000000000002",
-    hcl: "clnt0003-0000-0000-0000-000000000003",
-    mphasis: "clnt0004-0000-0000-0000-000000000004",
-    tcs: "clnt0005-0000-0000-0000-000000000005",
-    cognizant: "clnt0006-0000-0000-0000-000000000006",
-    lti: "clnt0007-0000-0000-0000-000000000007",
-    persistent: "clnt0008-0000-0000-0000-000000000008",
+    infosys: "g1000001-0000-0000-0000-000000000001",
+    wipro: "g1000002-0000-0000-0000-000000000002",
+    hcl: "g1000003-0000-0000-0000-000000000003",
+    mphasis: "g1000004-0000-0000-0000-000000000004",
+    tcs: "g1000005-0000-0000-0000-000000000005",
+    cognizant: "g1000006-0000-0000-0000-000000000006",
+    lti: "g1000007-0000-0000-0000-000000000007",
+    persistent: "g1000008-0000-0000-0000-000000000008",
   },
-
-  // Requirements
   req: {
-    r10001: "req10001-0000-0000-0000-000000000001",
-    r10002: "req10002-0000-0000-0000-000000000002",
-    r10003: "req10003-0000-0000-0000-000000000003",
-    r10004: "req10004-0000-0000-0000-000000000004",
-    r10005: "req10005-0000-0000-0000-000000000005",
-    r10006: "req10006-0000-0000-0000-000000000006",
-    r10007: "req10007-0000-0000-0000-000000000007",
-    r10008: "req10008-0000-0000-0000-000000000008",
-    r10009: "req10009-0000-0000-0000-000000000009",
-    r10010: "req10010-0000-0000-0000-000000000010",
-    r10011: "req10011-0000-0000-0000-000000000011",
-    r10012: "req10012-0000-0000-0000-000000000012",
-    r10013: "req10013-0000-0000-0000-000000000013",
-    r20001: "req20001-0000-0000-0000-000000000014",
-    r20002: "req20002-0000-0000-0000-000000000015",
-    r20003: "req20003-0000-0000-0000-000000000016",
-    r20004: "req20004-0000-0000-0000-000000000017",
-    r20005: "req20005-0000-0000-0000-000000000018",
-    r20006: "req20006-0000-0000-0000-000000000019",
-    r20007: "req20007-0000-0000-0000-000000000020",
-    r20008: "req20008-0000-0000-0000-000000000021",
-    r20009: "req20009-0000-0000-0000-000000000022",
-    r20010: "req20010-0000-0000-0000-000000000023",
-    r20011: "req20011-0000-0000-0000-000000000024",
-    r20012: "req20012-0000-0000-0000-000000000025",
-    r20013: "req20013-0000-0000-0000-000000000026",
+    r10001: "h1000001-0000-0000-0000-000000000001",
+    r10002: "h1000002-0000-0000-0000-000000000002",
+    r10003: "h1000003-0000-0000-0000-000000000003",
+    r10004: "h1000004-0000-0000-0000-000000000004",
+    r10005: "h1000005-0000-0000-0000-000000000005",
+    r10006: "h1000006-0000-0000-0000-000000000006",
+    r10007: "h1000007-0000-0000-0000-000000000007",
+    r10008: "h1000008-0000-0000-0000-000000000008",
+    r10009: "h1000009-0000-0000-0000-000000000009",
+    r10010: "h1000010-0000-0000-0000-000000000010",
+    r10011: "h1000011-0000-0000-0000-000000000011",
+    r10012: "h1000012-0000-0000-0000-000000000012",
+    r10013: "h1000013-0000-0000-0000-000000000013",
+    r20001: "h2000001-0000-0000-0000-000000000014",
+    r20002: "h2000002-0000-0000-0000-000000000015",
+    r20003: "h2000003-0000-0000-0000-000000000016",
+    r20004: "h2000004-0000-0000-0000-000000000017",
+    r20005: "h2000005-0000-0000-0000-000000000018",
+    r20006: "h2000006-0000-0000-0000-000000000019",
+    r20007: "h2000007-0000-0000-0000-000000000020",
+    r20008: "h2000008-0000-0000-0000-000000000021",
+    r20009: "h2000009-0000-0000-0000-000000000022",
+    r20010: "h2000010-0000-0000-0000-000000000023",
+    r20011: "h2000011-0000-0000-0000-000000000024",
+    r20012: "h2000012-0000-0000-0000-000000000025",
   },
 };
 
-// ─────────────────────────────────────────
-// MAIN
-// ─────────────────────────────────────────
+// Wire all 3 edge types between a parent and child
+async function wireEdges(parentId, childId) {
+  for (const edgeType of ["ASSIGNS_TO", "REPORTS_TO", "VISIBILITY"]) {
+    await prisma.teamEdge.upsert({
+      where: { parentId_childId_edgeType: { parentId, childId, edgeType } },
+      update: { isActive: true },
+      create: { parentId, childId, edgeType, isActive: true },
+    });
+  }
+}
+
+// Wire only ASSIGNS_TO (for cross-arc links like Sales Head → DM nodes)
+async function wireAssigns(parentId, childId) {
+  await prisma.teamEdge.upsert({
+    where: {
+      parentId_childId_edgeType: { parentId, childId, edgeType: "ASSIGNS_TO" },
+    },
+    update: { isActive: true },
+    create: { parentId, childId, edgeType: "ASSIGNS_TO", isActive: true },
+  });
+}
 
 async function main() {
-  console.log("🌱 Seeding TalentOS...\n");
+  console.log("🌱 Seeding TalentOS (edge-only hierarchy)...\n");
 
-  // ──────────────────────────────────────
-  // 1. ROLES & PERMISSIONS
-  // ──────────────────────────────────────
-  console.log("📋 Roles & permissions...");
-
+  // ── 1. ROLES ──────────────────────────────────────────────────────────────
+  console.log("1/10  Roles...");
   const roleDefs = [
     {
       id: ID.role.superAdmin,
       name: "SUPER_ADMIN",
-      description: "Full access to everything",
       isSystem: true,
-      permissions: [
-        {
-          module: "users",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "teams",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "business_units",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "clients",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-        {
-          module: "settings",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: true,
-          scope: "ALL",
-        },
-      ],
+      desc: "Full access",
     },
-    {
-      id: ID.role.admin,
-      name: "ADMIN",
-      description: "Manages users, clients, requirements within their BU",
-      isSystem: true,
-      permissions: [
-        {
-          module: "users",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "teams",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "business_units",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "clients",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "BU",
-        },
-        {
-          module: "settings",
-          canView: true,
-          canAdd: false,
-          canEdit: true,
-          canDelete: false,
-          scope: "BU",
-        },
-      ],
-    },
+    { id: ID.role.admin, name: "ADMIN", isSystem: true, desc: "BU admin" },
     {
       id: ID.role.deliveryManager,
       name: "DELIVERY_MANAGER",
-      description: "Receives requirements from sales, assigns to teams",
       isSystem: false,
-      permissions: [
-        {
-          module: "users",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "MANAGER",
-        },
-        {
-          module: "teams",
-          canView: true,
-          canAdd: false,
-          canEdit: true,
-          canDelete: false,
-          scope: "MANAGER",
-        },
-        {
-          module: "clients",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "MANAGER",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: false,
-          canEdit: true,
-          canDelete: false,
-          scope: "MANAGER",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "MANAGER",
-        },
-      ],
+      desc: "Manages delivery",
     },
     {
       id: ID.role.teamLead,
       name: "TEAM_LEAD",
-      description: "Manages their team and assigns requirements to recruiters",
       isSystem: false,
-      permissions: [
-        {
-          module: "users",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "TEAM",
-        },
-        {
-          module: "teams",
-          canView: true,
-          canAdd: false,
-          canEdit: true,
-          canDelete: false,
-          scope: "TEAM",
-        },
-        {
-          module: "clients",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "TEAM",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: false,
-          canEdit: true,
-          canDelete: false,
-          scope: "TEAM",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "TEAM",
-        },
-      ],
+      desc: "Leads a squad",
     },
     {
       id: ID.role.recruiter,
       name: "RECRUITER",
-      description: "Works only on requirements assigned to them",
       isSystem: false,
-      permissions: [
-        {
-          module: "clients",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "TEAM",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "OWN",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "OWN",
-        },
-      ],
+      desc: "Works requirements",
     },
     {
       id: ID.role.sales,
       name: "SALES",
-      description: "Creates clients and raises requirements",
       isSystem: false,
-      permissions: [
-        {
-          module: "clients",
-          canView: true,
-          canAdd: true,
-          canEdit: true,
-          canDelete: false,
-          scope: "OWN",
-        },
-        {
-          module: "requirements",
-          canView: true,
-          canAdd: true,
-          canEdit: false,
-          canDelete: false,
-          scope: "OWN",
-        },
-        {
-          module: "reports",
-          canView: true,
-          canAdd: false,
-          canEdit: false,
-          canDelete: false,
-          scope: "OWN",
-        },
-      ],
+      desc: "Creates requirements",
     },
   ];
-
-  for (const { permissions, ...roleData } of roleDefs) {
+  for (const r of roleDefs) {
     await prisma.role.upsert({
-      where: { id: roleData.id },
-      update: { name: roleData.name, description: roleData.description },
-      create: roleData,
-    });
-    // wipe and re-create permissions so re-runs are clean
-    await prisma.rolePermission.deleteMany({ where: { roleId: roleData.id } });
-    await prisma.rolePermission.createMany({
-      data: permissions.map((p) => ({ ...p, roleId: roleData.id })),
+      where: { id: r.id },
+      update: { name: r.name },
+      create: {
+        id: r.id,
+        name: r.name,
+        description: r.desc,
+        isSystem: r.isSystem,
+      },
     });
   }
-  console.log("  ✅ 6 roles with permissions\n");
+  console.log("  ✅ 6 roles\n");
 
-  // ──────────────────────────────────────
-  // 2. BUSINESS UNITS
-  // ──────────────────────────────────────
-  console.log("🏢 Business Units...");
-  await prisma.businessUnit.upsert({
-    where: { id: ID.bu.kaas },
-    update: {},
-    create: { id: ID.bu.kaas, name: "KaaS BU", isActive: true },
-  });
-  await prisma.businessUnit.upsert({
-    where: { id: ID.bu.taas },
-    update: {},
-    create: { id: ID.bu.taas, name: "TaaS BU", isActive: true },
-  });
-  console.log("  ✅ KaaS BU, TaaS BU\n");
+  // ── 2. BUS ────────────────────────────────────────────────────────────────
+  console.log("2/10  Business Units...");
+  for (const [id, name] of [
+    [ID.bu.kaas, "KaaS BU"],
+    [ID.bu.taas, "TaaS BU"],
+  ]) {
+    await prisma.businessUnit.upsert({
+      where: { id },
+      update: {},
+      create: { id, name, isActive: true },
+    });
+  }
+  console.log("  ✅ KaaS BU · TaaS BU\n");
 
-  // ──────────────────────────────────────
-  // 3. USERS
-  // ──────────────────────────────────────
-  console.log("👤 Users...");
+  // ── 3. ARCS ───────────────────────────────────────────────────────────────
+  console.log("3/10  Team Arcs...");
+  const arcDefs = [
+    { id: ID.arc.kaasSales, name: "KaaS Sales Arc", buId: ID.bu.kaas },
+    { id: ID.arc.kaasDelivery, name: "KaaS Delivery Arc", buId: ID.bu.kaas },
+    { id: ID.arc.taasSales, name: "TaaS Sales Arc", buId: ID.bu.taas },
+    { id: ID.arc.taasDelivery, name: "TaaS Delivery Arc", buId: ID.bu.taas },
+  ];
+  for (const a of arcDefs) {
+    await prisma.teamArc.upsert({
+      where: { id: a.id },
+      update: { name: a.name },
+      create: {
+        id: a.id,
+        name: a.name,
+        businessUnitId: a.buId,
+        isActive: true,
+      },
+    });
+  }
+  console.log("  ✅ 4 arcs\n");
 
+  // ── 4. USERS ──────────────────────────────────────────────────────────────
+  console.log("4/10  Users...");
   const userDefs = [
-    // ── System ──
     {
       id: ID.user.superAdmin,
       email: "superadmin@talentos.com",
-      password: "Admin@123",
-      firstName: "Super",
-      lastName: "Admin",
-      employeeId: "EMP-0001",
-      isSuperAdmin: true,
+      pw: "Admin@123",
+      first: "Super",
+      last: "Admin",
+      emp: "EMP-001",
       roleId: ID.role.superAdmin,
-      businessUnitId: null,
-      reportingToId: null,
-      createdById: null,
+      buId: null,
+      reportTo: null,
+      createdBy: null,
     },
-    // ── KaaS ──
     {
       id: ID.user.kaasAdmin,
       email: "admin.kaas@talentos.com",
-      password: "Admin@123",
-      firstName: "Priya",
-      lastName: "Menon",
-      employeeId: "EMP-0002",
+      pw: "Admin@123",
+      first: "Priya",
+      last: "Menon",
+      emp: "EMP-002",
       roleId: ID.role.admin,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.superAdmin,
-      createdById: ID.user.superAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.superAdmin,
+      createdBy: ID.user.superAdmin,
     },
     {
-      id: ID.user.kaasDM1,
-      email: "dm1.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Papitha",
-      lastName: "Raj",
-      employeeId: "EMP-0003",
-      roleId: ID.role.deliveryManager,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      id: ID.user.taasAdmin,
+      email: "admin.taas@talentos.com",
+      pw: "Admin@123",
+      first: "Rajesh",
+      last: "Iyer",
+      emp: "EMP-003",
+      roleId: ID.role.admin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.superAdmin,
+      createdBy: ID.user.superAdmin,
     },
     {
-      id: ID.user.kaasDM2,
-      email: "dm2.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Nandini",
-      lastName: "Krishnan",
-      employeeId: "EMP-0004",
-      roleId: ID.role.deliveryManager,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
-    },
-    {
-      id: ID.user.kaasDM3,
-      email: "dm3.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Suresh",
-      lastName: "Balakrishnan",
-      employeeId: "EMP-0005",
-      roleId: ID.role.deliveryManager,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
-    },
-    {
-      id: ID.user.kaasTL1,
-      email: "tl1.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Joe",
-      lastName: "Thomas",
-      employeeId: "EMP-0006",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasDM1,
-      createdById: ID.user.kaasAdmin,
-    },
-    {
-      id: ID.user.kaasTL2,
-      email: "tl2.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Ananya",
-      lastName: "Reddy",
-      employeeId: "EMP-0007",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasDM2,
-      createdById: ID.user.kaasAdmin,
-    },
-    {
-      id: ID.user.kaasTL3,
-      email: "tl3.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Vikram",
-      lastName: "Patel",
-      employeeId: "EMP-0008",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasDM2,
-      createdById: ID.user.kaasAdmin,
-    },
-    {
-      id: ID.user.kaasTL4,
-      email: "tl4.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Divya",
-      lastName: "Sharma",
-      employeeId: "EMP-0009",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasDM3,
-      createdById: ID.user.kaasAdmin,
+      id: ID.user.kaasSalesHead,
+      email: "saleshead.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Sneha",
+      last: "Pillai",
+      emp: "EMP-004",
+      roleId: ID.role.sales,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasAdmin,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasSales1,
       email: "sales1.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Sneha",
-      lastName: "Pillai",
-      employeeId: "EMP-0010",
+      pw: "Pass@123",
+      first: "Rohan",
+      last: "Joshi",
+      emp: "EMP-005",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasSalesHead,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasSales2,
       email: "sales2.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Rohan",
-      lastName: "Joshi",
-      employeeId: "EMP-0011",
+      pw: "Pass@123",
+      first: "Kavya",
+      last: "Rao",
+      emp: "EMP-006",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasSalesHead,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasSales3,
       email: "sales3.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Kavya",
-      lastName: "Rao",
-      employeeId: "EMP-0012",
+      pw: "Pass@123",
+      first: "Aakash",
+      last: "Shetty",
+      emp: "EMP-007",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasSalesHead,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasSales4,
       email: "sales4.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Aakash",
-      lastName: "Shetty",
-      employeeId: "EMP-0013",
+      pw: "Pass@123",
+      first: "Meera",
+      last: "Kamath",
+      emp: "EMP-008",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasSalesHead,
+      createdBy: ID.user.kaasAdmin,
     },
     {
-      id: ID.user.kaasSales5,
-      email: "sales5.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Meera",
-      lastName: "Kamath",
-      employeeId: "EMP-0014",
-      roleId: ID.role.sales,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasAdmin,
-      createdById: ID.user.kaasAdmin,
+      id: ID.user.kaasDM1,
+      email: "dm1.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Papitha",
+      last: "Raj",
+      emp: "EMP-009",
+      roleId: ID.role.deliveryManager,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasAdmin,
+      createdBy: ID.user.kaasAdmin,
     },
-    // KaaS Recruiters — Joe's Team
+    {
+      id: ID.user.kaasDM2,
+      email: "dm2.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Nandini",
+      last: "Krishnan",
+      emp: "EMP-010",
+      roleId: ID.role.deliveryManager,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasAdmin,
+      createdBy: ID.user.kaasAdmin,
+    },
+    {
+      id: ID.user.kaasDM3,
+      email: "dm3.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Suresh",
+      last: "Balakrishnan",
+      emp: "EMP-011",
+      roleId: ID.role.deliveryManager,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasAdmin,
+      createdBy: ID.user.kaasAdmin,
+    },
+    {
+      id: ID.user.kaasTL1,
+      email: "tl1.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Joe",
+      last: "Thomas",
+      emp: "EMP-012",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM1,
+      createdBy: ID.user.kaasAdmin,
+    },
+    {
+      id: ID.user.kaasTL2,
+      email: "tl2.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Ananya",
+      last: "Reddy",
+      emp: "EMP-013",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM2,
+      createdBy: ID.user.kaasAdmin,
+    },
+    {
+      id: ID.user.kaasTL3,
+      email: "tl3.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Vikram",
+      last: "Patel",
+      emp: "EMP-014",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM2,
+      createdBy: ID.user.kaasAdmin,
+    },
+    {
+      id: ID.user.kaasTL4,
+      email: "tl4.kaas@talentos.com",
+      pw: "Pass@123",
+      first: "Divya",
+      last: "Sharma",
+      emp: "EMP-015",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM3,
+      createdBy: ID.user.kaasAdmin,
+    },
     {
       id: ID.user.kaasR1,
       email: "r01.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Ritu",
-      lastName: "Verma",
-      employeeId: "EMP-0015",
+      pw: "Pass@123",
+      first: "Ritu",
+      last: "Verma",
+      emp: "EMP-016",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL1,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL1,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR2,
       email: "r02.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Karan",
-      lastName: "Nair",
-      employeeId: "EMP-0016",
+      pw: "Pass@123",
+      first: "Karan",
+      last: "Nair",
+      emp: "EMP-017",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL1,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL1,
+      createdBy: ID.user.kaasAdmin,
     },
-    // KaaS Recruiters — Alpha Squad (TL2)
     {
       id: ID.user.kaasR3,
       email: "r03.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Arjun",
-      lastName: "Kumar",
-      employeeId: "EMP-0017",
+      pw: "Pass@123",
+      first: "Arjun",
+      last: "Kumar",
+      emp: "EMP-018",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL2,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL1,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR4,
       email: "r04.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Pooja",
-      lastName: "Iyer",
-      employeeId: "EMP-0018",
+      pw: "Pass@123",
+      first: "Pooja",
+      last: "Iyer",
+      emp: "EMP-019",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL2,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL2,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR5,
       email: "r05.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Rahul",
-      lastName: "Menon",
-      employeeId: "EMP-0019",
+      pw: "Pass@123",
+      first: "Rahul",
+      last: "Menon",
+      emp: "EMP-020",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL2,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL2,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR6,
       email: "r06.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Swathi",
-      lastName: "Nair",
-      employeeId: "EMP-0020",
+      pw: "Pass@123",
+      first: "Swathi",
+      last: "Nair",
+      emp: "EMP-021",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL2,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL2,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR7,
       email: "r07.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Ajay",
-      lastName: "Pillai",
-      employeeId: "EMP-0021",
+      pw: "Pass@123",
+      first: "Ajay",
+      last: "Pillai",
+      emp: "EMP-022",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL2,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL2,
+      createdBy: ID.user.kaasAdmin,
     },
-    // KaaS Recruiters — Beta Squad (TL3)
     {
       id: ID.user.kaasR8,
       email: "r08.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Harish",
-      lastName: "Venkat",
-      employeeId: "EMP-0022",
+      pw: "Pass@123",
+      first: "Harish",
+      last: "Venkat",
+      emp: "EMP-023",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL3,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL3,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR9,
       email: "r09.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Lakshmi",
-      lastName: "Ganesan",
-      employeeId: "EMP-0023",
+      pw: "Pass@123",
+      first: "Lakshmi",
+      last: "Ganesan",
+      emp: "EMP-024",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL3,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL3,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR10,
       email: "r10.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Sanjay",
-      lastName: "Ramasamy",
-      employeeId: "EMP-0024",
+      pw: "Pass@123",
+      first: "Sanjay",
+      last: "Ramasamy",
+      emp: "EMP-025",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL3,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL3,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR11,
       email: "r11.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Asha",
-      lastName: "Natarajan",
-      employeeId: "EMP-0025",
+      pw: "Pass@123",
+      first: "Asha",
+      last: "Natarajan",
+      emp: "EMP-026",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL3,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL4,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR12,
       email: "r12.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Vinod",
-      lastName: "Rajan",
-      employeeId: "EMP-0026",
+      pw: "Pass@123",
+      first: "Vinod",
+      last: "Rajan",
+      emp: "EMP-027",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL3,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasTL4,
+      createdBy: ID.user.kaasAdmin,
     },
-    // KaaS Recruiters — TL4 squad (inside Joe's Team hierarchy)
     {
       id: ID.user.kaasR13,
       email: "r13.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Geetha",
-      lastName: "Sundaram",
-      employeeId: "EMP-0027",
+      pw: "Pass@123",
+      first: "Geetha",
+      last: "Sundaram",
+      emp: "EMP-028",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL4,
-      createdById: ID.user.kaasAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM3,
+      createdBy: ID.user.kaasAdmin,
     },
     {
       id: ID.user.kaasR14,
       email: "r14.kaas@talentos.com",
-      password: "Pass@123",
-      firstName: "Nikhil",
-      lastName: "Raghunathan",
-      employeeId: "EMP-0028",
+      pw: "Pass@123",
+      first: "Nikhil",
+      last: "Raghunathan",
+      emp: "EMP-029",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.kaas,
-      reportingToId: ID.user.kaasTL4,
-      createdById: ID.user.kaasAdmin,
-    },
-    // ── TaaS ──
-    {
-      id: ID.user.taasAdmin,
-      email: "admin.taas@talentos.com",
-      password: "Admin@123",
-      firstName: "Rajesh",
-      lastName: "Iyer",
-      employeeId: "EMP-0029",
-      roleId: ID.role.admin,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.superAdmin,
-      createdById: ID.user.superAdmin,
+      buId: ID.bu.kaas,
+      reportTo: ID.user.kaasDM3,
+      createdBy: ID.user.kaasAdmin,
     },
     {
-      id: ID.user.taasDM1,
-      email: "dm1.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Karthik",
-      lastName: "Subramaniam",
-      employeeId: "EMP-0030",
-      roleId: ID.role.deliveryManager,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
-    },
-    {
-      id: ID.user.taasDM2,
-      email: "dm2.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Revathi",
-      lastName: "Parthasarathy",
-      employeeId: "EMP-0031",
-      roleId: ID.role.deliveryManager,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
-    },
-    {
-      id: ID.user.taasTL1,
-      email: "tl1.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Varun",
-      lastName: "Dakshinamurthy",
-      employeeId: "EMP-0032",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasDM1,
-      createdById: ID.user.taasAdmin,
-    },
-    {
-      id: ID.user.taasTL2,
-      email: "tl2.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Naveen",
-      lastName: "Subramanian",
-      employeeId: "EMP-0033",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasDM1,
-      createdById: ID.user.taasAdmin,
-    },
-    {
-      id: ID.user.taasTL3,
-      email: "tl3.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Yamini",
-      lastName: "Murugesan",
-      employeeId: "EMP-0034",
-      roleId: ID.role.teamLead,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasDM2,
-      createdById: ID.user.taasAdmin,
+      id: ID.user.taasSalesHead,
+      email: "saleshead.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Balaji",
+      last: "Narayanan",
+      emp: "EMP-030",
+      roleId: ID.role.sales,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasAdmin,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasSales1,
       email: "sales1.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Balaji",
-      lastName: "Narayanan",
-      employeeId: "EMP-0035",
+      pw: "Pass@123",
+      first: "Chithra",
+      last: "Krishnan",
+      emp: "EMP-031",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasSalesHead,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasSales2,
       email: "sales2.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Chithra",
-      lastName: "Krishnan",
-      employeeId: "EMP-0036",
+      pw: "Pass@123",
+      first: "Dinesh",
+      last: "Venkataraman",
+      emp: "EMP-032",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasSalesHead,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasSales3,
       email: "sales3.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Dinesh",
-      lastName: "Venkataraman",
-      employeeId: "EMP-0037",
+      pw: "Pass@123",
+      first: "Hema",
+      last: "Balakrishnan",
+      emp: "EMP-033",
       roleId: ID.role.sales,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasSalesHead,
+      createdBy: ID.user.taasAdmin,
     },
     {
-      id: ID.user.taasSales4,
-      email: "sales4.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Hema",
-      lastName: "Balakrishnan",
-      employeeId: "EMP-0038",
-      roleId: ID.role.sales,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasAdmin,
-      createdById: ID.user.taasAdmin,
+      id: ID.user.taasDM1,
+      email: "dm1.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Karthik",
+      last: "Subramaniam",
+      emp: "EMP-034",
+      roleId: ID.role.deliveryManager,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasAdmin,
+      createdBy: ID.user.taasAdmin,
     },
-    // TaaS Recruiters — Delta (TL1)
+    {
+      id: ID.user.taasDM2,
+      email: "dm2.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Revathi",
+      last: "Parthasarathy",
+      emp: "EMP-035",
+      roleId: ID.role.deliveryManager,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasAdmin,
+      createdBy: ID.user.taasAdmin,
+    },
+    {
+      id: ID.user.taasTL1,
+      email: "tl1.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Varun",
+      last: "Dakshinamurthy",
+      emp: "EMP-036",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM1,
+      createdBy: ID.user.taasAdmin,
+    },
+    {
+      id: ID.user.taasTL2,
+      email: "tl2.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Naveen",
+      last: "Subramanian",
+      emp: "EMP-037",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM1,
+      createdBy: ID.user.taasAdmin,
+    },
+    {
+      id: ID.user.taasTL3,
+      email: "tl3.taas@talentos.com",
+      pw: "Pass@123",
+      first: "Yamini",
+      last: "Murugesan",
+      emp: "EMP-038",
+      roleId: ID.role.teamLead,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM2,
+      createdBy: ID.user.taasAdmin,
+    },
     {
       id: ID.user.taasR1,
       email: "r01.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Mohan",
-      lastName: "Ramasamy",
-      employeeId: "EMP-0039",
+      pw: "Pass@123",
+      first: "Mohan",
+      last: "Ramasamy",
+      emp: "EMP-039",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL1,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL1,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR2,
       email: "r02.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Pavithra",
-      lastName: "Rajan",
-      employeeId: "EMP-0040",
+      pw: "Pass@123",
+      first: "Pavithra",
+      last: "Rajan",
+      emp: "EMP-040",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL1,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL1,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR3,
       email: "r03.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Ganesh",
-      lastName: "Sundaram",
-      employeeId: "EMP-0041",
+      pw: "Pass@123",
+      first: "Ganesh",
+      last: "Sundaram",
+      emp: "EMP-041",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL1,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL1,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR4,
       email: "r04.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Janani",
-      lastName: "Natarajan",
-      employeeId: "EMP-0042",
+      pw: "Pass@123",
+      first: "Janani",
+      last: "Natarajan",
+      emp: "EMP-042",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL1,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL2,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR5,
       email: "r05.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Ramesh",
-      lastName: "Annamalai",
-      employeeId: "EMP-0043",
+      pw: "Pass@123",
+      first: "Ramesh",
+      last: "Annamalai",
+      emp: "EMP-043",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL1,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL2,
+      createdBy: ID.user.taasAdmin,
     },
-    // TaaS Recruiters — Gamma (TL2)
     {
       id: ID.user.taasR6,
       email: "r06.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Vijaya",
-      lastName: "Chandrasekaran",
-      employeeId: "EMP-0044",
+      pw: "Pass@123",
+      first: "Vijaya",
+      last: "Chandrasekaran",
+      emp: "EMP-044",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL2,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL2,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR7,
       email: "r07.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Venkat",
-      lastName: "Dakshinamurthy",
-      employeeId: "EMP-0045",
+      pw: "Pass@123",
+      first: "Venkat",
+      last: "Dakshinamurthy",
+      emp: "EMP-045",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL2,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL3,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR8,
       email: "r08.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Padma",
-      lastName: "Parthasarathy",
-      employeeId: "EMP-0046",
+      pw: "Pass@123",
+      first: "Padma",
+      last: "Parthasarathy",
+      emp: "EMP-046",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL2,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL3,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR9,
       email: "r09.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Murugan",
-      lastName: "Subramanian",
-      employeeId: "EMP-0047",
+      pw: "Pass@123",
+      first: "Murugan",
+      last: "Subramanian",
+      emp: "EMP-047",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL2,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasTL3,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR10,
       email: "r10.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Usha",
-      lastName: "Venkataraman",
-      employeeId: "EMP-0048",
+      pw: "Pass@123",
+      first: "Usha",
+      last: "Venkataraman",
+      emp: "EMP-048",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL2,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM2,
+      createdBy: ID.user.taasAdmin,
     },
-    // TaaS Recruiters — TL3
     {
       id: ID.user.taasR11,
       email: "r11.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Gopal",
-      lastName: "Narayanan",
-      employeeId: "EMP-0049",
+      pw: "Pass@123",
+      first: "Gopal",
+      last: "Narayanan",
+      emp: "EMP-049",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL3,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM2,
+      createdBy: ID.user.taasAdmin,
     },
     {
       id: ID.user.taasR12,
       email: "r12.taas@talentos.com",
-      password: "Pass@123",
-      firstName: "Sumathi",
-      lastName: "Balakrishnan",
-      employeeId: "EMP-0050",
+      pw: "Pass@123",
+      first: "Sumathi",
+      last: "Balakrishnan",
+      emp: "EMP-050",
       roleId: ID.role.recruiter,
-      businessUnitId: ID.bu.taas,
-      reportingToId: ID.user.taasTL3,
-      createdById: ID.user.taasAdmin,
+      buId: ID.bu.taas,
+      reportTo: ID.user.taasDM2,
+      createdBy: ID.user.taasAdmin,
     },
   ];
 
   for (const u of userDefs) {
-    const { password, ...rest } = u;
     await prisma.user.upsert({
       where: { id: u.id },
       update: { roleId: u.roleId },
-      create: { ...rest, passwordHash: hash(password) },
+      create: {
+        id: u.id,
+        email: u.email,
+        passwordHash: hash(u.pw),
+        firstName: u.first,
+        lastName: u.last,
+        employeeId: u.emp,
+        isSuperAdmin: u.roleId === ID.role.superAdmin,
+        isActive: true,
+        roleId: u.roleId,
+        businessUnitId: u.buId,
+        reportingToId: u.reportTo,
+        createdById: u.createdBy,
+      },
     });
   }
   console.log(`  ✅ ${userDefs.length} users\n`);
 
-  // ──────────────────────────────────────
-  // 4. TEAMS
-  // ──────────────────────────────────────
-  console.log("👥 Teams...");
-
+  // ── 5. TEAMS — no parentTeamId anywhere ──────────────────────────────────
+  console.log("5/10  Teams (no parentTeamId)...");
   const teamDefs = [
-    // KaaS
+    // KaaS Sales Arc
     {
-      id: ID.team.kaasRoot,
-      name: "KaaS Ecosystem",
-      description: "Root for KaaS BU",
+      id: ID.team.kaasSalesHead,
+      name: "KaaS Sales Head",
       nodeType: "MANAGEMENT",
-      category: "MANAGEMENT",
+      cat: "SALES",
+      arcId: ID.arc.kaasSales,
       buId: ID.bu.kaas,
-      parentTeamId: null,
     },
     {
-      id: ID.team.kaasSales,
+      id: ID.team.kaasSalesTeam,
       name: "KaaS Sales Team",
-      description: "KaaS sales function",
       nodeType: "GROUP",
-      category: "SALES",
+      cat: "SALES",
+      arcId: ID.arc.kaasSales,
       buId: ID.bu.kaas,
-      parentTeamId: ID.team.kaasRoot,
+    },
+    // KaaS Delivery Arc
+    {
+      id: ID.team.kaasDM1Node,
+      name: "KaaS DM — Papitha Raj",
+      nodeType: "INDIVIDUAL",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
+      buId: ID.bu.kaas,
     },
     {
-      id: ID.team.kaasDelivery,
-      name: "KaaS Delivery Team",
-      description: "KaaS delivery function",
-      nodeType: "GROUP",
-      category: "DELIVERY",
+      id: ID.team.kaasDM2Node,
+      name: "KaaS DM — Nandini Krishnan",
+      nodeType: "INDIVIDUAL",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
       buId: ID.bu.kaas,
-      parentTeamId: ID.team.kaasRoot,
     },
     {
-      id: ID.team.joesTeam,
-      name: "Joe's Team",
-      description: "Joe's recruiting squad",
-      nodeType: "GROUP",
-      category: "DELIVERY",
+      id: ID.team.kaasDM3Node,
+      name: "KaaS DM — Suresh Bal...",
+      nodeType: "INDIVIDUAL",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
       buId: ID.bu.kaas,
-      parentTeamId: ID.team.kaasDelivery,
     },
     {
-      id: ID.team.alphaSquad,
-      name: "Alpha Squad",
-      description: "Senior tech stack recruiters",
+      id: ID.team.kaasJoesSquad,
+      name: "KaaS Joe's Squad",
       nodeType: "GROUP",
-      category: "DELIVERY",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
       buId: ID.bu.kaas,
-      parentTeamId: ID.team.kaasDelivery,
     },
     {
-      id: ID.team.betaSquad,
-      name: "Beta Squad",
-      description: "Mid-level & contract roles",
+      id: ID.team.kaasAlphaSquad,
+      name: "KaaS Alpha Squad",
       nodeType: "GROUP",
-      category: "DELIVERY",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
       buId: ID.bu.kaas,
-      parentTeamId: ID.team.kaasDelivery,
     },
-    // TaaS
     {
-      id: ID.team.taasRoot,
-      name: "TaaS Ecosystem",
-      description: "Root for TaaS BU",
+      id: ID.team.kaasBetaSquad,
+      name: "KaaS Beta Squad",
+      nodeType: "GROUP",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
+      buId: ID.bu.kaas,
+    },
+    {
+      id: ID.team.kaasGammaSquad,
+      name: "KaaS Gamma Squad",
+      nodeType: "GROUP",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
+      buId: ID.bu.kaas,
+    },
+    {
+      id: ID.team.kaasDeltaSquad,
+      name: "KaaS Delta Squad",
+      nodeType: "GROUP",
+      cat: "DELIVERY",
+      arcId: ID.arc.kaasDelivery,
+      buId: ID.bu.kaas,
+    },
+    // TaaS Sales Arc
+    {
+      id: ID.team.taasSalesHead,
+      name: "TaaS Sales Head",
       nodeType: "MANAGEMENT",
-      category: "MANAGEMENT",
+      cat: "SALES",
+      arcId: ID.arc.taasSales,
       buId: ID.bu.taas,
-      parentTeamId: null,
     },
     {
-      id: ID.team.taasSales,
+      id: ID.team.taasSalesTeam,
       name: "TaaS Sales Team",
-      description: "TaaS sales function",
       nodeType: "GROUP",
-      category: "SALES",
+      cat: "SALES",
+      arcId: ID.arc.taasSales,
       buId: ID.bu.taas,
-      parentTeamId: ID.team.taasRoot,
+    },
+    // TaaS Delivery Arc
+    {
+      id: ID.team.taasDM1Node,
+      name: "TaaS DM — Karthik",
+      nodeType: "INDIVIDUAL",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
+      buId: ID.bu.taas,
     },
     {
-      id: ID.team.taasDelivery,
-      name: "TaaS Delivery Team",
-      description: "TaaS delivery function",
-      nodeType: "GROUP",
-      category: "DELIVERY",
+      id: ID.team.taasDM2Node,
+      name: "TaaS DM — Revathi",
+      nodeType: "INDIVIDUAL",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
       buId: ID.bu.taas,
-      parentTeamId: ID.team.taasRoot,
     },
     {
-      id: ID.team.deltaTeam,
-      name: "Delta Team",
-      description: "BFSI & consulting vertical",
+      id: ID.team.taasDeltaTeam,
+      name: "TaaS Delta Team",
       nodeType: "GROUP",
-      category: "DELIVERY",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
       buId: ID.bu.taas,
-      parentTeamId: ID.team.taasDelivery,
     },
     {
-      id: ID.team.gammaTeam,
-      name: "Gamma Team",
-      description: "SAP & ERP specialists",
+      id: ID.team.taasGammaTeam,
+      name: "TaaS Gamma Team",
       nodeType: "GROUP",
-      category: "DELIVERY",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
       buId: ID.bu.taas,
-      parentTeamId: ID.team.taasDelivery,
+    },
+    {
+      id: ID.team.taasSigmaTeam,
+      name: "TaaS Sigma Team",
+      nodeType: "GROUP",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
+      buId: ID.bu.taas,
+    },
+    {
+      id: ID.team.taasOmegaTeam,
+      name: "TaaS Omega Team",
+      nodeType: "GROUP",
+      cat: "DELIVERY",
+      arcId: ID.arc.taasDelivery,
+      buId: ID.bu.taas,
     },
   ];
 
@@ -1268,169 +1081,186 @@ async function main() {
       create: {
         id: t.id,
         name: t.name,
-        description: t.description,
         nodeType: t.nodeType,
-        category: t.category,
+        category: t.cat,
         isActive: true,
+        teamArcId: t.arcId,
         businessUnitId: t.buId,
-        parentTeamId: t.parentTeamId,
+        // NO parentTeamId
       },
     });
   }
-  console.log("  ✅ 11 teams\n");
+  console.log(`  ✅ ${teamDefs.length} teams (no parentTeamId)\n`);
 
-  // ──────────────────────────────────────
-  // 5. TEAM EDGES
-  // Every parent→child pair gets exactly 3 rows:
-  // ASSIGNS_TO, REPORTS_TO, VISIBILITY
-  // ──────────────────────────────────────
-  console.log("🔗 Team edges (3 per pair)...");
+  // ── 6. EDGES — this is the ONLY hierarchy ─────────────────────────────────
+  console.log("6/10  Team Edges (all 3 types per structural link)...");
 
-  const teamPairs = [
-    // KaaS
-    [ID.team.kaasRoot, ID.team.kaasSales],
-    [ID.team.kaasRoot, ID.team.kaasDelivery],
-    [ID.team.kaasDelivery, ID.team.joesTeam],
-    [ID.team.kaasDelivery, ID.team.alphaSquad],
-    [ID.team.kaasDelivery, ID.team.betaSquad],
-    // TaaS
-    [ID.team.taasRoot, ID.team.taasSales],
-    [ID.team.taasRoot, ID.team.taasDelivery],
-    [ID.team.taasDelivery, ID.team.deltaTeam],
-    [ID.team.taasDelivery, ID.team.gammaTeam],
-  ];
+  // KaaS Sales Arc
+  // Sales Head → Sales Team (manages it)
+  await wireEdges(ID.team.kaasSalesHead, ID.team.kaasSalesTeam);
+  // Sales Head → each DM node (routes requirements) — ASSIGNS_TO only, no reporting
+  await wireAssigns(ID.team.kaasSalesHead, ID.team.kaasDM1Node);
+  await wireAssigns(ID.team.kaasSalesHead, ID.team.kaasDM2Node);
+  await wireAssigns(ID.team.kaasSalesHead, ID.team.kaasDM3Node);
 
-  for (const [parentId, childId] of teamPairs) {
-    for (const edgeType of ["ASSIGNS_TO", "REPORTS_TO", "VISIBILITY"]) {
-      await prisma.teamEdge.upsert({
-        where: { parentId_childId_edgeType: { parentId, childId, edgeType } },
-        update: {},
-        create: { parentId, childId, edgeType, isActive: true },
-      });
-    }
-  }
-  console.log(
-    `  ✅ ${teamPairs.length * 3} edges (${teamPairs.length} pairs × 3)\n`
-  );
+  // KaaS Delivery Arc — DM nodes own squads (all 3 edges)
+  await wireEdges(ID.team.kaasDM1Node, ID.team.kaasJoesSquad);
+  await wireEdges(ID.team.kaasDM2Node, ID.team.kaasAlphaSquad);
+  await wireEdges(ID.team.kaasDM2Node, ID.team.kaasBetaSquad);
+  await wireEdges(ID.team.kaasDM3Node, ID.team.kaasGammaSquad);
+  await wireEdges(ID.team.kaasDM3Node, ID.team.kaasDeltaSquad);
 
-  // ──────────────────────────────────────
-  // 6. TEAM MEMBERS
-  // ──────────────────────────────────────
-  console.log("🧑‍🤝‍🧑 Team members...");
+  // TaaS Sales Arc
+  await wireEdges(ID.team.taasSalesHead, ID.team.taasSalesTeam);
+  await wireAssigns(ID.team.taasSalesHead, ID.team.taasDM1Node);
+  await wireAssigns(ID.team.taasSalesHead, ID.team.taasDM2Node);
 
+  // TaaS Delivery Arc
+  await wireEdges(ID.team.taasDM1Node, ID.team.taasDeltaTeam);
+  await wireEdges(ID.team.taasDM1Node, ID.team.taasGammaTeam);
+  await wireEdges(ID.team.taasDM2Node, ID.team.taasSigmaTeam);
+  await wireEdges(ID.team.taasDM2Node, ID.team.taasOmegaTeam);
+
+  console.log("  ✅ Edges wired\n");
+
+  // ── 7. TEAM MEMBERS ───────────────────────────────────────────────────────
+  console.log("7/10  Team members...");
   const memberDefs = [
-    // KaaS Sales Team
-    { userId: ID.user.kaasSales1, teamId: ID.team.kaasSales, teamRole: "LEAD" },
+    {
+      userId: ID.user.kaasSalesHead,
+      teamId: ID.team.kaasSalesHead,
+      role: "LEAD",
+    },
+    {
+      userId: ID.user.kaasSalesHead,
+      teamId: ID.team.kaasSalesTeam,
+      role: "LEAD",
+    },
+    {
+      userId: ID.user.kaasSales1,
+      teamId: ID.team.kaasSalesTeam,
+      role: "MEMBER",
+    },
     {
       userId: ID.user.kaasSales2,
-      teamId: ID.team.kaasSales,
-      teamRole: "MEMBER",
+      teamId: ID.team.kaasSalesTeam,
+      role: "MEMBER",
     },
     {
       userId: ID.user.kaasSales3,
-      teamId: ID.team.kaasSales,
-      teamRole: "MEMBER",
+      teamId: ID.team.kaasSalesTeam,
+      role: "MEMBER",
     },
     {
       userId: ID.user.kaasSales4,
-      teamId: ID.team.kaasSales,
-      teamRole: "MEMBER",
+      teamId: ID.team.kaasSalesTeam,
+      role: "MEMBER",
+    },
+    { userId: ID.user.kaasDM1, teamId: ID.team.kaasDM1Node, role: "LEAD" },
+    { userId: ID.user.kaasDM2, teamId: ID.team.kaasDM2Node, role: "LEAD" },
+    { userId: ID.user.kaasDM3, teamId: ID.team.kaasDM3Node, role: "LEAD" },
+    { userId: ID.user.kaasTL1, teamId: ID.team.kaasJoesSquad, role: "LEAD" },
+    { userId: ID.user.kaasR1, teamId: ID.team.kaasJoesSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR2, teamId: ID.team.kaasJoesSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR3, teamId: ID.team.kaasJoesSquad, role: "MEMBER" },
+    { userId: ID.user.kaasTL2, teamId: ID.team.kaasAlphaSquad, role: "LEAD" },
+    { userId: ID.user.kaasR4, teamId: ID.team.kaasAlphaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR5, teamId: ID.team.kaasAlphaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR6, teamId: ID.team.kaasAlphaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR7, teamId: ID.team.kaasAlphaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasTL3, teamId: ID.team.kaasBetaSquad, role: "LEAD" },
+    { userId: ID.user.kaasR8, teamId: ID.team.kaasBetaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR9, teamId: ID.team.kaasBetaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR10, teamId: ID.team.kaasBetaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasTL4, teamId: ID.team.kaasGammaSquad, role: "LEAD" },
+    { userId: ID.user.kaasR11, teamId: ID.team.kaasGammaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR12, teamId: ID.team.kaasGammaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR13, teamId: ID.team.kaasDeltaSquad, role: "MEMBER" },
+    { userId: ID.user.kaasR14, teamId: ID.team.kaasDeltaSquad, role: "MEMBER" },
+    {
+      userId: ID.user.taasSalesHead,
+      teamId: ID.team.taasSalesHead,
+      role: "LEAD",
     },
     {
-      userId: ID.user.kaasSales5,
-      teamId: ID.team.kaasSales,
-      teamRole: "MEMBER",
-    },
-    // KaaS Delivery Team (DM level)
-    { userId: ID.user.kaasDM1, teamId: ID.team.kaasDelivery, teamRole: "LEAD" },
-    {
-      userId: ID.user.kaasDM2,
-      teamId: ID.team.kaasDelivery,
-      teamRole: "CO_LEAD",
+      userId: ID.user.taasSalesHead,
+      teamId: ID.team.taasSalesTeam,
+      role: "LEAD",
     },
     {
-      userId: ID.user.kaasDM3,
-      teamId: ID.team.kaasDelivery,
-      teamRole: "MEMBER",
+      userId: ID.user.taasSales1,
+      teamId: ID.team.taasSalesTeam,
+      role: "MEMBER",
     },
-    // Joe's Team
-    { userId: ID.user.kaasTL1, teamId: ID.team.joesTeam, teamRole: "LEAD" },
-    { userId: ID.user.kaasTL4, teamId: ID.team.joesTeam, teamRole: "CO_LEAD" },
-    { userId: ID.user.kaasR1, teamId: ID.team.joesTeam, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR2, teamId: ID.team.joesTeam, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR13, teamId: ID.team.joesTeam, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR14, teamId: ID.team.joesTeam, teamRole: "MEMBER" },
-    // Alpha Squad
-    { userId: ID.user.kaasTL2, teamId: ID.team.alphaSquad, teamRole: "LEAD" },
-    { userId: ID.user.kaasR3, teamId: ID.team.alphaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR4, teamId: ID.team.alphaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR5, teamId: ID.team.alphaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR6, teamId: ID.team.alphaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR7, teamId: ID.team.alphaSquad, teamRole: "MEMBER" },
-    // Beta Squad
-    { userId: ID.user.kaasTL3, teamId: ID.team.betaSquad, teamRole: "LEAD" },
-    { userId: ID.user.kaasR8, teamId: ID.team.betaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR9, teamId: ID.team.betaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR10, teamId: ID.team.betaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR11, teamId: ID.team.betaSquad, teamRole: "MEMBER" },
-    { userId: ID.user.kaasR12, teamId: ID.team.betaSquad, teamRole: "MEMBER" },
-    // TaaS Sales Team
-    { userId: ID.user.taasSales1, teamId: ID.team.taasSales, teamRole: "LEAD" },
     {
       userId: ID.user.taasSales2,
-      teamId: ID.team.taasSales,
-      teamRole: "MEMBER",
+      teamId: ID.team.taasSalesTeam,
+      role: "MEMBER",
     },
     {
       userId: ID.user.taasSales3,
-      teamId: ID.team.taasSales,
-      teamRole: "MEMBER",
+      teamId: ID.team.taasSalesTeam,
+      role: "MEMBER",
     },
-    {
-      userId: ID.user.taasSales4,
-      teamId: ID.team.taasSales,
-      teamRole: "MEMBER",
-    },
-    // TaaS Delivery Team
-    { userId: ID.user.taasDM1, teamId: ID.team.taasDelivery, teamRole: "LEAD" },
-    {
-      userId: ID.user.taasDM2,
-      teamId: ID.team.taasDelivery,
-      teamRole: "CO_LEAD",
-    },
-    // Delta Team
-    { userId: ID.user.taasTL1, teamId: ID.team.deltaTeam, teamRole: "LEAD" },
-    { userId: ID.user.taasR1, teamId: ID.team.deltaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR2, teamId: ID.team.deltaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR3, teamId: ID.team.deltaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR4, teamId: ID.team.deltaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR5, teamId: ID.team.deltaTeam, teamRole: "MEMBER" },
-    // Gamma Team
-    { userId: ID.user.taasTL2, teamId: ID.team.gammaTeam, teamRole: "LEAD" },
-    { userId: ID.user.taasTL3, teamId: ID.team.gammaTeam, teamRole: "CO_LEAD" },
-    { userId: ID.user.taasR6, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR7, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR8, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR9, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR10, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR11, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
-    { userId: ID.user.taasR12, teamId: ID.team.gammaTeam, teamRole: "MEMBER" },
+    { userId: ID.user.taasDM1, teamId: ID.team.taasDM1Node, role: "LEAD" },
+    { userId: ID.user.taasDM2, teamId: ID.team.taasDM2Node, role: "LEAD" },
+    { userId: ID.user.taasTL1, teamId: ID.team.taasDeltaTeam, role: "LEAD" },
+    { userId: ID.user.taasR1, teamId: ID.team.taasDeltaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR2, teamId: ID.team.taasDeltaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR3, teamId: ID.team.taasDeltaTeam, role: "MEMBER" },
+    { userId: ID.user.taasTL2, teamId: ID.team.taasGammaTeam, role: "LEAD" },
+    { userId: ID.user.taasR4, teamId: ID.team.taasGammaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR5, teamId: ID.team.taasGammaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR6, teamId: ID.team.taasGammaTeam, role: "MEMBER" },
+    { userId: ID.user.taasTL3, teamId: ID.team.taasSigmaTeam, role: "LEAD" },
+    { userId: ID.user.taasR7, teamId: ID.team.taasSigmaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR8, teamId: ID.team.taasSigmaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR9, teamId: ID.team.taasSigmaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR10, teamId: ID.team.taasOmegaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR11, teamId: ID.team.taasOmegaTeam, role: "MEMBER" },
+    { userId: ID.user.taasR12, teamId: ID.team.taasOmegaTeam, role: "MEMBER" },
   ];
 
+  const createdMembers = {};
   for (const m of memberDefs) {
-    await prisma.teamMember.upsert({
+    const member = await prisma.teamMember.upsert({
       where: { userId_teamId: { userId: m.userId, teamId: m.teamId } },
-      update: { teamRole: m.teamRole },
-      create: { ...m, isActive: true },
+      update: { teamRole: m.role },
+      create: {
+        userId: m.userId,
+        teamId: m.teamId,
+        teamRole: m.role,
+        isActive: true,
+        joinedAt: daysAgo(Math.floor(Math.random() * 60) + 30),
+      },
     });
+    createdMembers[`${m.teamId}:${m.userId}`] = member.id;
   }
-  console.log(`  ✅ ${memberDefs.length} team memberships\n`);
 
-  // ──────────────────────────────────────
-  // 7. SKILLS — canonical registry
-  // ──────────────────────────────────────
-  console.log("🛠 Skills...");
+  // Member join histories
+  for (const m of memberDefs) {
+    const memberId = createdMembers[`${m.teamId}:${m.userId}`];
+    if (!memberId) continue;
+    const existing = await prisma.teamMemberHistory.count({
+      where: { teamMemberId: memberId, event: "JOINED" },
+    });
+    if (existing === 0) {
+      await prisma.teamMemberHistory.create({
+        data: {
+          teamMemberId: memberId,
+          userId: m.userId,
+          teamId: m.teamId,
+          event: "JOINED",
+          performedById: ID.user.superAdmin,
+          reason: "Initial team setup",
+        },
+      });
+    }
+  }
+  console.log(`  ✅ ${memberDefs.length} memberships + histories\n`);
 
+  // ── 8. SKILLS ─────────────────────────────────────────────────────────────
+  console.log("8/10  Skills...");
   const skillDefs = [
     {
       id: ID.skill.java,
@@ -1445,63 +1275,47 @@ async function main() {
     {
       id: ID.skill.microservices,
       canonicalName: "Microservices",
-      aliases: ["micro services", "microservice architecture"],
+      aliases: ["micro services"],
     },
     {
       id: ID.skill.docker,
       canonicalName: "Docker",
-      aliases: ["docker container", "containerization"],
+      aliases: ["docker container"],
     },
-    {
-      id: ID.skill.kafka,
-      canonicalName: "Kafka",
-      aliases: ["Apache Kafka", "kafka streams"],
-    },
+    { id: ID.skill.kafka, canonicalName: "Kafka", aliases: ["Apache Kafka"] },
     {
       id: ID.skill.react,
       canonicalName: "React",
-      aliases: ["ReactJS", "React.js", "react js"],
+      aliases: ["ReactJS", "React.js"],
     },
-    {
-      id: ID.skill.typescript,
-      canonicalName: "TypeScript",
-      aliases: ["TS", "typescript"],
-    },
-    {
-      id: ID.skill.nextjs,
-      canonicalName: "Next.js",
-      aliases: ["NextJS", "next js"],
-    },
+    { id: ID.skill.typescript, canonicalName: "TypeScript", aliases: ["TS"] },
+    { id: ID.skill.nextjs, canonicalName: "Next.js", aliases: ["NextJS"] },
     {
       id: ID.skill.tailwind,
       canonicalName: "Tailwind CSS",
-      aliases: ["tailwind", "tailwindcss"],
+      aliases: ["tailwind"],
     },
     {
       id: ID.skill.aws,
       canonicalName: "AWS",
-      aliases: ["Amazon Web Services", "amazon aws"],
+      aliases: ["Amazon Web Services"],
     },
     {
       id: ID.skill.terraform,
       canonicalName: "Terraform",
-      aliases: ["terraform iac", "hashicorp terraform"],
+      aliases: ["terraform iac"],
     },
     {
       id: ID.skill.cicd,
       canonicalName: "CI/CD",
-      aliases: ["cicd", "continuous integration", "continuous delivery"],
+      aliases: ["cicd", "continuous integration"],
     },
     {
       id: ID.skill.kubernetes,
       canonicalName: "Kubernetes",
-      aliases: ["K8s", "k8s", "kube"],
+      aliases: ["K8s", "k8s"],
     },
-    {
-      id: ID.skill.python,
-      canonicalName: "Python",
-      aliases: ["python3", "python 3"],
-    },
+    { id: ID.skill.python, canonicalName: "Python", aliases: ["python3"] },
     {
       id: ID.skill.spark,
       canonicalName: "Apache Spark",
@@ -1512,68 +1326,48 @@ async function main() {
       canonicalName: "Apache Airflow",
       aliases: ["airflow"],
     },
-    {
-      id: ID.skill.sql,
-      canonicalName: "SQL",
-      aliases: ["structured query language", "rdbms"],
-    },
+    { id: ID.skill.sql, canonicalName: "SQL", aliases: ["rdbms"] },
     {
       id: ID.skill.nodejs,
       canonicalName: "Node.js",
-      aliases: ["NodeJS", "node js", "nodejs"],
+      aliases: ["NodeJS", "nodejs"],
     },
     {
       id: ID.skill.express,
       canonicalName: "Express.js",
-      aliases: ["expressjs", "express"],
+      aliases: ["expressjs"],
     },
     {
       id: ID.skill.postgresql,
       canonicalName: "PostgreSQL",
       aliases: ["postgres", "pg"],
     },
-    {
-      id: ID.skill.redis,
-      canonicalName: "Redis",
-      aliases: ["redis cache", "redis db"],
-    },
+    { id: ID.skill.redis, canonicalName: "Redis", aliases: ["redis cache"] },
     {
       id: ID.skill.azure,
       canonicalName: "Azure",
-      aliases: ["Microsoft Azure", "ms azure"],
+      aliases: ["Microsoft Azure"],
     },
     {
       id: ID.skill.aks,
       canonicalName: "AKS",
       aliases: ["Azure Kubernetes Service"],
     },
-    {
-      id: ID.skill.golang,
-      canonicalName: "Golang",
-      aliases: ["Go", "go lang"],
-    },
-    {
-      id: ID.skill.grpc,
-      canonicalName: "gRPC",
-      aliases: ["grpc", "google rpc"],
-    },
+    { id: ID.skill.golang, canonicalName: "Golang", aliases: ["Go"] },
+    { id: ID.skill.grpc, canonicalName: "gRPC", aliases: ["grpc"] },
     { id: ID.skill.helm, canonicalName: "Helm", aliases: ["helm charts"] },
-    {
-      id: ID.skill.tensorflow,
-      canonicalName: "TensorFlow",
-      aliases: ["tensorflow", "tf"],
-    },
+    { id: ID.skill.tensorflow, canonicalName: "TensorFlow", aliases: ["tf"] },
     { id: ID.skill.mlflow, canonicalName: "MLflow", aliases: ["mlflow"] },
     {
       id: ID.skill.sapHana,
       canonicalName: "SAP S/4 HANA",
-      aliases: ["s4hana", "sap hana", "SAP HANA"],
+      aliases: ["s4hana", "sap hana"],
     },
     { id: ID.skill.abap, canonicalName: "ABAP", aliases: ["sap abap"] },
     {
       id: ID.skill.fico,
       canonicalName: "SAP FICO",
-      aliases: ["fico", "sap fi", "sap co"],
+      aliases: ["fico", "sap fi"],
     },
     {
       id: ID.skill.springCloud,
@@ -1583,25 +1377,16 @@ async function main() {
     {
       id: ID.skill.angular,
       canonicalName: "Angular",
-      aliases: ["AngularJS", "angular js", "angular 16"],
+      aliases: ["AngularJS", "angular 16"],
     },
-    {
-      id: ID.skill.salesforce,
-      canonicalName: "Salesforce",
-      aliases: ["salesforce crm", "sfdc"],
-    },
+    { id: ID.skill.salesforce, canonicalName: "Salesforce", aliases: ["sfdc"] },
     {
       id: ID.skill.oracleDba,
       canonicalName: "Oracle DBA",
-      aliases: ["oracle database", "oracle db"],
+      aliases: ["oracle database"],
     },
-    {
-      id: ID.skill.tableau,
-      canonicalName: "Tableau",
-      aliases: ["tableau bi", "tableau desktop"],
-    },
+    { id: ID.skill.tableau, canonicalName: "Tableau", aliases: ["tableau bi"] },
   ];
-
   for (const s of skillDefs) {
     await prisma.skill.upsert({
       where: { id: s.id },
@@ -1611,126 +1396,106 @@ async function main() {
   }
   console.log(`  ✅ ${skillDefs.length} skills\n`);
 
-  // ──────────────────────────────────────
-  // 8. CLIENTS
-  // ──────────────────────────────────────
-  console.log("🏭 Clients...");
-
+  // ── 9. CLIENTS ────────────────────────────────────────────────────────────
+  console.log("9/10  Clients...");
   const clientDefs = [
     {
       id: ID.client.infosys,
       name: "Infosys BPM",
-      vmsName: "Infosys BPM Ltd",
-      category: "SERVICE",
-      industry: "IT Services",
+      cat: "SERVICE",
       state: "Karnataka",
       city: "Bangalore",
       status: "ACTIVE",
       buId: ID.bu.kaas,
-      createdById: ID.user.kaasSales1,
-      approvedById: ID.user.kaasAdmin,
-      daysApproved: 40,
+      createdBy: ID.user.kaasSales1,
+      approvedBy: ID.user.kaasAdmin,
+      daysAgo: 40,
     },
     {
       id: ID.client.wipro,
       name: "Wipro Technologies",
-      vmsName: "Wipro Ltd",
-      category: "SERVICE",
-      industry: "IT Services",
+      cat: "SERVICE",
       state: "Karnataka",
       city: "Bangalore",
       status: "ACTIVE",
       buId: ID.bu.kaas,
-      createdById: ID.user.kaasSales2,
-      approvedById: ID.user.kaasAdmin,
-      daysApproved: 50,
+      createdBy: ID.user.kaasSales1,
+      approvedBy: ID.user.kaasAdmin,
+      daysAgo: 50,
     },
     {
       id: ID.client.hcl,
       name: "HCL Tech",
-      vmsName: "HCL Technologies",
-      category: "SERVICE",
-      industry: "IT Services",
+      cat: "SERVICE",
       state: "Tamil Nadu",
       city: "Chennai",
       status: "ACTIVE",
       buId: ID.bu.kaas,
-      createdById: ID.user.kaasSales3,
-      approvedById: ID.user.kaasAdmin,
-      daysApproved: 35,
+      createdBy: ID.user.kaasSales2,
+      approvedBy: ID.user.kaasAdmin,
+      daysAgo: 35,
     },
     {
       id: ID.client.mphasis,
       name: "Mphasis Limited",
-      vmsName: "Mphasis",
-      category: "CONSULTING",
-      industry: "BFSI Tech",
+      cat: "CONSULTING",
       state: "Karnataka",
       city: "Bangalore",
       status: "PENDING",
       buId: ID.bu.kaas,
-      createdById: ID.user.kaasSales4,
-      approvedById: null,
-      daysApproved: null,
+      createdBy: ID.user.kaasSales2,
+      approvedBy: null,
+      daysAgo: null,
     },
     {
       id: ID.client.tcs,
       name: "TCS Digital",
-      vmsName: "Tata Consultancy Services",
-      category: "SERVICE",
-      industry: "IT Consulting",
+      cat: "SERVICE",
       state: "Maharashtra",
       city: "Mumbai",
       status: "ACTIVE",
       buId: ID.bu.taas,
-      createdById: ID.user.taasSales1,
-      approvedById: ID.user.taasAdmin,
-      daysApproved: 45,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      daysAgo: 45,
     },
     {
       id: ID.client.cognizant,
       name: "Cognizant India",
-      vmsName: "Cognizant Technology Solutions",
-      category: "SERVICE",
-      industry: "IT Services",
+      cat: "SERVICE",
       state: "Tamil Nadu",
       city: "Chennai",
       status: "ACTIVE",
       buId: ID.bu.taas,
-      createdById: ID.user.taasSales2,
-      approvedById: ID.user.taasAdmin,
-      daysApproved: 38,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      daysAgo: 38,
     },
     {
       id: ID.client.lti,
       name: "LTIMindtree",
-      vmsName: "LTIMindtree Ltd",
-      category: "CONSULTING",
-      industry: "Digital Transformation",
+      cat: "CONSULTING",
       state: "Maharashtra",
       city: "Pune",
       status: "ACTIVE",
       buId: ID.bu.taas,
-      createdById: ID.user.taasSales3,
-      approvedById: ID.user.taasAdmin,
-      daysApproved: 30,
+      createdBy: ID.user.taasSales2,
+      approvedBy: ID.user.taasAdmin,
+      daysAgo: 30,
     },
     {
       id: ID.client.persistent,
       name: "Persistent Systems",
-      vmsName: "Persistent Systems Ltd",
-      category: "PRODUCT",
-      industry: "SaaS",
+      cat: "PRODUCT",
       state: "Maharashtra",
       city: "Pune",
       status: "INACTIVE",
       buId: ID.bu.taas,
-      createdById: ID.user.taasSales4,
-      approvedById: ID.user.taasAdmin,
-      daysApproved: 90,
+      createdBy: ID.user.taasSales2,
+      approvedBy: ID.user.taasAdmin,
+      daysAgo: 90,
     },
   ];
-
   for (const c of clientDefs) {
     await prisma.client.upsert({
       where: { id: c.id },
@@ -1738,142 +1503,82 @@ async function main() {
       create: {
         id: c.id,
         name: c.name,
-        vmsName: c.vmsName,
-        category: c.category,
-        industry: c.industry,
+        category: c.cat,
         country: "India",
         state: c.state,
         city: c.city,
         status: c.status,
         businessUnitId: c.buId,
-        createdById: c.createdById,
-        ...(c.approvedById
-          ? {
-              approvedById: c.approvedById,
-              approvedAt: daysAgo(c.daysApproved),
-            }
+        createdById: c.createdBy,
+        ...(c.approvedBy
+          ? { approvedById: c.approvedBy, approvedAt: daysAgo(c.daysAgo) }
           : {}),
       },
     });
-  }
-  console.log("  ✅ 8 clients\n");
-
-  // ──────────────────────────────────────
-  // 8a. CLIENT HANDLERS
-  // No unique constraint → findFirst + create
-  // ──────────────────────────────────────
-  console.log("👤 Client handlers...");
-
-  const handlerDefs = [
-    {
-      clientId: ID.client.infosys,
-      userId: ID.user.kaasSales1,
-      assignedById: ID.user.kaasAdmin,
-    },
-    {
-      clientId: ID.client.wipro,
-      userId: ID.user.kaasSales2,
-      assignedById: ID.user.kaasAdmin,
-    },
-    {
-      clientId: ID.client.hcl,
-      userId: ID.user.kaasSales3,
-      assignedById: ID.user.kaasAdmin,
-    },
-    {
-      clientId: ID.client.mphasis,
-      userId: ID.user.kaasSales4,
-      assignedById: ID.user.kaasAdmin,
-    },
-    {
-      clientId: ID.client.tcs,
-      userId: ID.user.taasSales1,
-      assignedById: ID.user.taasAdmin,
-    },
-    {
-      clientId: ID.client.cognizant,
-      userId: ID.user.taasSales2,
-      assignedById: ID.user.taasAdmin,
-    },
-    {
-      clientId: ID.client.lti,
-      userId: ID.user.taasSales3,
-      assignedById: ID.user.taasAdmin,
-    },
-    {
-      clientId: ID.client.persistent,
-      userId: ID.user.taasSales4,
-      assignedById: ID.user.taasAdmin,
-    },
-  ];
-
-  for (const h of handlerDefs) {
-    const existing = await prisma.clientHandler.findFirst({
-      where: { clientId: h.clientId, userId: h.userId, status: "ACTIVE" },
+    const adminUser =
+      c.buId === ID.bu.kaas ? ID.user.kaasAdmin : ID.user.taasAdmin;
+    const existingHandler = await prisma.clientHandler.findFirst({
+      where: { clientId: c.id, userId: c.createdBy, status: "ACTIVE" },
     });
-    if (!existing) {
+    if (!existingHandler) {
       await prisma.clientHandler.create({
-        data: { ...h, role: "PRIMARY", status: "ACTIVE" },
+        data: {
+          clientId: c.id,
+          userId: c.createdBy,
+          role: "PRIMARY",
+          status: "ACTIVE",
+          assignedById: adminUser,
+        },
       });
     }
   }
-  console.log("  ✅ 8 client handlers\n");
-
-  // ──────────────────────────────────────
-  // 8b. CLIENT TEAM ASSIGNMENTS
-  // ──────────────────────────────────────
-  console.log("🔗 Client team assignments...");
-
+  // Client team assignments
   const ctaDefs = [
     {
       clientId: ID.client.infosys,
-      teamId: ID.team.kaasDelivery,
+      teamId: ID.team.kaasJoesSquad,
       assignedById: ID.user.kaasAdmin,
     },
     {
       clientId: ID.client.wipro,
-      teamId: ID.team.alphaSquad,
+      teamId: ID.team.kaasAlphaSquad,
       assignedById: ID.user.kaasAdmin,
     },
     {
       clientId: ID.client.hcl,
-      teamId: ID.team.betaSquad,
+      teamId: ID.team.kaasBetaSquad,
       assignedById: ID.user.kaasAdmin,
     },
     {
       clientId: ID.client.tcs,
-      teamId: ID.team.taasDelivery,
+      teamId: ID.team.taasDeltaTeam,
       assignedById: ID.user.taasAdmin,
     },
     {
       clientId: ID.client.cognizant,
-      teamId: ID.team.deltaTeam,
+      teamId: ID.team.taasGammaTeam,
       assignedById: ID.user.taasAdmin,
     },
     {
       clientId: ID.client.lti,
-      teamId: ID.team.gammaTeam,
+      teamId: ID.team.taasSigmaTeam,
       assignedById: ID.user.taasAdmin,
     },
   ];
-
-  for (const c of ctaDefs) {
+  for (const cta of ctaDefs) {
     await prisma.clientTeamAssignment.upsert({
-      where: { clientId_teamId: { clientId: c.clientId, teamId: c.teamId } },
+      where: {
+        clientId_teamId: { clientId: cta.clientId, teamId: cta.teamId },
+      },
       update: {},
-      create: c,
+      create: cta,
     });
   }
-  console.log("  ✅ 6 client team assignments\n");
+  console.log("  ✅ 8 clients + handlers + team assignments\n");
 
-  // ──────────────────────────────────────
-  // 9. REQUIREMENTS — 25 total
-  // ──────────────────────────────────────
-  console.log("📝 Requirements (25)...");
-
-  // status: DRAFT | PENDING_APPROVAL | ACTIVE | ON_HOLD | CLOSED | CANCELLED
+  // ── 10. REQUIREMENTS ──────────────────────────────────────────────────────
+  console.log("10/10  Requirements...");
   const reqDefs = [
-    // ── KaaS / Infosys ──
     {
       id: ID.req.r10001,
       code: "SFJ-R-10001",
@@ -1887,10 +1592,10 @@ async function main() {
       salMin: 800000,
       salMax: 1400000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales1,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 45,
+      createdBy: ID.user.kaasSales1,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 45,
     },
     {
       id: ID.req.r10002,
@@ -1905,10 +1610,10 @@ async function main() {
       salMin: 900000,
       salMax: 1600000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales1,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 38,
+      createdBy: ID.user.kaasSales1,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 38,
     },
     {
       id: ID.req.r10003,
@@ -1923,12 +1628,11 @@ async function main() {
       salMin: 1000000,
       salMax: 1800000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales1,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 30,
+      createdBy: ID.user.kaasSales1,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 30,
     },
-    // ── KaaS / Wipro ──
     {
       id: ID.req.r10004,
       code: "SFJ-R-10004",
@@ -1942,10 +1646,10 @@ async function main() {
       salMin: 700000,
       salMax: 1300000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales2,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 28,
+      createdBy: ID.user.kaasSales2,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 28,
     },
     {
       id: ID.req.r10005,
@@ -1960,10 +1664,10 @@ async function main() {
       salMin: 600000,
       salMax: 900000,
       status: "PENDING_APPROVAL",
-      createdById: ID.user.kaasSales2,
-      approvedById: null,
-      closedById: null,
-      daysAgo: 10,
+      createdBy: ID.user.kaasSales2,
+      approvedBy: null,
+      closedBy: null,
+      da: 10,
     },
     {
       id: ID.req.r10006,
@@ -1978,10 +1682,10 @@ async function main() {
       salMin: 1200000,
       salMax: 2000000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales2,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 55,
+      createdBy: ID.user.kaasSales2,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 55,
     },
     {
       id: ID.req.r10007,
@@ -1996,12 +1700,11 @@ async function main() {
       salMin: 500000,
       salMax: 900000,
       status: "ON_HOLD",
-      createdById: ID.user.kaasSales3,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 60,
+      createdBy: ID.user.kaasSales3,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 60,
     },
-    // ── KaaS / HCL ──
     {
       id: ID.req.r10008,
       code: "SFJ-R-10008",
@@ -2015,10 +1718,10 @@ async function main() {
       salMin: 800000,
       salMax: 1500000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales3,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 20,
+      createdBy: ID.user.kaasSales3,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 20,
     },
     {
       id: ID.req.r10009,
@@ -2033,10 +1736,10 @@ async function main() {
       salMin: 2000000,
       salMax: 3500000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales3,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 15,
+      createdBy: ID.user.kaasSales3,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 15,
     },
     {
       id: ID.req.r10010,
@@ -2051,12 +1754,11 @@ async function main() {
       salMin: 600000,
       salMax: 1000000,
       status: "CLOSED",
-      createdById: ID.user.kaasSales3,
-      approvedById: ID.user.kaasAdmin,
-      closedById: ID.user.kaasAdmin,
-      daysAgo: 90,
+      createdBy: ID.user.kaasSales3,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: ID.user.kaasAdmin,
+      da: 90,
     },
-    // ── KaaS / Mphasis ──
     {
       id: ID.req.r10011,
       code: "SFJ-R-10011",
@@ -2070,10 +1772,10 @@ async function main() {
       salMin: 900000,
       salMax: 1600000,
       status: "DRAFT",
-      createdById: ID.user.kaasSales4,
-      approvedById: null,
-      closedById: null,
-      daysAgo: 5,
+      createdBy: ID.user.kaasSales3,
+      approvedBy: null,
+      closedBy: null,
+      da: 5,
     },
     {
       id: ID.req.r10012,
@@ -2088,10 +1790,10 @@ async function main() {
       salMin: 1500000,
       salMax: 2500000,
       status: "CANCELLED",
-      createdById: ID.user.kaasSales4,
-      approvedById: ID.user.kaasAdmin,
-      closedById: ID.user.kaasAdmin,
-      daysAgo: 80,
+      createdBy: ID.user.kaasSales4,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: ID.user.kaasAdmin,
+      da: 80,
     },
     {
       id: ID.req.r10013,
@@ -2106,12 +1808,11 @@ async function main() {
       salMin: 300000,
       salMax: 600000,
       status: "ACTIVE",
-      createdById: ID.user.kaasSales1,
-      approvedById: ID.user.kaasAdmin,
-      closedById: null,
-      daysAgo: 8,
+      createdBy: ID.user.kaasSales4,
+      approvedBy: ID.user.kaasAdmin,
+      closedBy: null,
+      da: 8,
     },
-    // ── TaaS / TCS ──
     {
       id: ID.req.r20001,
       code: "SFJ-R-20001",
@@ -2125,10 +1826,10 @@ async function main() {
       salMin: 1200000,
       salMax: 2000000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales1,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 25,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 25,
     },
     {
       id: ID.req.r20002,
@@ -2143,10 +1844,10 @@ async function main() {
       salMin: 1500000,
       salMax: 2500000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales1,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 22,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 22,
     },
     {
       id: ID.req.r20003,
@@ -2161,10 +1862,10 @@ async function main() {
       salMin: 1000000,
       salMax: 1800000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales2,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 18,
+      createdBy: ID.user.taasSales2,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 18,
     },
     {
       id: ID.req.r20004,
@@ -2179,12 +1880,11 @@ async function main() {
       salMin: 800000,
       salMax: 1400000,
       status: "PENDING_APPROVAL",
-      createdById: ID.user.taasSales2,
-      approvedById: null,
-      closedById: null,
-      daysAgo: 7,
+      createdBy: ID.user.taasSales2,
+      approvedBy: null,
+      closedBy: null,
+      da: 7,
     },
-    // ── TaaS / Cognizant ──
     {
       id: ID.req.r20005,
       code: "SFJ-R-20005",
@@ -2198,10 +1898,10 @@ async function main() {
       salMin: 1500000,
       salMax: 2800000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales2,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 40,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 40,
     },
     {
       id: ID.req.r20006,
@@ -2216,10 +1916,10 @@ async function main() {
       salMin: 900000,
       salMax: 1600000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales3,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 35,
+      createdBy: ID.user.taasSales2,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 35,
     },
     {
       id: ID.req.r20007,
@@ -2234,12 +1934,11 @@ async function main() {
       salMin: 700000,
       salMax: 1100000,
       status: "ON_HOLD",
-      createdById: ID.user.taasSales3,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 50,
+      createdBy: ID.user.taasSales2,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 50,
     },
-    // ── TaaS / LTI ──
     {
       id: ID.req.r20008,
       code: "SFJ-R-20008",
@@ -2253,10 +1952,10 @@ async function main() {
       salMin: 800000,
       salMax: 1400000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales4,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 14,
+      createdBy: ID.user.taasSales3,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 14,
     },
     {
       id: ID.req.r20009,
@@ -2271,33 +1970,14 @@ async function main() {
       salMin: 2500000,
       salMax: 4000000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales4,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 12,
+      createdBy: ID.user.taasSales3,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 12,
     },
     {
       id: ID.req.r20010,
       code: "SFJ-R-20010",
-      title: "Product Manager (FinTech)",
-      clientId: ID.client.lti,
-      buId: ID.bu.taas,
-      jobType: "PERMANENT",
-      remoteType: "REMOTE",
-      priority: "MEDIUM",
-      openings: 1,
-      salMin: 1800000,
-      salMax: 3000000,
-      status: "CLOSED",
-      createdById: ID.user.taasSales1,
-      approvedById: ID.user.taasAdmin,
-      closedById: ID.user.taasAdmin,
-      daysAgo: 95,
-    },
-    // ── TaaS / Persistent ──
-    {
-      id: ID.req.r20011,
-      code: "SFJ-R-20011",
       title: "Embedded C Engineer",
       clientId: ID.client.persistent,
       buId: ID.bu.taas,
@@ -2308,14 +1988,14 @@ async function main() {
       salMin: 600000,
       salMax: 1000000,
       status: "CANCELLED",
-      createdById: ID.user.taasSales1,
-      approvedById: ID.user.taasAdmin,
-      closedById: ID.user.taasAdmin,
-      daysAgo: 100,
+      createdBy: ID.user.taasSales1,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: ID.user.taasAdmin,
+      da: 100,
     },
     {
-      id: ID.req.r20012,
-      code: "SFJ-R-20012",
+      id: ID.req.r20011,
+      code: "SFJ-R-20011",
       title: "VLSI Design Engineer",
       clientId: ID.client.persistent,
       buId: ID.bu.taas,
@@ -2326,14 +2006,14 @@ async function main() {
       salMin: 800000,
       salMax: 1400000,
       status: "DRAFT",
-      createdById: ID.user.taasSales2,
-      approvedById: null,
-      closedById: null,
-      daysAgo: 3,
+      createdBy: ID.user.taasSales2,
+      approvedBy: null,
+      closedBy: null,
+      da: 3,
     },
     {
-      id: ID.req.r20013,
-      code: "SFJ-R-20013",
+      id: ID.req.r20012,
+      code: "SFJ-R-20012",
       title: "Agile Coach",
       clientId: ID.client.cognizant,
       buId: ID.bu.taas,
@@ -2344,10 +2024,10 @@ async function main() {
       salMin: 1200000,
       salMax: 2000000,
       status: "ACTIVE",
-      createdById: ID.user.taasSales3,
-      approvedById: ID.user.taasAdmin,
-      closedById: null,
-      daysAgo: 6,
+      createdBy: ID.user.taasSales3,
+      approvedBy: ID.user.taasAdmin,
+      closedBy: null,
+      da: 6,
     },
   ];
 
@@ -2372,664 +2052,26 @@ async function main() {
         status: r.status,
         location: r.buId === ID.bu.kaas ? "Bangalore" : "Chennai",
         country: "India",
-        createdById: r.createdById,
-        ...(r.approvedById
-          ? { approvedById: r.approvedById, approvedAt: daysAgo(r.daysAgo - 2) }
+        createdById: r.createdBy,
+        ...(r.approvedBy
+          ? { approvedById: r.approvedBy, approvedAt: daysAgo(r.da - 2) }
           : {}),
-        ...(isClosed ? { closedById: r.closedById, closedAt: daysAgo(3) } : {}),
-        createdAt: daysAgo(r.daysAgo),
+        ...(isClosed ? { closedById: r.closedBy, closedAt: daysAgo(3) } : {}),
+        createdAt: daysAgo(r.da),
       },
     });
   }
-  console.log("  ✅ 25 requirements\n");
+  console.log(`  ✅ ${reqDefs.length} requirements\n`);
 
-  // ──────────────────────────────────────
-  // 10. REQUIREMENT SKILLS — using skillId FK
-  // ──────────────────────────────────────
-  console.log("🔧 Requirement skills...");
-
-  // [reqId, [[skillId, isMandatory], ...]]
-  const reqSkills = [
-    [
-      ID.req.r10001,
-      [
-        [ID.skill.java, true],
-        [ID.skill.springBoot, true],
-        [ID.skill.microservices, true],
-        [ID.skill.docker, false],
-        [ID.skill.kafka, false],
-      ],
-    ],
-    [
-      ID.req.r10002,
-      [
-        [ID.skill.react, true],
-        [ID.skill.typescript, true],
-        [ID.skill.nextjs, false],
-        [ID.skill.tailwind, false],
-      ],
-    ],
-    [
-      ID.req.r10003,
-      [
-        [ID.skill.aws, true],
-        [ID.skill.terraform, true],
-        [ID.skill.cicd, true],
-        [ID.skill.kubernetes, false],
-      ],
-    ],
-    [
-      ID.req.r10004,
-      [
-        [ID.skill.python, true],
-        [ID.skill.spark, true],
-        [ID.skill.airflow, false],
-        [ID.skill.sql, true],
-      ],
-    ],
-    [
-      ID.req.r10006,
-      [
-        [ID.skill.fico, true],
-        [ID.skill.abap, true],
-        [ID.skill.sapHana, false],
-      ],
-    ],
-    [
-      ID.req.r10008,
-      [
-        [ID.skill.nodejs, true],
-        [ID.skill.express, true],
-        [ID.skill.postgresql, true],
-        [ID.skill.redis, false],
-      ],
-    ],
-    [
-      ID.req.r10009,
-      [
-        [ID.skill.azure, true],
-        [ID.skill.aks, true],
-        [ID.skill.terraform, true],
-        [ID.skill.kubernetes, false],
-      ],
-    ],
-    [
-      ID.req.r20001,
-      [
-        [ID.skill.golang, true],
-        [ID.skill.grpc, true],
-        [ID.skill.postgresql, true],
-        [ID.skill.redis, false],
-      ],
-    ],
-    [
-      ID.req.r20002,
-      [
-        [ID.skill.kubernetes, true],
-        [ID.skill.helm, true],
-        [ID.skill.cicd, false],
-      ],
-    ],
-    [
-      ID.req.r20003,
-      [
-        [ID.skill.python, true],
-        [ID.skill.tensorflow, true],
-        [ID.skill.mlflow, false],
-        [ID.skill.sql, true],
-      ],
-    ],
-    [
-      ID.req.r20005,
-      [
-        [ID.skill.sapHana, true],
-        [ID.skill.abap, true],
-        [ID.skill.fico, true],
-      ],
-    ],
-    [
-      ID.req.r20006,
-      [
-        [ID.skill.oracleDba, true],
-        [ID.skill.sql, true],
-      ],
-    ],
-    [
-      ID.req.r20007,
-      [
-        [ID.skill.tableau, true],
-        [ID.skill.sql, false],
-      ],
-    ],
-    [
-      ID.req.r20008,
-      [
-        [ID.skill.angular, true],
-        [ID.skill.typescript, true],
-      ],
-    ],
-    [
-      ID.req.r20009,
-      [
-        [ID.skill.java, true],
-        [ID.skill.springCloud, true],
-        [ID.skill.kafka, true],
-        [ID.skill.aws, false],
-      ],
-    ],
-    [
-      ID.req.r20013,
-      [
-        [ID.skill.kubernetes, false],
-        [ID.skill.cicd, false],
-      ],
-    ],
-  ];
-
-  for (const [requirementId, skills] of reqSkills) {
-    for (const [skillId, isMandatory] of skills) {
-      await prisma.requirementSkill.upsert({
-        where: { requirementId_skillId: { requirementId, skillId } },
-        update: {},
-        create: { requirementId, skillId, isMandatory },
-      });
-    }
-  }
-  console.log("  ✅ Requirement skills linked via FK\n");
-
-  // ──────────────────────────────────────
-  // 11. REQUIREMENT ASSIGNMENTS — full chains
-  // Chain: MANAGER → TEAM → INDIVIDUAL(s)
-  // ──────────────────────────────────────
-  console.log("🔗 Assignment chains...");
-
-  // [reqId, dmId, teamId, tlId, recruiterIds[], adminAssignerId]
-  const chainDefs = [
-    {
-      reqId: ID.req.r10001,
-      dmId: ID.user.kaasDM1,
-      teamId: ID.team.joesTeam,
-      tlId: ID.user.kaasTL1,
-      rIds: [ID.user.kaasR1, ID.user.kaasR2],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10002,
-      dmId: ID.user.kaasDM1,
-      teamId: ID.team.joesTeam,
-      tlId: ID.user.kaasTL1,
-      rIds: [ID.user.kaasR1],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10003,
-      dmId: ID.user.kaasDM2,
-      teamId: ID.team.alphaSquad,
-      tlId: ID.user.kaasTL2,
-      rIds: [ID.user.kaasR3, ID.user.kaasR4],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10004,
-      dmId: ID.user.kaasDM2,
-      teamId: ID.team.alphaSquad,
-      tlId: ID.user.kaasTL2,
-      rIds: [ID.user.kaasR5, ID.user.kaasR6, ID.user.kaasR7],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10006,
-      dmId: ID.user.kaasDM3,
-      teamId: ID.team.betaSquad,
-      tlId: ID.user.kaasTL3,
-      rIds: [ID.user.kaasR8, ID.user.kaasR9],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10008,
-      dmId: ID.user.kaasDM3,
-      teamId: ID.team.betaSquad,
-      tlId: ID.user.kaasTL3,
-      rIds: [ID.user.kaasR10, ID.user.kaasR11, ID.user.kaasR12],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10009,
-      dmId: ID.user.kaasDM2,
-      teamId: ID.team.alphaSquad,
-      tlId: ID.user.kaasTL2,
-      rIds: [ID.user.kaasR3],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r10013,
-      dmId: ID.user.kaasDM1,
-      teamId: ID.team.joesTeam,
-      tlId: ID.user.kaasTL4,
-      rIds: [ID.user.kaasR13],
-      admin: ID.user.kaasAdmin,
-    },
-    {
-      reqId: ID.req.r20001,
-      dmId: ID.user.taasDM1,
-      teamId: ID.team.deltaTeam,
-      tlId: ID.user.taasTL1,
-      rIds: [ID.user.taasR1, ID.user.taasR2],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20002,
-      dmId: ID.user.taasDM1,
-      teamId: ID.team.deltaTeam,
-      tlId: ID.user.taasTL1,
-      rIds: [ID.user.taasR3, ID.user.taasR4],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20003,
-      dmId: ID.user.taasDM2,
-      teamId: ID.team.gammaTeam,
-      tlId: ID.user.taasTL2,
-      rIds: [ID.user.taasR6, ID.user.taasR7],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20005,
-      dmId: ID.user.taasDM1,
-      teamId: ID.team.deltaTeam,
-      tlId: ID.user.taasTL1,
-      rIds: [ID.user.taasR1, ID.user.taasR2, ID.user.taasR5],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20006,
-      dmId: ID.user.taasDM2,
-      teamId: ID.team.gammaTeam,
-      tlId: ID.user.taasTL3,
-      rIds: [ID.user.taasR11, ID.user.taasR12],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20008,
-      dmId: ID.user.taasDM2,
-      teamId: ID.team.gammaTeam,
-      tlId: ID.user.taasTL2,
-      rIds: [ID.user.taasR8, ID.user.taasR9],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20009,
-      dmId: ID.user.taasDM1,
-      teamId: ID.team.deltaTeam,
-      tlId: ID.user.taasTL1,
-      rIds: [ID.user.taasR3],
-      admin: ID.user.taasAdmin,
-    },
-    {
-      reqId: ID.req.r20013,
-      dmId: ID.user.taasDM2,
-      teamId: ID.team.gammaTeam,
-      tlId: ID.user.taasTL3,
-      rIds: [ID.user.taasR11, ID.user.taasR12],
-      admin: ID.user.taasAdmin,
-    },
-  ];
-
-  for (const c of chainDefs) {
-    const existing = await prisma.requirementAssignment.count({
-      where: { requirementId: c.reqId },
-    });
-    if (existing > 0) continue;
-
-    const req = reqDefs.find((r) => r.id === c.reqId);
-    const openings = req?.openings ?? 1;
-    const perRecruiter = Math.ceil(openings / c.rIds.length);
-
-    // Level 1 — MANAGER
-    const managerAssignment = await prisma.requirementAssignment.create({
-      data: {
-        requirementId: c.reqId,
-        assignmentType: "MANAGER",
-        status: "ACTIVE",
-        recruiterId: c.dmId,
-        allocatedOpenings: openings,
-        assignedById: c.admin,
-      },
-    });
-
-    // Level 2 — TEAM
-    const teamAssignment = await prisma.requirementAssignment.create({
-      data: {
-        requirementId: c.reqId,
-        assignmentType: "TEAM",
-        status: "ACTIVE",
-        teamId: c.teamId,
-        allocatedOpenings: openings,
-        assignedById: c.dmId,
-        parentAssignmentId: managerAssignment.id,
-      },
-    });
-
-    // Level 3 — INDIVIDUAL recruiters
-    for (const recruiterId of c.rIds) {
-      // look up TeamMember for this recruiter in this team
-      const member = await prisma.teamMember.findUnique({
-        where: { userId_teamId: { userId: recruiterId, teamId: c.teamId } },
-      });
-      await prisma.requirementAssignment.create({
-        data: {
-          requirementId: c.reqId,
-          assignmentType: "INDIVIDUAL",
-          status: "ACTIVE",
-          recruiterId,
-          teamMemberId: member?.id ?? null,
-          allocatedOpenings: perRecruiter,
-          assignedById: c.tlId,
-          parentAssignmentId: teamAssignment.id,
-        },
-      });
-    }
-  }
-  console.log("  ✅ Assignment chains (MANAGER → TEAM → INDIVIDUAL)\n");
-
-  // ──────────────────────────────────────
-  // 12. REQUIREMENT STATUS HISTORIES
-  // ──────────────────────────────────────
-  console.log("📜 Status histories...");
-
-  const statusFlows = {
-    ACTIVE: [
-      ["DRAFT", "PENDING_APPROVAL"],
-      ["PENDING_APPROVAL", "ACTIVE"],
-    ],
-    ON_HOLD: [
-      ["DRAFT", "PENDING_APPROVAL"],
-      ["PENDING_APPROVAL", "ACTIVE"],
-      ["ACTIVE", "ON_HOLD"],
-    ],
-    CLOSED: [
-      ["DRAFT", "PENDING_APPROVAL"],
-      ["PENDING_APPROVAL", "ACTIVE"],
-      ["ACTIVE", "CLOSED"],
-    ],
-    CANCELLED: [
-      ["DRAFT", "PENDING_APPROVAL"],
-      ["PENDING_APPROVAL", "ACTIVE"],
-      ["ACTIVE", "CANCELLED"],
-    ],
-    PENDING_APPROVAL: [["DRAFT", "PENDING_APPROVAL"]],
-    DRAFT: [],
-  };
-
-  const statusReasons = {
-    ACTIVE: "Approved and activated",
-    ON_HOLD: "Client requested hold — headcount review in progress",
-    CLOSED: "All positions filled",
-    CANCELLED: "Requirement withdrawn by client",
-  };
-
-  for (const r of reqDefs) {
-    const existing = await prisma.requirementStatusHistory.count({
-      where: { requirementId: r.id },
-    });
-    if (existing > 0) continue;
-
-    const flow = statusFlows[r.status] ?? [];
-    for (let i = 0; i < flow.length; i++) {
-      const [fromStatus, toStatus] = flow[i];
-      const changedById =
-        toStatus === "ACTIVE" ? r.approvedById ?? r.createdById : r.createdById;
-      await prisma.requirementStatusHistory.create({
-        data: {
-          requirementId: r.id,
-          fromStatus,
-          toStatus,
-          changedById,
-          reason: statusReasons[toStatus] ?? null,
-          changedAt: daysAgo(r.daysAgo - i * 3),
-        },
-      });
-    }
-  }
-  console.log("  ✅ Status histories\n");
-
-  // ──────────────────────────────────────
-  // 13. REQUIREMENT ACTIVITIES
-  // ──────────────────────────────────────
-  console.log("📡 Activity feeds...");
-
-  for (const r of reqDefs) {
-    const existing = await prisma.requirementActivity.count({
-      where: { requirementId: r.id },
-    });
-    if (existing > 0) continue;
-
-    const activities = [
-      {
-        actorId: r.createdById,
-        type: "REQUIREMENT_CREATED",
-        summary: `Requirement ${r.code} created`,
-        createdAt: daysAgo(r.daysAgo),
-      },
-    ];
-    if (r.approvedById) {
-      activities.push({
-        actorId: r.approvedById,
-        type: "REQUIREMENT_APPROVED",
-        summary: `Requirement ${r.code} approved and activated`,
-        createdAt: daysAgo(r.daysAgo - 2),
-      });
-    }
-    if (r.status === "CLOSED") {
-      activities.push({
-        actorId: r.closedById ?? r.approvedById,
-        type: "REQUIREMENT_CLOSED",
-        summary: "All positions filled — requirement closed",
-        createdAt: daysAgo(3),
-      });
-    }
-    if (r.status === "CANCELLED") {
-      activities.push({
-        actorId: r.closedById ?? r.createdById,
-        type: "STATUS_CHANGED",
-        summary: "Requirement cancelled by client",
-        createdAt: daysAgo(3),
-      });
-    }
-
-    await prisma.requirementActivity.createMany({
-      data: activities.map((a) => ({ requirementId: r.id, ...a })),
-    });
-  }
-  console.log("  ✅ Activity feeds\n");
-
-  // ──────────────────────────────────────
-  // 14. REQUIREMENT NOTES
-  // ──────────────────────────────────────
-  console.log("📝 Notes...");
-
-  const noteDefs = [
-    {
-      reqId: ID.req.r10001,
-      authorId: ID.user.kaasSales1,
-      content:
-        "Client confirmed headcount. Looking for immediate joiners only.",
-    },
-    {
-      reqId: ID.req.r10002,
-      authorId: ID.user.kaasSales1,
-      content:
-        "Strong preference for candidates from product companies. Notice period max 30 days.",
-    },
-    {
-      reqId: ID.req.r10004,
-      authorId: ID.user.kaasSales2,
-      content:
-        "Budget approved. 4 positions — can split 2+2 across two squads if needed.",
-    },
-    {
-      reqId: ID.req.r10008,
-      authorId: ID.user.kaasSales3,
-      content:
-        "Hybrid — 3 days onsite in Bangalore. Client open to remote-first profiles with travel.",
-    },
-    {
-      reqId: ID.req.r20001,
-      authorId: ID.user.taasSales1,
-      content:
-        "Golang profiles rare in market — extend notice period window to 60 days.",
-    },
-    {
-      reqId: ID.req.r20005,
-      authorId: ID.user.taasSales2,
-      content:
-        "FICO + SD combo preferred. SAP certified candidates get priority shortlisting.",
-    },
-    {
-      reqId: ID.req.r20009,
-      authorId: ID.user.taasSales4,
-      content:
-        "Only 1 opening but client is very selective. Expect 3+ interview rounds.",
-    },
-  ];
-
-  for (const n of noteDefs) {
-    const existing = await prisma.requirementNote.count({
-      where: { requirementId: n.reqId },
-    });
-    if (existing === 0) {
-      await prisma.requirementNote.create({
-        data: {
-          requirementId: n.reqId,
-          authorId: n.authorId,
-          content: n.content,
-        },
-      });
-    }
-  }
-  console.log("  ✅ Notes\n");
-
-  // ──────────────────────────────────────
-  // DONE
-  // ──────────────────────────────────────
   console.log("🎉 Seed complete!\n");
-  console.log(
-    "┌─────────────────────────────────────────────────────────────┐"
-  );
-  console.log(
-    "│  DATASET SUMMARY                                            │"
-  );
-  console.log(
-    "├─────────────────────────────────────────────────────────────┤"
-  );
-  console.log(
-    "│  Roles              6                                        │"
-  );
-  console.log(
-    "│  Business Units     2   KaaS BU · TaaS BU                   │"
-  );
-  console.log(
-    "│  Teams             11   5 KaaS + 4 TaaS + 2 roots           │"
-  );
-  console.log(
-    "│  Team Edges        27   9 pairs × 3 edge types              │"
-  );
-  console.log(
-    "│  Users             50                                        │"
-  );
-  console.log(
-    "│  Skills            36   canonical registry with aliases      │"
-  );
-  console.log(
-    "│  Clients            8   4 KaaS · 4 TaaS                     │"
-  );
-  console.log(
-    "│  Requirements      25   13 KaaS · 12 TaaS                   │"
-  );
-  console.log(
-    "│  Assignment Chains 16   MANAGER → TEAM → INDIVIDUAL         │"
-  );
-  console.log(
-    "├─────────────────────────────────────────────────────────────┤"
-  );
-  console.log(
-    "│  KEY LOGINS                                                  │"
-  );
-  console.log(
-    "│  superadmin@talentos.com       Admin@123  SUPER_ADMIN        │"
-  );
-  console.log(
-    "│  admin.kaas@talentos.com       Admin@123  ADMIN (KaaS)       │"
-  );
-  console.log(
-    "│  admin.taas@talentos.com       Admin@123  ADMIN (TaaS)       │"
-  );
-  console.log(
-    "│  dm1.kaas@talentos.com         Pass@123   DELIVERY_MANAGER   │"
-  );
-  console.log(
-    "│  tl1.kaas@talentos.com         Pass@123   TEAM_LEAD          │"
-  );
-  console.log(
-    "│  r01.kaas@talentos.com         Pass@123   RECRUITER          │"
-  );
-  console.log(
-    "│  sales1.kaas@talentos.com      Pass@123   SALES              │"
-  );
-  console.log(
-    "│  dm1.taas@talentos.com         Pass@123   DELIVERY_MANAGER   │"
-  );
-  console.log(
-    "│  tl1.taas@talentos.com         Pass@123   TEAM_LEAD          │"
-  );
-  console.log(
-    "│  r01.taas@talentos.com         Pass@123   RECRUITER          │"
-  );
-  console.log(
-    "├─────────────────────────────────────────────────────────────┤"
-  );
-  console.log(
-    "│  KaaS TREE                                                   │"
-  );
-  console.log(
-    "│  KaaS Ecosystem                                              │"
-  );
-  console.log(
-    "│    ├── KaaS Sales Team   (Sneha LEAD + 4 sales)             │"
-  );
-  console.log(
-    "│    └── KaaS Delivery     (Papitha LEAD)                     │"
-  );
-  console.log(
-    "│          ├── Joe's Team  (Joe + Divya CO_LEAD + 4 recruiters)│"
-  );
-  console.log(
-    "│          ├── Alpha Squad (Ananya LEAD + 5 recruiters)        │"
-  );
-  console.log(
-    "│          └── Beta Squad  (Vikram LEAD + 5 recruiters)        │"
-  );
-  console.log(
-    "│  TaaS TREE                                                   │"
-  );
-  console.log(
-    "│  TaaS Ecosystem                                              │"
-  );
-  console.log(
-    "│    ├── TaaS Sales Team   (Balaji LEAD + 3 sales)            │"
-  );
-  console.log(
-    "│    └── TaaS Delivery     (Karthik LEAD)                     │"
-  );
-  console.log(
-    "│          ├── Delta Team  (Varun LEAD + 5 recruiters)         │"
-  );
-  console.log(
-    "│          └── Gamma Team  (Naveen LEAD + Yamini CO_LEAD + 7)  │"
-  );
-  console.log(
-    "└─────────────────────────────────────────────────────────────┘"
-  );
+  console.log("KEY LOGINS:");
+  console.log("  superadmin@talentos.com  Admin@123  SUPER_ADMIN");
+  console.log("  admin.kaas@talentos.com  Admin@123  ADMIN (KaaS)");
+  console.log("  saleshead.kaas@talentos.com  Pass@123  SALES HEAD");
+  console.log("  dm1.kaas@talentos.com  Pass@123  DELIVERY_MANAGER");
+  console.log("  tl1.kaas@talentos.com  Pass@123  TEAM_LEAD");
+  console.log("  r01.kaas@talentos.com  Pass@123  RECRUITER");
+  console.log("\nHIERARCHY IS FROM EDGES ONLY — no parentTeamId in DB.");
 }
 
 main()

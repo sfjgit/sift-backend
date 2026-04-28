@@ -1,347 +1,274 @@
-import { createAuditLog } from "@/services/auditLogs.service";
-import { uploadToS3 } from "@/services/s3.service";
+import { reqScopeWhere } from "@/middleware/scopeFilter.middleware";
 import prisma from "@/utils/prisma/client";
-import { AssignmentType, Prisma } from "@prisma/client";
 import { Request, Response } from "express";
+// import { reqScopeWhere } from "@/middleware/scope";
 
-export const createRequirements = async (req: Request, res: Response) => {
-  try {
-    const {
-      clientId,
-      clientContactId,
-      businessUnitId,
-      deliveryLeadId,
-      teamLeadId,
-      createdById,
-      ...rest
-    } = req.validatedBody;
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-    const lastRequirement = await prisma.requirement.findFirst({
-      orderBy: { createdAt: "desc" },
-      select: { reqCode: true },
-    });
+function generateReqCode(buName: string): string {
+  const prefix =
+    buName
+      .toUpperCase()
+      .replace(/[^A-Z]/g, "")
+      .slice(0, 3) || "SFJ";
+  const year = new Date().getFullYear().toString().slice(2);
+  const rand = Math.floor(10000 + Math.random() * 90000);
+  return `${prefix}-R-${year}${rand}`;
+}
 
-    let nextNumber = 10001;
+/** Log to RequirementActivity */
+async function logActivity(
+  tx: any,
+  requirementId: string,
+  actorId: string,
+  type: string,
+  summary: string,
+  meta?: any
+) {
+  await tx.requirementActivity.create({
+    data: { requirementId, actorId, type, summary, meta: meta ?? undefined },
+  });
+}
 
-    if (lastRequirement?.reqCode) {
-      const lastNumber = parseInt(lastRequirement.reqCode.split("-")[2]);
-      nextNumber = lastNumber + 1;
-    }
-
-    const reqCode = `SFJ-R-${nextNumber}`;
-
-    const requirement = await prisma.requirement.create({
-      data: {
-        ...rest,
-        reqCode,
-        createdBy: { connect: { id: req.user.id } },
-        // createdById: req.user.id,
-        client: { connect: { id: clientId } },
-        ...(businessUnitId && {
-          businessUnit: { connect: { id: businessUnitId } },
-        }),
-        ...(clientContactId && {
-          clientContact: { connect: { id: clientContactId } },
-        }),
-        ...(deliveryLeadId && {
-          deliveryLead: { connect: { id: deliveryLeadId } },
-        }),
-        ...(teamLeadId && { teamLead: { connect: { id: teamLeadId } } }),
-      },
-    });
-
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "CREATE",
-      module: "REQUIREMENT",
-      recordId: requirement.id,
-      oldData: null,
-      newData: requirement,
-      req,
-    });
-
-    return res.status(201).json({
-      success: true,
-      data: requirement,
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create requirement",
-    });
-  }
+// Full select used by detail + list
+const REQ_DETAIL_SELECT = {
+  id: true,
+  reqCode: true,
+  title: true,
+  description: true,
+  status: true,
+  priority: true,
+  jobType: true,
+  remoteType: true,
+  totalOpenings: true,
+  filledOpenings: true,
+  activeApplications: true,
+  interviewsScheduled: true,
+  offersRolledOut: true,
+  location: true,
+  country: true,
+  salaryMin: true,
+  salaryMax: true,
+  salaryType: true,
+  experienceMin: true,
+  experienceMax: true,
+  startDate: true,
+  endDate: true,
+  respondBy: true,
+  turnaroundDays: true,
+  closedAt: true,
+  isRespondByBreached: true,
+  isTurnaroundBreached: true,
+  createdAt: true,
+  updatedAt: true,
+  businessUnit: { select: { id: true, name: true } },
+  client: {
+    select: {
+      id: true,
+      name: true,
+      vmsName: true,
+      status: true,
+      industry: true,
+    },
+  },
+  clientContact: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      designation: true,
+      email: true,
+    },
+  },
+  createdBy: {
+    select: { id: true, firstName: true, lastName: true, employeeId: true },
+  },
+  approvedBy: { select: { id: true, firstName: true, lastName: true } },
+  closedBy: { select: { id: true, firstName: true, lastName: true } },
+  skills: {
+    select: {
+      isMandatory: true,
+      experience: true,
+      skill: { select: { id: true, canonicalName: true } },
+    },
+  },
+  jd: {
+    where: { isLatest: true },
+    select: {
+      id: true,
+      fileName: true,
+      fileKey: true,
+      fileType: true,
+      fileSizeBytes: true,
+      version: true,
+      uploadedAt: true,
+      uploadedBy: { select: { id: true, firstName: true, lastName: true } },
+    },
+    take: 1,
+  },
 };
 
-// export const getAllRequirements = async (req: Request, res: Response) => {
-//   try {
-//     const { status, clientId, businessUnitId, priority, jobType, search } =
-//       req.validatedQuery;
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements
+// Scope-aware list with pagination + filters
+// ─────────────────────────────────────────────────────────────────────────────
 
-//     const where: any = {};
-
-//     if (status) where.status = status;
-//     if (clientId) where.clientId = clientId;
-//     if (priority) where.priority = priority;
-//     if (jobType) where.jobType = jobType;
-
-//     if (businessUnitId) {
-//       where.OR = [{ businessUnitId }, { client: { businessUnitId } }];
-//     }
-
-//     if (search) {
-//       where.OR = [
-//         { title: { contains: search, mode: "insensitive" } },
-//         { reqCode: { contains: search, mode: "insensitive" } },
-//       ];
-//     }
-
-//     const requirements = await prisma.requirement.findMany({
-//       where: { clientId },
-//       include: {
-//         client: true,
-//         clientContact: true,
-//         businessUnit: true,
-
-//         createdBy: {
-//           select: {
-//             id: true,
-//             firstName: true,
-//             lastName: true,
-//           },
-//         },
-
-//         approvedBy: {
-//           select: {
-//             id: true,
-//             firstName: true,
-//             lastName: true,
-//           },
-//         },
-
-//         deliveryLead: {
-//           select: {
-//             id: true,
-//             firstName: true,
-//           },
-//         },
-
-//         teamLead: {
-//           select: {
-//             id: true,
-//             firstName: true,
-//           },
-//         },
-//       },
-//       orderBy: {
-//         createdAt: "desc",
-//       },
-//     });
-
-//     return res.status(200).json({
-//       success: true,
-//       count: requirements.length,
-//       data: requirements,
-//     });
-//   } catch (error) {
-//     console.error("Error fetching requirements:", error);
-//     return res.status(500).json({
-//       success: false,
-//       message: "Failed to fetch requirements",
-//     });
-//   }
-// };
-
-export const getAllRequirements = async (req: Request, res: Response) => {
+export const getRequirements = async (req: Request, res: Response) => {
   try {
     const {
       status,
-      clientId,
-      businessUnitId,
       priority,
+      clientId,
+      buId,
       jobType,
+      remoteType,
+      assignedToMe,
+      breached,
       search,
-      page = 1,
-      limit = 25,
-    } = req.validatedQuery;
+      page = "1",
+      limit = "25",
+      sortBy = "createdAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
 
-    const scope = req.permissionScope;
-    const user = req.user;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = parseInt(limit);
 
-    // ── Base filters (explicit query params) ──────────────────────────
-    const where: Prisma.RequirementWhereInput = {};
-    if (status) where.status = status;
-    if (clientId) where.clientId = clientId;
-    if (priority) where.priority = priority;
-    if (jobType) where.jobType = jobType;
-    if (search) {
-      where.OR = [
+    // Base scope where (from middleware)
+    const scopeWhere = reqScopeWhere(req.scopeFilter);
+
+    // Additional filters layered on top
+    const extraWhere: any = {};
+    if (status) extraWhere.status = status;
+    if (priority) extraWhere.priority = priority;
+    if (clientId) extraWhere.clientId = clientId;
+    if (buId) extraWhere.businessUnitId = buId;
+    if (jobType) extraWhere.jobType = jobType;
+    if (remoteType) extraWhere.remoteType = remoteType;
+    if (breached === "true") extraWhere.isRespondByBreached = true;
+    if (search)
+      extraWhere.OR = [
         { title: { contains: search, mode: "insensitive" } },
         { reqCode: { contains: search, mode: "insensitive" } },
+        { client: { name: { contains: search, mode: "insensitive" } } },
       ];
+
+    // assignedToMe — recruiter filtering to only their assignments
+    if (assignedToMe === "true" && req.user?.id) {
+      extraWhere.assignments = {
+        some: { recruiterId: req.user.id, status: "ACTIVE" },
+      };
     }
 
-    // ── Scope filter — drives what the user is ALLOWED to see ─────────
-    let scopeFilter: Prisma.RequirementWhereInput = {};
+    const where = { ...scopeWhere, ...extraWhere };
 
-    switch (scope) {
-      case "ALL":
-        // Super admin / global — no restriction, buFilter applied below if present
-        scopeFilter = {};
-        break;
-
-      case "BU":
-        // Admin — scoped to their own BU
-        scopeFilter = { businessUnitId: user.businessUnitId };
-        break;
-
-      case "MANAGER":
-        // Delivery manager — reqs where they have a MANAGER assignment row
-        scopeFilter = {
-          assignments: {
-            some: {
-              assignmentType: "MANAGER",
-              recruiterId: user.id,
-              status: "ACTIVE",
-            },
-          },
-        };
-        break;
-
-      case "TEAM":
-        // Team lead — reqs assigned to any team they lead/are in
-        const teamIds = (user?.teamMemberships ?? []).map((t: any) => t.teamId);
-        scopeFilter = {
-          assignments: {
-            some: {
-              assignmentType: "TEAM",
-              teamId: { in: teamIds },
-              status: "ACTIVE",
-            },
-          },
-        };
-        break;
-
-      case "OWN":
-      default:
-        // Recruiter → assigned to them individually
-        // Sales → created by them
-        const roleName = user.role?.name;
-        if (roleName === "SALES") {
-          scopeFilter = { createdById: user.id };
-        } else {
-          // RECRUITER — only individually assigned
-          scopeFilter = {
-            assignments: {
-              some: {
-                assignmentType: "INDIVIDUAL",
-                recruiterId: user.id,
-                status: "ACTIVE",
-              },
-            },
-          };
-        }
-        break;
-    }
-
-    // ── Optional BU override from query param (super admin switching BU) ──
-    // Only apply if user's scope allows it (don't let BU-scoped user bypass their own BU)
-    const buOverride: Prisma.RequirementWhereInput =
-      businessUnitId && scope === "ALL" ? { businessUnitId } : {};
-
-    const finalWhere: Prisma.RequirementWhereInput = {
-      ...where,
-      ...scopeFilter,
-      ...buOverride,
-    };
-
-    // ── Pagination ────────────────────────────────────────────────────
-    const skip = (Number(page) - 1) * Number(limit);
-    const take = Number(limit);
-
-    const [requirements, total] = await Promise.all([
+    const [total, requirements] = await Promise.all([
+      prisma.requirement.count({ where }),
       prisma.requirement.findMany({
-        where: finalWhere,
-        include: {
-          client: { select: { id: true, name: true } },
+        where,
+        select: {
+          id: true,
+          reqCode: true,
+          title: true,
+          status: true,
+          priority: true,
+          jobType: true,
+          remoteType: true,
+          totalOpenings: true,
+          filledOpenings: true,
+          salaryMin: true,
+          salaryMax: true,
+          salaryType: true,
+          respondBy: true,
+          turnaroundDays: true,
+          isRespondByBreached: true,
+          isTurnaroundBreached: true,
+          createdAt: true,
+          updatedAt: true,
           businessUnit: { select: { id: true, name: true } },
+          client: { select: { id: true, name: true } },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
-          approvedBy: { select: { id: true, firstName: true, lastName: true } },
-          // Only include assignment summary for non-ALL scopes (avoids N+1 for SA)
-          ...(scope !== "ALL" && {
-            assignments: {
-              where: { status: "ACTIVE" },
-              select: {
-                id: true,
-                assignmentType: true,
-                recruiterId: true,
-                teamId: true,
-                allocatedOpenings: true,
+          skills: {
+            where: { isMandatory: true },
+            select: { skill: { select: { canonicalName: true } } },
+            take: 5,
+          },
+          // Active assignment chain summary
+          assignments: {
+            where: { status: "ACTIVE" },
+            select: {
+              id: true,
+              assignmentType: true,
+              allocatedOpenings: true,
+              filledOpenings: true,
+              recruiterId: true,
+              teamId: true,
+              recruiter: {
+                select: { id: true, firstName: true, lastName: true },
               },
+              team: { select: { id: true, name: true } },
             },
-          }),
+          },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: { [sortBy]: sortDir as "asc" | "desc" },
         skip,
         take,
       }),
-      prisma.requirement.count({ where: finalWhere }),
     ]);
 
-    return res.status(200).json({
+    res.json({
       success: true,
-      total,
-      page: Number(page),
-      limit: take,
       data: requirements,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      // Permission flags for UI
+      permissions: {
+        canAdd: req.modulePermission.canAdd,
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
     });
-  } catch (error) {
-    console.error("Error fetching requirements:", error);
-    return res
+  } catch (err) {
+    console.error("getRequirements:", err);
+    res
       .status(500)
       .json({ success: false, message: "Failed to fetch requirements" });
   }
 };
 
-export const getRequirement = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.validatedParams;
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id
+// Full detail + full assignment chain + notes + activity + status history
+// ─────────────────────────────────────────────────────────────────────────────
 
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-      include: {
-        client: true,
-        clientContact: true,
-        businessUnit: true,
-        createdBy: {
+export const getRequirementById = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const req_ = await prisma.requirement.findFirst({
+      where: { id, ...reqScopeWhere(req.scopeFilter) },
+      select: {
+        ...REQ_DETAIL_SELECT,
+        // Full assignment chain — nested parent→team→individual
+        assignments: {
+          where: { status: "ACTIVE", parentAssignmentId: null }, // top-level MANAGER assignments
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            employeeId: true,
-          },
-        },
-        approvedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        closedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        skills: {
-          orderBy: [{ isMandatory: "desc" }, { skill: "asc" }],
-        },
-        jd: {
-          where: { isLatest: true },
-          include: {
-            uploadedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-          },
-          take: 1,
-        },
-        assignments: {
-          where: { status: "ACTIVE" },
-          include: {
+            assignmentType: true,
+            allocatedOpenings: true,
+            filledOpenings: true,
+            submissionsCount: true,
+            interviewsCount: true,
+            assignedAt: true,
+            deadline: true,
+            breachedAt: true,
+            isAutoRouted: true,
             recruiter: {
               select: {
                 id: true,
@@ -350,18 +277,82 @@ export const getRequirement = async (req: Request, res: Response) => {
                 employeeId: true,
               },
             },
-            team: { select: { id: true, name: true, category: true } },
+            team: { select: { id: true, name: true, nodeType: true } },
+            assignedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            // Level 2 — TEAM assignments
+            childAssignments: {
+              where: { status: "ACTIVE" },
+              select: {
+                id: true,
+                assignmentType: true,
+                allocatedOpenings: true,
+                filledOpenings: true,
+                submissionsCount: true,
+                interviewsCount: true,
+                assignedAt: true,
+                deadline: true,
+                breachedAt: true,
+                recruiter: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    employeeId: true,
+                  },
+                },
+                team: { select: { id: true, name: true, nodeType: true } },
+                assignedBy: {
+                  select: { id: true, firstName: true, lastName: true },
+                },
+                // Level 3 — INDIVIDUAL assignments
+                childAssignments: {
+                  where: { status: "ACTIVE" },
+                  select: {
+                    id: true,
+                    assignmentType: true,
+                    allocatedOpenings: true,
+                    filledOpenings: true,
+                    submissionsCount: true,
+                    interviewsCount: true,
+                    assignedAt: true,
+                    deadline: true,
+                    breachedAt: true,
+                    recruiter: {
+                      select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        employeeId: true,
+                      },
+                    },
+                    assignedBy: {
+                      select: { id: true, firstName: true, lastName: true },
+                    },
+                  },
+                },
+              },
+            },
           },
-          orderBy: { assignedAt: "asc" },
         },
         notes: {
-          include: {
+          select: {
+            id: true,
+            content: true,
+            createdAt: true,
+            updatedAt: true,
             author: { select: { id: true, firstName: true, lastName: true } },
           },
           orderBy: { createdAt: "desc" },
         },
         statusHistory: {
-          include: {
+          select: {
+            id: true,
+            fromStatus: true,
+            toStatus: true,
+            reason: true,
+            changedAt: true,
             changedBy: {
               select: { id: true, firstName: true, lastName: true },
             },
@@ -369,619 +360,1080 @@ export const getRequirement = async (req: Request, res: Response) => {
           orderBy: { changedAt: "desc" },
         },
         activities: {
-          include: {
+          select: {
+            id: true,
+            type: true,
+            summary: true,
+            meta: true,
+            createdAt: true,
             actor: { select: { id: true, firstName: true, lastName: true } },
           },
           orderBy: { createdAt: "desc" },
-          take: 20,
+          take: 50,
         },
         documents: {
-          include: {
+          select: {
+            id: true,
+            type: true,
+            fileName: true,
+            fileKey: true,
+            content: true,
+            isIssue: true,
+            issueResolved: true,
+            createdAt: true,
             raisedBy: { select: { id: true, firstName: true, lastName: true } },
-            resolvedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
           },
           orderBy: { createdAt: "desc" },
         },
       },
     });
 
-    if (!requirement) {
-      return res
+    if (!req_) {
+      res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
+      return;
     }
 
-    return res.status(200).json({ success: true, data: requirement });
-  } catch (error) {
-    console.error("Error fetching requirement:", error);
-    return res
+    res.json({
+      success: true,
+      data: req_,
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementById:", err);
+    res
       .status(500)
       .json({ success: false, message: "Failed to fetch requirement" });
   }
 };
 
-export const getMyRequirements = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /requirements
+// Sales creates a requirement. Status starts as DRAFT.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createRequirement = async (req: Request, res: Response) => {
   try {
-    const { id } = req.user;
-    const requirements = await prisma.requirementAssignment.findMany({
-      where: {
-        recruiterId: id,
-      },
-      include: {
-        requirement: true,
-      },
+    if (!req.modulePermission.canAdd) {
+      res.status(403).json({
+        success: false,
+        message: "No permission to create requirements",
+      });
+      return;
+    }
+
+    const {
+      title,
+      description,
+      clientId,
+      clientContactId,
+      businessUnitId,
+      jobType,
+      remoteType,
+      priority,
+      totalOpenings,
+      location,
+      country,
+      salaryMin,
+      salaryMax,
+      salaryType,
+      experienceMin,
+      experienceMax,
+      startDate,
+      endDate,
+      respondBy,
+      turnaroundDays,
+      skillIds, // [{ skillId, isMandatory, experience }]
+    } = req.body;
+
+    const actorId = req.user!.id;
+    const buId = businessUnitId ?? req.user!.businessUnitId;
+
+    // Generate unique reqCode
+    const bu = buId
+      ? await prisma.businessUnit.findUnique({
+          where: { id: buId },
+          select: { name: true },
+        })
+      : null;
+    let reqCode = generateReqCode(bu?.name ?? "SFJ");
+    // Ensure uniqueness
+    let attempts = 0;
+    while (await prisma.requirement.findUnique({ where: { reqCode } })) {
+      reqCode = generateReqCode(bu?.name ?? "SFJ");
+      if (++attempts > 10) throw new Error("Could not generate unique reqCode");
+    }
+
+    const requirement = await prisma.$transaction(async (tx) => {
+      const created = await tx.requirement.create({
+        data: {
+          reqCode,
+          title,
+          description: description ?? null,
+          clientId,
+          clientContactId: clientContactId ?? null,
+          businessUnitId: buId ?? null,
+          jobType,
+          remoteType,
+          priority: priority ?? "MEDIUM",
+          totalOpenings: totalOpenings ?? 1,
+          location: location ?? null,
+          country: country ?? null,
+          salaryMin: salaryMin ?? null,
+          salaryMax: salaryMax ?? null,
+          salaryType: salaryType ?? null,
+          experienceMin: experienceMin ?? null,
+          experienceMax: experienceMax ?? null,
+          startDate: startDate ? new Date(startDate) : null,
+          endDate: endDate ? new Date(endDate) : null,
+          respondBy: respondBy ? new Date(respondBy) : null,
+          turnaroundDays: turnaroundDays ?? null,
+          status: "DRAFT",
+          createdById: actorId,
+        },
+        select: {
+          id: true,
+          reqCode: true,
+          title: true,
+          status: true,
+          businessUnitId: true,
+        },
+      });
+
+      // Link skills
+      if (skillIds?.length) {
+        await tx.requirementSkill.createMany({
+          data: skillIds.map((s: any) => ({
+            requirementId: created.id,
+            skillId: s.skillId,
+            isMandatory: s.isMandatory ?? true,
+            experience: s.experience ?? null,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      // Status history
+      await tx.requirementStatusHistory.create({
+        data: {
+          requirementId: created.id,
+          fromStatus: "DRAFT",
+          toStatus: "DRAFT",
+          changedById: actorId,
+          reason: "Created",
+        },
+      });
+
+      await logActivity(
+        tx,
+        created.id,
+        actorId,
+        "REQUIREMENT_CREATED",
+        `Requirement ${created.reqCode} created`
+      );
+
+      return created;
     });
-    return res.status(200).json({
+
+    res.status(201).json({
       success: true,
-      data: requirements,
+      message: "Requirement created",
+      data: requirement,
     });
-  } catch (error) {
-    console.error("Error fetching requirements:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch requirements",
-    });
+  } catch (err) {
+    console.error("createRequirement:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to create requirement" });
   }
 };
 
-export const approveRequirement = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /requirements/:id
+// Edit core fields. Status NOT changed here — use PATCH /status.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateRequirement = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams;
-    const { deliveryLeadId } = req.validatedBody || {};
-
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
-
-    if (!requirement) {
-      return res.status(404).json({
+    if (!req.modulePermission.canEdit) {
+      res.status(403).json({
         success: false,
-        message: "Requirement not found",
+        message: "No permission to edit requirements",
       });
+      return;
     }
 
-    const updatedRequirement = await prisma.requirement.update({
-      where: { id },
-      data: {
-        status: "ACTIVE",
-        ...(deliveryLeadId && { deliveryLeadId }),
-      },
-    });
+    const { id } = req.params;
+    const actorId = req.user!.id;
 
-    if (!updatedRequirement) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to update requirement",
-      });
+    const existing = await prisma.requirement.findFirst({
+      where: { id, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true, status: true },
+    });
+    if (!existing) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
     }
 
-    const deliveryAssignment = await prisma.requirementAssignment.create({
-      data: {
-        requirementId: id,
-        assignmentType: AssignmentType.TEAM,
-        recruiterId: req.user.id,
-      },
-    });
-
-    if (!deliveryAssignment) {
-      return res.status(500).json({
+    // Only DRAFT and PENDING_APPROVAL can be freely edited
+    if (
+      !["DRAFT", "PENDING_APPROVAL"].includes(existing.status) &&
+      !req.user?.isSuperAdmin
+    ) {
+      res.status(409).json({
         success: false,
-        message: "Failed to assign delivery lead",
+        message: "Only DRAFT or PENDING_APPROVAL requirements can be edited",
       });
+      return;
     }
 
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "UPDATE",
-      module: "REQUIREMENT",
-      recordId: id,
-      oldData: requirement,
-      newData: updatedRequirement,
-      req,
+    const {
+      title,
+      description,
+      clientId,
+      clientContactId,
+      jobType,
+      remoteType,
+      priority,
+      totalOpenings,
+      location,
+      country,
+      salaryMin,
+      salaryMax,
+      salaryType,
+      experienceMin,
+      experienceMax,
+      startDate,
+      endDate,
+      respondBy,
+      turnaroundDays,
+      skillIds,
+    } = req.body;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const req_ = await tx.requirement.update({
+        where: { id },
+        data: {
+          ...(title !== undefined && { title }),
+          ...(description !== undefined && { description }),
+          ...(clientId !== undefined && { clientId }),
+          ...(clientContactId !== undefined && { clientContactId }),
+          ...(jobType !== undefined && { jobType }),
+          ...(remoteType !== undefined && { remoteType }),
+          ...(priority !== undefined && { priority }),
+          ...(totalOpenings !== undefined && { totalOpenings }),
+          ...(location !== undefined && { location }),
+          ...(country !== undefined && { country }),
+          ...(salaryMin !== undefined && { salaryMin }),
+          ...(salaryMax !== undefined && { salaryMax }),
+          ...(salaryType !== undefined && { salaryType }),
+          ...(experienceMin !== undefined && { experienceMin }),
+          ...(experienceMax !== undefined && { experienceMax }),
+          ...(startDate !== undefined && {
+            startDate: startDate ? new Date(startDate) : null,
+          }),
+          ...(endDate !== undefined && {
+            endDate: endDate ? new Date(endDate) : null,
+          }),
+          ...(respondBy !== undefined && {
+            respondBy: respondBy ? new Date(respondBy) : null,
+          }),
+          ...(turnaroundDays !== undefined && { turnaroundDays }),
+        },
+        select: { id: true, reqCode: true, title: true, status: true },
+      });
+
+      // Replace skills if provided
+      if (skillIds !== undefined) {
+        await tx.requirementSkill.deleteMany({ where: { requirementId: id } });
+        if (skillIds.length) {
+          await tx.requirementSkill.createMany({
+            data: skillIds.map((s: any) => ({
+              requirementId: id,
+              skillId: s.skillId,
+              isMandatory: s.isMandatory ?? true,
+              experience: s.experience ?? null,
+            })),
+          });
+        }
+      }
+
+      await logActivity(
+        tx,
+        id,
+        actorId,
+        "STATUS_CHANGED",
+        `Requirement ${req_.reqCode} updated`
+      );
+      return req_;
     });
 
-    return res.status(200).json({
-      success: true,
-      message: "Requirement approved successfully",
-      data: updatedRequirement,
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to approve requirement",
-    });
+    res.json({ success: true, message: "Requirement updated", data: updated });
+  } catch (err) {
+    console.error("updateRequirement:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update requirement" });
   }
 };
 
-export const changeRequirementStatus = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /requirements/:id/status
+// Status machine:
+//   DRAFT → PENDING_APPROVAL (sales submits)
+//   PENDING_APPROVAL → ACTIVE (admin approves)
+//   PENDING_APPROVAL → DRAFT (admin rejects / sales pulls back)
+//   ACTIVE → ON_HOLD | CLOSED | CANCELLED
+//   ON_HOLD → ACTIVE | CANCELLED
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VALID_TRANSITIONS: Record<string, string[]> = {
+  DRAFT: ["PENDING_APPROVAL"],
+  PENDING_APPROVAL: ["ACTIVE", "DRAFT"],
+  ACTIVE: ["ON_HOLD", "CLOSED", "CANCELLED"],
+  ON_HOLD: ["ACTIVE", "CANCELLED"],
+  CLOSED: [],
+  CANCELLED: [],
+};
+
+export const updateRequirementStatus = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams;
-    const { status, reason } = req.validatedBody;
+    const { id } = req.params;
+    const { toStatus, reason } = req.body;
+    const actorId = req.user!.id;
 
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
-
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
+    if (!toStatus) {
+      res.status(400).json({ success: false, message: "toStatus is required" });
+      return;
     }
 
-    const updatedRequirement = await prisma.requirement.update({
-      where: { id },
-      data: {
-        status,
-      },
+    const existing = await prisma.requirement.findFirst({
+      where: { id, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true, status: true, reqCode: true, totalOpenings: true },
+    });
+    if (!existing) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
+    }
+
+    const allowed = VALID_TRANSITIONS[existing.status] ?? [];
+    if (!allowed.includes(toStatus)) {
+      res.status(409).json({
+        success: false,
+        message: `Cannot transition from ${
+          existing.status
+        } → ${toStatus}. Allowed: ${allowed.join(", ") || "none"}`,
+      });
+      return;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const data: any = { status: toStatus };
+      if (toStatus === "ACTIVE") {
+        data.approvedById = actorId;
+        data.approvedAt = new Date();
+      }
+      if (toStatus === "CLOSED") {
+        data.closedById = actorId;
+        data.closedAt = new Date();
+      }
+      if (toStatus === "CANCELLED") {
+        data.closedById = actorId;
+        data.closedAt = new Date();
+      }
+
+      const req_ = await tx.requirement.update({
+        where: { id },
+        data,
+        select: { id: true, reqCode: true, status: true },
+      });
+
+      await tx.requirementStatusHistory.create({
+        data: {
+          requirementId: id,
+          fromStatus: existing.status as any,
+          toStatus: toStatus as any,
+          changedById: actorId,
+          reason: reason ?? null,
+        },
+      });
+
+      const actType =
+        toStatus === "ACTIVE"
+          ? "REQUIREMENT_APPROVED"
+          : toStatus === "CLOSED"
+          ? "REQUIREMENT_CLOSED"
+          : "STATUS_CHANGED";
+      await logActivity(
+        tx,
+        id,
+        actorId,
+        actType,
+        `Status changed: ${existing.status} → ${toStatus}${
+          reason ? ` (${reason})` : ""
+        }`,
+        { from: existing.status, to: toStatus }
+      );
+
+      return req_;
     });
 
-    await prisma.requirementStatusHistory.create({
-      data: {
-        requirementId: id,
-        fromStatus: requirement.status,
-        toStatus: status,
-        changedById: req.user.id,
-        reason: reason,
-      },
-    });
-
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "UPDATE",
-      module: "REQUIREMENT",
-      recordId: id,
-      oldData: requirement,
-      newData: updatedRequirement,
-      req,
-    });
-
-    return res.status(200).json({
+    res.json({
       success: true,
-      message: "Requirement status changed successfully",
-      data: updatedRequirement,
+      message: `Status updated to ${toStatus}`,
+      data: updated,
     });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to change requirement status",
-    });
+  } catch (err) {
+    console.error("updateRequirementStatus:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update status" });
   }
 };
 
-// export const assignRequirement = async (req: Request, res: Response) => {
-//   try {
-//     const { id: requirementId } = req.validatedParams;
-//     const {
-//       assignmentType,
-//       recruiterId,
-//       teamId,
-//       allocatedOpenings,
-//       isAutoRouted,
-//       isSystemAssigned,
-//     } = req.validatedBody;
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /requirements/:id/assign
+// Create an assignment. Handles all 3 levels.
+//
+// Level 1 — MANAGER:  { type: "MANAGER", recruiterId, allocatedOpenings? }
+// Level 2 — TEAM:     { type: "TEAM",    teamId, parentAssignmentId, allocatedOpenings? }
+// Level 3 — INDIVIDUAL: { type: "INDIVIDUAL", recruiterId, teamMemberId?, parentAssignmentId, allocatedOpenings? }
+//
+// Rules enforced:
+//   - MANAGER assignment must not already exist (one DM per req)
+//   - TEAM assignment requires a parent MANAGER assignment
+//   - INDIVIDUAL requires a parent TEAM assignment (or direct from MANAGER if DM bypasses)
+//   - Requirement must be ACTIVE
+// ─────────────────────────────────────────────────────────────────────────────
 
-//     const userId = req.user?.id;
-
-//     const requirement = await prisma.requirement.findUnique({
-//       where: { id: requirementId },
-//     });
-
-//     if (!requirement) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Requirement not found",
-//       });
-//     }
-
-//     const assignment = await prisma.requirementAssignment.create({
-//       data: {
-//         requirementId,
-//         assignmentType,
-//         recruiterId,
-//         teamId,
-//         allocatedOpenings,
-//         isAutoRouted,
-//         isSystemAssigned,
-//         assignedById: userId,
-//       },
-//     });
-
-//     await createAuditLog({
-//       actorId: userId,
-//       action: "CREATE",
-//       module: "REQUIREMENT_ASSIGNMENT",
-//       recordId: assignment.id,
-//       oldData: null,
-//       newData: assignment,
-//       req,
-//     });
-
-//     return res.status(201).json({
-//       success: true,
-//       message: "Assignment created successfully",
-//       data: assignment,
-//     });
-//   } catch (error) {
-//     console.error("Error creating assignment:", error);
-//     return res.status(500).json({
-//       success: false,
-//       message: "Failed to create assignment",
-//     });
-//   }
-// };
-
-export const assignRequirement = async (req: Request, res: Response) => {
+export const createAssignment = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId } = req.validatedParams;
-    const { assignmentType, recruiterId, teamId } = req.validatedBody;
-
-    const userId = req.user?.id;
-
-    const requirement = await prisma.requirement.findUnique({
-      where: { id: requirementId },
-    });
-
-    if (!requirement) {
-      return res.status(404).json({
+    if (!req.modulePermission.canEdit) {
+      res.status(403).json({
         success: false,
-        message: "Requirement not found",
+        message: "No permission to assign requirements",
       });
+      return;
     }
 
-    const assignment = await prisma.requirementAssignment.create({
-      data: {
+    const { id: requirementId } = req.params;
+    const {
+      type,
+      recruiterId,
+      teamId,
+      teamMemberId,
+      parentAssignmentId,
+      allocatedOpenings,
+      deadline,
+    } = req.body;
+    const actorId = req.user!.id;
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true, reqCode: true, status: true, totalOpenings: true },
+    });
+    if (!requirement) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
+    }
+    if (requirement.status !== "ACTIVE") {
+      res.status(409).json({
+        success: false,
+        message: "Can only assign ACTIVE requirements",
+      });
+      return;
+    }
+
+    // Validate parent chain
+    if (type === "MANAGER") {
+      const existing = await prisma.requirementAssignment.findFirst({
+        where: { requirementId, assignmentType: "MANAGER", status: "ACTIVE" },
+      });
+      if (existing) {
+        res.status(409).json({
+          success: false,
+          message:
+            "A manager assignment already exists. Remove it first or update allocatedOpenings.",
+        });
+        return;
+      }
+    }
+
+    if ((type === "TEAM" || type === "INDIVIDUAL") && !parentAssignmentId) {
+      res.status(400).json({
+        success: false,
+        message:
+          "parentAssignmentId is required for TEAM and INDIVIDUAL assignments",
+      });
+      return;
+    }
+
+    const assignment = await prisma.$transaction(async (tx) => {
+      const created = await tx.requirementAssignment.create({
+        data: {
+          requirementId,
+          assignmentType: type,
+          status: "ACTIVE",
+          recruiterId: recruiterId ?? null,
+          teamId: teamId ?? null,
+          teamMemberId: teamMemberId ?? null,
+          parentAssignmentId: parentAssignmentId ?? null,
+          allocatedOpenings: allocatedOpenings ?? requirement.totalOpenings,
+          assignedById: actorId,
+          deadline: deadline ? new Date(deadline) : null,
+        },
+        select: {
+          id: true,
+          assignmentType: true,
+          allocatedOpenings: true,
+          assignedAt: true,
+          recruiter: { select: { id: true, firstName: true, lastName: true } },
+          team: { select: { id: true, name: true } },
+        },
+      });
+
+      const who =
+        type === "TEAM"
+          ? `Team: ${
+              (
+                await tx.team.findUnique({
+                  where: { id: teamId },
+                  select: { name: true },
+                })
+              )?.name
+            }`
+          : `${
+              (
+                await tx.user.findUnique({
+                  where: { id: recruiterId },
+                  select: { firstName: true, lastName: true },
+                })
+              )?.firstName ?? "unknown"
+            }`;
+
+      await logActivity(
+        tx,
         requirementId,
-        assignmentType,
-        recruiterId,
-        teamId,
-        assignedById: userId,
-      },
+        actorId,
+        type === "MANAGER"
+          ? "MANAGER_ASSIGNED"
+          : type === "TEAM"
+          ? "TEAM_ASSIGNED"
+          : "RECRUITER_ASSIGNED",
+        `${type} assigned to ${who} · ${
+          allocatedOpenings ?? requirement.totalOpenings
+        } openings`,
+        { type, teamId, recruiterId }
+      );
+
+      return created;
     });
 
-    await createAuditLog({
-      actorId: userId,
-      action: "CREATE",
-      module: "REQUIREMENT_ASSIGNMENT",
-      recordId: assignment.id,
-      oldData: null,
-      newData: assignment,
-      req,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Assignment created successfully",
-      data: assignment,
-    });
-  } catch (error) {
-    console.error("Error creating assignment:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create assignment",
-      error,
-    });
+    res
+      .status(201)
+      .json({ success: true, message: "Assignment created", data: assignment });
+  } catch (err) {
+    console.error("createAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to create assignment" });
   }
 };
 
-export const addNotes = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /requirements/:id/assignments/:assignmentId
+// Remove an assignment (also removes all child assignments)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const removeAssignment = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams;
-    const { notes } = req.validatedBody;
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
+    if (!req.modulePermission.canEdit) {
+      res.status(403).json({ success: false, message: "No permission" });
+      return;
     }
-    const addedNotes = await prisma.requirementNote.create({
-      data: {
-        requirementId: id,
-        authorId: req.user.id,
-        content: notes,
-      },
+
+    const { id: requirementId, assignmentId } = req.params;
+    const { reason } = req.body;
+    const actorId = req.user!.id;
+
+    const assignment = await prisma.requirementAssignment.findFirst({
+      where: { id: assignmentId, requirementId, status: "ACTIVE" },
+      select: { id: true, assignmentType: true },
     });
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "CREATE",
-      module: "REQUIREMENT_NOTE",
-      recordId: addedNotes.id,
-      oldData: null,
-      newData: addedNotes,
-      req,
+    if (!assignment) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Mark this + all children as REMOVED
+      const markRemoved = async (parentId: string) => {
+        await tx.requirementAssignment.update({
+          where: { id: parentId },
+          data: {
+            status: "REMOVED",
+            removedAt: new Date(),
+            removedReason: reason ?? null,
+          },
+        });
+        const children = await tx.requirementAssignment.findMany({
+          where: { parentAssignmentId: parentId, status: "ACTIVE" },
+          select: { id: true },
+        });
+        for (const child of children) await markRemoved(child.id);
+      };
+      await markRemoved(assignmentId);
+
+      await logActivity(
+        tx,
+        requirementId,
+        actorId,
+        "ASSIGNMENT_REMOVED",
+        `${assignment.assignmentType} assignment removed${
+          reason ? `: ${reason}` : ""
+        }`,
+        { assignmentId, reason }
+      );
     });
-    return res.status(201).json({
-      success: true,
-      message: "Notes added successfully",
-      data: addedNotes,
-    });
-  } catch (error) {
-    console.error("Error adding notes:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to add notes",
-    });
+
+    res.json({ success: true, message: "Assignment removed" });
+  } catch (err) {
+    console.error("removeAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to remove assignment" });
   }
 };
 
-export const getRequirementStatusHistory = async (
-  req: Request,
-  res: Response
-) => {
-  try {
-    const { id } = req.validatedParams;
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
-    }
-    const requirementStatusHistory =
-      await prisma.requirementStatusHistory.findMany({
-        where: { requirementId: id },
-      });
-    return res.status(200).json({
-      success: true,
-      message: "Requirement status history fetched successfully",
-      data: requirementStatusHistory,
-    });
-  } catch (error) {
-    console.error("Error fetching requirement status history:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch requirement status history",
-    });
-  }
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /requirements/:id/assignments/:assignmentId
+// Update allocatedOpenings or deadline on an existing assignment
+// ─────────────────────────────────────────────────────────────────────────────
 
-export const fillAssignment = async (req: Request, res: Response) => {
+export const updateAssignment = async (req: Request, res: Response) => {
   try {
-    const { id, assignmentId } = req.validatedParams;
-    const { filledOpenings } = req.validatedBody;
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
+    const { id: requirementId, assignmentId } = req.params;
+    const { allocatedOpenings, deadline } = req.body;
 
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
+    const assignment = await prisma.requirementAssignment.findFirst({
+      where: { id: assignmentId, requirementId, status: "ACTIVE" },
+    });
+    if (!assignment) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
     }
 
-    // Check if the assignment exists
-    const assignment = await prisma.requirementAssignment.findUnique({
+    const updated = await prisma.requirementAssignment.update({
       where: { id: assignmentId },
+      data: {
+        ...(allocatedOpenings !== undefined && { allocatedOpenings }),
+        ...(deadline !== undefined && {
+          deadline: deadline ? new Date(deadline) : null,
+        }),
+      },
+      select: {
+        id: true,
+        assignmentType: true,
+        allocatedOpenings: true,
+        deadline: true,
+      },
+    });
+
+    res.json({ success: true, message: "Assignment updated", data: updated });
+  } catch (err) {
+    console.error("updateAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /requirements/:id/notes
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const addNote = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    const actorId = req.user!.id;
+
+    if (!content?.trim()) {
+      res.status(400).json({ success: false, message: "Content is required" });
+      return;
+    }
+
+    const existing = await prisma.requirement.findFirst({
+      where: { id, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true },
+    });
+    if (!existing) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
+    }
+
+    const note = await prisma.$transaction(async (tx) => {
+      const n = await tx.requirementNote.create({
+        data: { requirementId: id, authorId: actorId, content: content.trim() },
+        select: {
+          id: true,
+          content: true,
+          createdAt: true,
+          author: { select: { id: true, firstName: true, lastName: true } },
+        },
+      });
+      await logActivity(tx, id, actorId, "NOTE_ADDED", "Note added");
+      return n;
+    });
+
+    res.status(201).json({ success: true, data: note });
+  } catch (err) {
+    console.error("addNote:", err);
+    res.status(500).json({ success: false, message: "Failed to add note" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /requirements/:id/notes/:noteId
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const deleteNote = async (req: Request, res: Response) => {
+  try {
+    const { id, noteId } = req.params;
+    const actorId = req.user!.id;
+
+    const note = await prisma.requirementNote.findFirst({
+      where: { id: noteId, requirementId: id, authorId: actorId },
+    });
+    if (!note) {
+      res
+        .status(404)
+        .json({ success: false, message: "Note not found or not yours" });
+      return;
+    }
+
+    await prisma.requirementNote.delete({ where: { id: noteId } });
+    res.json({ success: true, message: "Note deleted" });
+  } catch (err) {
+    console.error("deleteNote:", err);
+    res.status(500).json({ success: false, message: "Failed to delete note" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /requirements/:id/assignments/:assignmentId/progress
+// Recruiter updates their own submission/interview/fill counts.
+// When filledOpenings reaches allocatedOpenings, checks if all openings
+// across all individual assignments are filled and suggests auto-close.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateProgress = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId, assignmentId } = req.params;
+    const { submissionsCount, interviewsCount, filledOpenings } = req.body;
+    const actorId = req.user!.id;
+
+    const assignment = await prisma.requirementAssignment.findFirst({
+      where: {
+        id: assignmentId,
+        requirementId,
+        status: "ACTIVE",
+        assignmentType: "INDIVIDUAL",
+        recruiterId: actorId, // only the assigned recruiter
+      },
+      select: { id: true, allocatedOpenings: true, filledOpenings: true },
     });
 
     if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: "Assignment not found",
-      });
+      res
+        .status(404)
+        .json({ success: false, message: "Assignment not found or not yours" });
+      return;
     }
 
-    // Update the assignment
-    const filledAssignment = await prisma.requirementAssignment.update({
-      where: { id: assignmentId },
-      data: {
-        filledOpenings: filledOpenings,
-      },
-    });
-
-    // Update the overall openings
-    const totalOpenings = await prisma.requirement.findUnique({
-      where: { id },
-      select: {
-        totalOpenings: true,
-        filledOpenings: true,
-      },
-    });
-
-    await prisma.requirement.update({
-      where: { id },
-      data: {
-        filledOpenings: totalOpenings?.filledOpenings + filledOpenings,
-      },
-    });
-
-    // Close the requirement if all openings are filled
-    if (totalOpenings?.totalOpenings === totalOpenings?.filledOpenings) {
-      await prisma.requirement.update({
-        where: { id },
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.requirementAssignment.update({
+        where: { id: assignmentId },
         data: {
-          status: "CLOSED",
+          ...(submissionsCount !== undefined && { submissionsCount }),
+          ...(interviewsCount !== undefined && { interviewsCount }),
+          ...(filledOpenings !== undefined && { filledOpenings }),
+        },
+        select: {
+          id: true,
+          submissionsCount: true,
+          interviewsCount: true,
+          filledOpenings: true,
+          allocatedOpenings: true,
         },
       });
-    }
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "UPDATE",
-      module: "REQUIREMENT_ASSIGNMENT",
-      recordId: filledAssignment.id,
-      oldData: assignment,
-      newData: filledAssignment,
-      req,
+
+      await logActivity(
+        tx,
+        requirementId,
+        actorId,
+        "STATS_UPDATED",
+        `Progress updated: ${result.submissionsCount} submissions, ${result.interviewsCount} interviews, ${result.filledOpenings} filled`
+      );
+
+      // Sync filledOpenings up to the parent TEAM assignment
+      const parentTeamAssignment = await tx.requirementAssignment.findFirst({
+        where: {
+          requirementId,
+          assignmentType: "TEAM",
+          status: "ACTIVE",
+          childAssignments: { some: { id: assignmentId } },
+        },
+        select: { id: true },
+      });
+
+      if (parentTeamAssignment) {
+        const siblingFilled = await tx.requirementAssignment.aggregate({
+          where: {
+            parentAssignmentId: parentTeamAssignment.id,
+            status: "ACTIVE",
+          },
+          _sum: { filledOpenings: true },
+        });
+        await tx.requirementAssignment.update({
+          where: { id: parentTeamAssignment.id },
+          data: { filledOpenings: siblingFilled._sum.filledOpenings ?? 0 },
+        });
+      }
+
+      // Sync total filledOpenings up to the requirement itself
+      const allIndividualFilled = await tx.requirementAssignment.aggregate({
+        where: {
+          requirementId,
+          assignmentType: "INDIVIDUAL",
+          status: "ACTIVE",
+        },
+        _sum: { filledOpenings: true },
+      });
+      const totalFilled = allIndividualFilled._sum.filledOpenings ?? 0;
+      await tx.requirement.update({
+        where: { id: requirementId },
+        data: { filledOpenings: totalFilled },
+      });
+
+      return result;
     });
 
-    return res.status(200).json({
+    // Check if fully filled — tell UI to suggest closing
+    const req_ = await prisma.requirement.findUnique({
+      where: { id: requirementId },
+      select: { totalOpenings: true, filledOpenings: true },
+    });
+    const fullyFilled = req_
+      ? req_.filledOpenings >= req_.totalOpenings
+      : false;
+
+    res.json({
       success: true,
-      message: "Assignment filled successfully",
-      data: filledAssignment,
+      message: "Progress updated",
+      data: updated,
+      ...(fullyFilled && {
+        hint: "All openings filled — consider closing this requirement",
+      }),
     });
-  } catch (error) {
-    console.error("Error filling assignment:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fill assignment",
-    });
+  } catch (err) {
+    console.error("updateProgress:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update progress" });
   }
 };
 
-export const uploadDocument = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/my-queue
+// What the logged-in user sees in their work queue
+// Recruiters see their direct assignments
+// TLs see team assignments for their teams
+// DMs see manager assignments for their node
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getMyQueue = async (req: Request, res: Response) => {
   try {
-    const { id } = req.validatedParams;
-    const { type } = req.body;
+    const userId = req.user!.id;
+    const scope = req.scopeFilter;
 
-    if (!type) {
-      return res.status(400).json({
-        success: false,
-        message: "Type is required",
-      });
-    }
-
-    const allowedTypes = [
-      "FILE_UPLOAD",
-      "STATUS_CHANGE",
-      "ISSUE_RAISED",
-      "NOTE",
-      "POSITION_FILLED",
-      "REQUIREMENT_CLOSED",
-    ];
-
-    if (!allowedTypes.includes(type)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid document type",
-      });
-    }
-
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
-    });
-
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: "File is required",
-      });
-    }
-
-    const allowedMimeTypes = ["application/pdf", "image/png", "image/jpeg"];
-
-    if (!allowedMimeTypes.includes(req.file.mimetype)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid file type",
-      });
-    }
-
-    const { fileUrl } = await uploadToS3(req.file);
-
-    const document = await prisma.requirementDocument.create({
-      data: {
-        requirementId: id,
-        fileName: req.file.originalname,
-        fileUrl,
-        fileType: req.file.mimetype,
-        type,
-        raisedById: req.user.id,
+    const assignments = await prisma.requirementAssignment.findMany({
+      where: {
+        status: "ACTIVE",
+        OR: [
+          { recruiterId: userId },
+          ...(scope.teamIds?.length ? [{ teamId: { in: scope.teamIds } }] : []),
+        ],
       },
+      select: {
+        id: true,
+        assignmentType: true,
+        allocatedOpenings: true,
+        filledOpenings: true,
+        submissionsCount: true,
+        interviewsCount: true,
+        deadline: true,
+        breachedAt: true,
+        assignedAt: true,
+        team: { select: { id: true, name: true } },
+        requirement: {
+          select: {
+            id: true,
+            reqCode: true,
+            title: true,
+            status: true,
+            priority: true,
+            totalOpenings: true,
+            filledOpenings: true,
+            respondBy: true,
+            isRespondByBreached: true,
+            salaryMin: true,
+            salaryMax: true,
+            salaryType: true,
+            client: { select: { id: true, name: true } },
+            skills: {
+              where: { isMandatory: true },
+              select: { skill: { select: { canonicalName: true } } },
+              take: 4,
+            },
+          },
+        },
+      },
+      orderBy: [{ requirement: { priority: "desc" } }, { assignedAt: "asc" }],
     });
 
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "CREATE",
-      module: "REQUIREMENT_DOCUMENT",
-      recordId: document.id,
-      oldData: null,
-      newData: document,
-      req,
-    });
+    // Summary stats
+    const stats = {
+      total: assignments.length,
+      breached: assignments.filter((a) => a.breachedAt).length,
+      highPri: assignments.filter((a) => a.requirement.priority === "HIGH")
+        .length,
+    };
 
-    return res.status(201).json({
-      success: true,
-      message: "Document uploaded successfully",
-      data: document,
-    });
-  } catch (error) {
-    console.error("Error uploading document:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to upload document",
-    });
+    res.json({ success: true, data: assignments, stats });
+  } catch (err) {
+    console.error("getMyQueue:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch queue" });
   }
 };
 
-export const resolveIssue = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/calendar
+// Returns requirements with respondBy dates for calendar view
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRequirementsCalendar = async (req: Request, res: Response) => {
   try {
-    const { id, documentId } = req.validatedParams;
+    const { from, to } = req.query as { from?: string; to?: string };
+    const scopeWhere = reqScopeWhere(req.scopeFilter);
 
-    const requirement = await prisma.requirement.findUnique({
-      where: { id },
+    const where: any = {
+      ...scopeWhere,
+      status: { in: ["ACTIVE", "PENDING_APPROVAL"] },
+      respondBy: {
+        not: null,
+        ...(from && { gte: new Date(from) }),
+        ...(to && { lte: new Date(to) }),
+      },
+    };
+
+    const requirements = await prisma.requirement.findMany({
+      where,
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        priority: true,
+        respondBy: true,
+        turnaroundDays: true,
+        isRespondByBreached: true,
+        totalOpenings: true,
+        filledOpenings: true,
+        client: { select: { id: true, name: true } },
+        assignments: {
+          where: { status: "ACTIVE", assignmentType: "INDIVIDUAL" },
+          select: {
+            recruiter: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+      orderBy: { respondBy: "asc" },
     });
 
-    if (!requirement) {
-      return res.status(404).json({
-        success: false,
-        message: "Requirement not found",
-      });
-    }
+    res.json({ success: true, data: requirements });
+  } catch (err) {
+    console.error("getRequirementsCalendar:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch calendar" });
+  }
+};
 
-    const document = await prisma.requirementDocument.findUnique({
-      where: { id: documentId },
-    });
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/stats
+// Dashboard stats — scoped to current user
+// ─────────────────────────────────────────────────────────────────────────────
 
-    if (!document || document.requirementId !== id) {
-      return res.status(404).json({
-        success: false,
-        message: "Document not found for this requirement",
-      });
-    }
+export const getRequirementStats = async (req: Request, res: Response) => {
+  try {
+    const scopeWhere = reqScopeWhere(req.scopeFilter);
 
-    if (document.issueResolved) {
-      return res.status(400).json({
-        success: false,
-        message: "Issue already resolved",
-      });
-    }
+    const [byStatus, byPriority, breached, recentlyActive] = await Promise.all([
+      // Count by status
+      prisma.requirement.groupBy({
+        by: ["status"],
+        where: scopeWhere,
+        _count: { _all: true },
+      }),
+      // Count by priority (active only)
+      prisma.requirement.groupBy({
+        by: ["priority"],
+        where: { ...scopeWhere, status: "ACTIVE" },
+        _count: { _all: true },
+      }),
+      // Breached count
+      prisma.requirement.count({
+        where: { ...scopeWhere, isRespondByBreached: true, status: "ACTIVE" },
+      }),
+      // Last 7 days created
+      prisma.requirement.count({
+        where: {
+          ...scopeWhere,
+          createdAt: { gte: new Date(Date.now() - 7 * 86400_000) },
+        },
+      }),
+    ]);
 
-    const resolvedDocument = await prisma.requirementDocument.update({
-      where: { id: documentId },
+    res.json({
+      success: true,
       data: {
-        issueResolved: true,
-        resolvedById: req.user.id,
-        resolvedAt: new Date(),
+        byStatus: Object.fromEntries(
+          byStatus.map((s) => [s.status, s._count._all])
+        ),
+        byPriority: Object.fromEntries(
+          byPriority.map((p) => [p.priority, p._count._all])
+        ),
+        breached,
+        recentlyCreated: recentlyActive,
       },
     });
-
-    await createAuditLog({
-      actorId: req.user.id,
-      action: "UPDATE",
-      module: "REQUIREMENT_DOCUMENT",
-      recordId: documentId,
-      oldData: document,
-      newData: resolvedDocument,
-      req,
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Issue resolved successfully",
-      data: resolvedDocument,
-    });
-  } catch (error) {
-    console.error("Error resolving issue:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to resolve issue",
-    });
+  } catch (err) {
+    console.error("getRequirementStats:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch stats" });
   }
 };

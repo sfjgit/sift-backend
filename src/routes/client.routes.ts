@@ -1,123 +1,219 @@
-import {
-  approveClients,
-  assignContactHandler,
-  clientNote,
-  createClient,
-  getAllClients,
-  getSingleClientDetails,
-  spocContact,
-  // spocHandler,
-} from "@/controller/client.controller";
+import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/role";
 import {
-  assignContactHandlerSchema,
-  clientNoteSchema,
-  // approveClientsSchema,
-  // clientsApprovalSchema,
-  clientsIdSchema,
-  contactHandlerParamsSchema,
+  scopeFilter,
+  checkPermission,
+} from "@/middleware/scopeFilter.middleware";
+import { validate } from "@/validators/validator";
+
+// Controllers
+import {
+  createClient,
+  updateClient,
+  approveClient,
+  getAllClients,
+  getClientById,
+  deleteClient,
+  addClientContact,
+  updateClientContact,
+  removeClientContact,
+  assignContactHandler,
+  removeContactHandler,
+  assignClientHandler,
+  removeClientHandler,
+  assignClientToTeam,
+  removeClientFromTeam,
+  addClientNote,
+} from "@/controller/client.controller";
+
+// Validators
+import {
   createClientSchema,
+  updateClientSchema,
+  clientIdSchema,
   getAllClientsSchema,
-  // handlersIdSchema,
-  spocContactSchema,
-  // spocHandlerSchema,
+  contactSchema,
+  contactIdSchema,
+  assignContactHandlerSchema,
+  contactHandlerParamsSchema,
+  assignClientHandlerSchema,
+  assignClientTeamSchema,
+  clientNoteSchema,
 } from "@/validators/client.validators";
 
-import { validate } from "@/validators/validator";
-import { Router } from "express";
-
 const router = Router();
+
 /**
- * @route   POST /api/clients
- * @desc    create clients
- * @access  Super Admin,admin
+ * CLIENT CORE
  */
+
 router.post(
   "/",
   authenticateUser,
-  authorize("clients", "canAdd"),
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
   validate.body(createClientSchema),
-  createClient,
+  createClient
 );
 
-/**
- * @route   GET /api/clients
- * @desc    Get all clients
- * @access  Super Admin,admin
- */
 router.get(
   "/",
   authenticateUser,
-  authorize("clients", "canView"),
+  scopeFilter("clients"),
   validate.query(getAllClientsSchema),
-  getAllClients,
+  getAllClients
 );
 
-/**
- * @route   PATCH /api/clients
- * @desc    Approve the clients
- * @access  Super Admin,admin
- */
-router.post(
-  "/:id/approve",
-  authenticateUser,
-  authorize("clients", "canAdd"),
-  validate.params(clientsIdSchema),
-  approveClients,
-);
-
-/**
- * @route   GET /api/clients
- * @desc    GET the clients
- * @access  Super Admin,admin,Based on roles
- */
 router.get(
   "/:id",
   authenticateUser,
-  authorize("clients", "canView"),
-  validate.params(clientsIdSchema),
-  getSingleClientDetails,
+  scopeFilter("clients"),
+  validate.params(clientIdSchema),
+  getClientById
+);
+
+router.patch(
+  "/:id",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canEdit"),
+  validate.params(clientIdSchema),
+  validate.body(updateClientSchema),
+  updateClient
+);
+
+router.delete(
+  "/:id",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canDelete"),
+  validate.params(clientIdSchema),
+  deleteClient
+);
+
+router.post(
+  "/:id/approve",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
+  validate.params(clientIdSchema),
+  approveClient
 );
 
 /**
- * @route   POST /api/clients
- * @desc    Add a SPOC to the client.
- * @access  Super Admin,admin,Based on roles
+ * CONTACTS
  */
+
 router.post(
   "/:id/contacts",
   authenticateUser,
-  authorize("clients", "canAdd"),
-  validate.params(clientsIdSchema),
-  validate.body(spocContactSchema),
-  spocContact,
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
+  validate.params(clientIdSchema),
+  validate.body(contactSchema),
+  addClientContact
+);
+
+router.patch(
+  "/:id/contacts/:contactId",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canEdit"),
+  validate.params(contactIdSchema),
+  validate.body(contactSchema),
+  updateClientContact
+);
+
+router.delete(
+  "/:id/contacts/:contactId",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canDelete"),
+  validate.params(contactIdSchema),
+  removeClientContact
 );
 
 /**
- * @route   POST /api/clients
- * @desc    Assign a user to handle a specific SPOC
- * @access  Super Admin,admin,Based on roles
+ * CONTACT HANDLERS
  */
+
 router.post(
   "/:id/contacts/:contactId/handlers",
   authenticateUser,
-  authorize("clients", "canAdd"),
-  validate.body(assignContactHandlerSchema),
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
   validate.params(contactHandlerParamsSchema),
-  assignContactHandler,
+  validate.body(assignContactHandlerSchema),
+  assignContactHandler
 );
+
+router.delete(
+  "/:id/contacts/:contactId/handlers/:handlerId",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canDelete"),
+  validate.params(contactHandlerParamsSchema),
+  removeContactHandler
+);
+
 /**
- * @route   POST /api/clients
- * @desc    Add a note to client .
- * @access  Super Admin,admin,CSM
+ * CLIENT HANDLERS
  */
+
+router.post(
+  "/:id/handlers",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
+  validate.params(clientIdSchema),
+  validate.body(assignClientHandlerSchema),
+  assignClientHandler
+);
+
+router.delete(
+  "/:id/handlers/:handlerId",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canDelete"),
+  validate.params(clientIdSchema),
+  removeClientHandler
+);
+
+/**
+ * TEAM ASSIGNMENT
+ */
+
+router.post(
+  "/:id/teams",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
+  validate.params(clientIdSchema),
+  validate.body(assignClientTeamSchema),
+  assignClientToTeam
+);
+
+router.delete(
+  "/:id/teams/:teamId",
+  authenticateUser,
+  scopeFilter("clients"),
+  checkPermission("canDelete"),
+  validate.params(clientIdSchema),
+  removeClientFromTeam
+);
+
+/**
+ * NOTES
+ */
+
 router.post(
   "/:id/notes",
   authenticateUser,
-  authorize("clients", "canAdd"),
-  validate.params(clientsIdSchema),
+  scopeFilter("clients"),
+  checkPermission("canAdd"),
+  validate.params(clientIdSchema),
   validate.body(clientNoteSchema),
-  clientNote,
+  addClientNote
 );
+
 export default router;

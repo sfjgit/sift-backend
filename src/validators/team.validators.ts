@@ -7,23 +7,24 @@ const nodeTypeEnum = z.enum(["MANAGEMENT", "GROUP", "INDIVIDUAL"]);
 const categoryEnum = z.enum(["DELIVERY", "SALES", "SUPPORT", "MANAGEMENT"]);
 const edgeTypeEnum = z.enum(["ASSIGNS_TO", "REPORTS_TO", "VISIBILITY"]);
 
-// ── GET /teams ───────────────────────────────────────────────────────────────
+// ── GET /teams ────────────────────────────────────────────────────────────────
 
 export const getTeamsSchema = z.object({
   buId: uuid.optional(),
+  arcId: uuid.optional(), // filter by TeamArc
   category: categoryEnum.optional(),
   nodeType: nodeTypeEnum.optional(),
   isActive: z.enum(["true", "false"]).optional(),
   search: z.string().min(1).max(100).optional(),
 });
 
-// ── GET /teams/:id ───────────────────────────────────────────────────────────
+// ── GET /teams/:id ────────────────────────────────────────────────────────────
 
 export const getTeamByIdSchema = z.object({
   id: uuid,
 });
 
-// ── POST /teams ──────────────────────────────────────────────────────────────
+// ── POST /teams ───────────────────────────────────────────────────────────────
 
 export const createTeamSchema = z.object({
   name: z.string().min(1).max(100).trim(),
@@ -31,10 +32,11 @@ export const createTeamSchema = z.object({
   nodeType: nodeTypeEnum.optional().default("GROUP"),
   category: categoryEnum.optional().nullable(),
   businessUnitId: uuid.optional().nullable(),
+  teamArcId: uuid, // required — every team must belong to an arc
   parentTeamId: uuid.optional().nullable(),
 });
 
-// ── PUT /teams/:id ───────────────────────────────────────────────────────────
+// ── PUT /teams/:id ────────────────────────────────────────────────────────────
 
 export const updateTeamSchema = z.object({
   name: z.string().min(1).max(100).trim().optional(),
@@ -42,22 +44,41 @@ export const updateTeamSchema = z.object({
   nodeType: nodeTypeEnum.optional(),
   category: categoryEnum.optional().nullable(),
   isActive: z.boolean().optional(),
+  teamArcId: uuid.optional(), // allow moving team to a different arc
   parentTeamId: uuid.optional().nullable(),
 });
 
-// ── DELETE /teams/:id ────────────────────────────────────────────────────────
+// ── DELETE /teams/:id ─────────────────────────────────────────────────────────
 
 export const deleteTeamSchema = z.object({
   id: uuid,
 });
 
-// ── PATCH /teams/:id/edges/:edgeId ───────────────────────────────────────────
+// ── POST /teams/:id/edges ─────────────────────────────────────────────────────
+// Manually create an edge (e.g. Sales Head → DM node cross-arc link)
+
+export const createTeamEdgeSchema = z.object({
+  targetTeamId: uuid,
+  edgeType: edgeTypeEnum,
+  direction: z.enum(["outgoing", "incoming"]).default("outgoing"),
+  // outgoing = this team is parent, targetTeamId is child
+  // incoming = targetTeamId is parent, this team is child
+});
+
+// ── PATCH /teams/:id/edges/:edgeId ────────────────────────────────────────────
 
 export const updateTeamEdgeSchema = z.object({
   isActive: z.boolean(),
 });
 
-// ── POST /teams/:id/members ──────────────────────────────────────────────────
+// ── DELETE /teams/:id/edges/:edgeId ──────────────────────────────────────────
+
+export const deleteTeamEdgeSchema = z.object({
+  id: uuid,
+  edgeId: uuid,
+});
+
+// ── POST /teams/:id/members ───────────────────────────────────────────────────
 
 export const addTeamMembersSchema = z.object({
   members: z
@@ -71,15 +92,15 @@ export const addTeamMembersSchema = z.object({
     .max(50, "Cannot add more than 50 members at once"),
 });
 
-// ── PATCH /teams/:id/members/:userId/role ────────────────────────────────────
+// ── PATCH /teams/:id/members/:userId/role ─────────────────────────────────────
 
 export const updateMemberRoleSchema = z.object({
-  id: uuid.optional(), // params
-  userId: uuid.optional(), // params
-  teamRole: teamRoleEnum, // body
+  id: uuid.optional(),
+  userId: uuid.optional(),
+  teamRole: teamRoleEnum,
 });
 
-// ── DELETE /teams/:id/members/:userId ────────────────────────────────────────
+// ── DELETE /teams/:id/members/:userId ─────────────────────────────────────────
 
 export const removeTeamMemberSchema = z.object({
   id: uuid,
@@ -87,7 +108,7 @@ export const removeTeamMemberSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
-// ── GET /teams/:id/members ───────────────────────────────────────────────────
+// ── GET /teams/:id/members ────────────────────────────────────────────────────
 
 export const getTeamMembersSchema = z.object({
   id: uuid,
@@ -96,5 +117,45 @@ export const getTeamMembersSchema = z.object({
 // ── GET /teams/:id/available-users ───────────────────────────────────────────
 
 export const getAvailableUsersSchema = z.object({
+  id: uuid,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEAM ARC VALIDATORS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /arcs ─────────────────────────────────────────────────────────────────
+
+export const getArcsSchema = z.object({
+  buId: uuid.optional(),
+  isActive: z.enum(["true", "false"]).optional(),
+  search: z.string().min(1).max(100).optional(),
+});
+
+// ── GET /arcs/:id ─────────────────────────────────────────────────────────────
+
+export const getArcByIdSchema = z.object({
+  id: uuid,
+});
+
+// ── POST /arcs ────────────────────────────────────────────────────────────────
+
+export const createArcSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  description: z.string().max(500).optional().nullable(),
+  businessUnitId: uuid,
+});
+
+// ── PUT /arcs/:id ─────────────────────────────────────────────────────────────
+
+export const updateArcSchema = z.object({
+  name: z.string().min(1).max(100).trim().optional(),
+  description: z.string().max(500).optional().nullable(),
+  isActive: z.boolean().optional(),
+});
+
+// ── DELETE /arcs/:id ──────────────────────────────────────────────────────────
+
+export const deleteArcSchema = z.object({
   id: uuid,
 });

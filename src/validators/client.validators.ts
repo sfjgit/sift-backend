@@ -1,64 +1,170 @@
-import { ClientStatus } from "@prisma/client";
 import { z } from "zod";
 
+/**
+ * ─────────────────────────────────────────────
+ * COMMON
+ * ─────────────────────────────────────────────
+ */
+
+export const uuidSchema = z.string();
+
+export const paginationSchema = z.object({
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(20),
+});
+
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT CORE
+ * ─────────────────────────────────────────────
+ */
+
+export const clientIdSchema = z.object({
+  id: uuidSchema,
+});
+
 export const createClientSchema = z.object({
-  name: z.string().min(1, "Client name is required"),
-  vmsName: z.string().min(1).optional(),
-  category: z.string().min(1).optional(),
-  industry: z.string().min(1).optional(),
-  website: z.string().optional(),
-  country: z.string().min(1),
-  state: z.string().min(1).optional(),
-  city: z.string().min(1).optional(),
-  businessUnitId: z.string().min(1).optional(),
-  status: z.enum(ClientStatus).default("PENDING"),
-});
-export type TCreateClientSchema = z.infer<typeof createClientSchema>;
+  name: z.string().min(2),
+  vmsName: z.string().optional(),
 
-export const getAllClientsSchema = z.object({
-  id: z.string().optional(),
-  name: z.string().min(1, "Name is required").optional(),
-  status: z.enum(ClientStatus).optional(),
-  category: z.string().min(1).optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  buId: z.string().optional(),
-});
-export type TGetAllClientsSchema = z.infer<typeof getAllClientsSchema>;
+  category: z
+    .enum([
+      "PRODUCT",
+      "SERVICE",
+      "CONSULTING",
+      "STAFFING",
+      "GOVERNMENT",
+      "NGO",
+      "OTHER",
+    ])
+    .optional(),
 
-export const clientsIdSchema = z.object({
-  id: z.string(),
-});
-export type TClientsIdSchema = z.infer<typeof clientsIdSchema>;
+  industry: z.string().optional(),
+  website: z.string().url().optional(),
 
-export const spocContactSchema = z.object({
-  firstName: z.string().min(1, "First name is required"),
-  lastName: z.string().min(1).optional(),
-  designation: z.string().min(1).optional(),
-  email: z.string().email("Invalid Email"),
-  phone: z.string().min(1).optional(),
-  linkedinUrl: z.string().optional(),
-  isPrimary: z.boolean().default(false).optional(),
+  country: z.string().optional(),
+  state: z.string().optional(),
+  city: z.string().optional(),
+  address: z.string().optional(),
+
+  businessUnitId: uuidSchema.optional(), // 🔥 important for BU scoping
+
+  parentClientId: uuidSchema.optional(),
 });
-export type TspocContactSchema = z.infer<typeof spocContactSchema>;
+
+export const updateClientSchema = createClientSchema.partial();
+
+/**
+ * ─────────────────────────────────────────────
+ * GET ALL CLIENTS (ADVANCED FILTERS)
+ * ─────────────────────────────────────────────
+ */
+
+export const getAllClientsSchema = paginationSchema.extend({
+  search: z.string().optional(),
+
+  status: z.enum(["PENDING", "ACTIVE", "INACTIVE"]).optional(),
+
+  category: z
+    .enum([
+      "PRODUCT",
+      "SERVICE",
+      "CONSULTING",
+      "STAFFING",
+      "GOVERNMENT",
+      "NGO",
+      "OTHER",
+    ])
+    .optional(),
+
+  businessUnitId: uuidSchema.optional(), // 🔥 override / admin filter
+
+  handlerId: uuidSchema.optional(), // filter clients handled by user
+
+  teamId: uuidSchema.optional(), // filter via ClientTeamAssignment
+
+  hasActiveRequirements: z.coerce.boolean().optional(),
+
+  createdFrom: z.coerce.date().optional(),
+  createdTo: z.coerce.date().optional(),
+
+  sortBy: z.enum(["createdAt", "name", "status"]).default("createdAt"),
+
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});
+
+/**
+ * ─────────────────────────────────────────────
+ * CONTACT (SPOC)
+ * ─────────────────────────────────────────────
+ */
+
+export const contactSchema = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().optional(),
+
+  designation: z.string().optional(),
+
+  email: z.string().email(),
+  phone: z.string().optional(),
+
+  linkedinUrl: z.string().url().optional(),
+
+  isPrimary: z.boolean().optional(),
+
+  ownerId: uuidSchema.optional(), // internal owner
+});
+
+export const contactIdSchema = z.object({
+  id: uuidSchema,
+  contactId: uuidSchema,
+});
+
+/**
+ * ─────────────────────────────────────────────
+ * CONTACT HANDLERS (User ↔ Contact)
+ * ─────────────────────────────────────────────
+ */
+
+export const contactHandlerParamsSchema = z.object({
+  id: uuidSchema,
+  contactId: uuidSchema,
+});
 
 export const assignContactHandlerSchema = z.object({
-  userId: z.string(),
+  userId: uuidSchema,
+
+  role: z.enum(["PRIMARY", "SECONDARY", "BACKUP"]).default("PRIMARY"),
 });
 
-export type TAssignContactHandlerSchema = z.infer<
-  typeof assignContactHandlerSchema
->;
-export const contactHandlerParamsSchema = z.object({
-  id: z.string().uuid(),
-  contactId: z.string().uuid(),
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT HANDLERS (Direct)
+ * ─────────────────────────────────────────────
+ */
+
+export const assignClientHandlerSchema = z.object({
+  userId: uuidSchema,
+
+  role: z.enum(["PRIMARY", "SECONDARY", "BACKUP"]).default("PRIMARY"),
 });
 
-export type TContactHandlerParamsSchema = z.infer<
-  typeof contactHandlerParamsSchema
->;
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT ↔ TEAM ASSIGNMENT
+ * ─────────────────────────────────────────────
+ */
+
+export const assignClientTeamSchema = z.object({
+  teamId: uuidSchema,
+});
+
+/**
+ * ─────────────────────────────────────────────
+ * CLIENT NOTES
+ * ─────────────────────────────────────────────
+ */
 
 export const clientNoteSchema = z.object({
-  content: z.string().min(1, "Note content is required"),
+  content: z.string().min(1).max(2000),
 });
-export type TClientNoteSchema = z.infer<typeof clientNoteSchema>;

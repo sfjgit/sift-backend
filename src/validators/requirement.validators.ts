@@ -1,44 +1,8 @@
 import { z } from "zod";
-import {
-  RequirementType,
-  RemoteType,
-  Priority,
-  RequirementStatus,
-  AssignmentType,
-  AssignmentStatus,
-  DocumentEventType,
-} from "@prisma/client";
 
-export const RequirementTypeEnum = z.enum(RequirementType);
-export const RemoteTypeEnum = z.enum(RemoteType);
-export const PriorityEnum = z.enum(Priority);
-export const RequirementStatusEnum = z.enum(RequirementStatus);
+// ── GET /requirements ─────────────────────────────────────────────────────────
 
-export const createRequirementsSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  description: z.string().optional(),
-  clientId: z.string(),
-  clientContactId: z.string().optional(),
-  businessUnitId: z.string().optional(),
-  jobType: RequirementTypeEnum,
-  remoteType: RemoteTypeEnum,
-  priority: PriorityEnum.optional(),
-  totalOpenings: z.number().int().positive().optional(),
-  location: z.string().optional(),
-  country: z.string().optional(),
-  salaryMin: z.number().optional(),
-  salaryMax: z.number().optional(),
-  salaryType: z.string().optional(),
-  startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
-  respondBy: z.string().datetime().optional(),
-  turnaroundDays: z.number().int().optional(),
-  createdById: z.string().optional(),
-  deliveryLeadId: z.string().uuid().optional(),
-  teamLeadId: z.string().uuid().optional(),
-});
-
-export const getAllRequirementsSchema = z.object({
+export const getRequirementsSchema = z.object({
   status: z
     .enum([
       "DRAFT",
@@ -49,112 +13,153 @@ export const getAllRequirementsSchema = z.object({
       "CANCELLED",
     ])
     .optional(),
-
-  clientId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
-
   priority: z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
-
+  clientId: z.string().optional(),
+  buId: z.string().optional(),
   jobType: z
     .enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"])
     .optional(),
+  remoteType: z.enum(["ONSITE", "REMOTE", "HYBRID"]).optional(),
+  assignedToMe: z.enum(["true", "false"]).optional(),
+  breached: z.enum(["true", "false"]).optional(),
+  search: z.string().min(1).max(200).optional(),
+  page: z.string().regex(/^\d+$/).optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+  sortBy: z
+    .enum(["createdAt", "updatedAt", "respondBy", "priority", "status"])
+    .optional(),
+  sortDir: z.enum(["asc", "desc"]).optional(),
+});
 
-  search: z.string().min(1).optional(),
+// ── GET /requirements/:id ─────────────────────────────────────────────────────
 
-  page: z
-    .string()
+export const getReqByIdSchema = z.object({ id: z.string() });
+
+// ── Base object (no refinements) ──────────────────────────────────────────────
+
+const requirementBaseSchema = z.object({
+  title: z.string().min(1).max(200).trim(),
+  description: z.string().max(2000).optional().nullable(),
+  clientId: z.string(),
+  clientContactId: z.string().optional().nullable(),
+  businessUnitId: z.string().optional().nullable(),
+  jobType: z.enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"]),
+  remoteType: z.enum(["ONSITE", "REMOTE", "HYBRID"]),
+  priority: z.enum(["LOW", "MEDIUM", "HIGH"]).optional().default("MEDIUM"),
+  totalOpenings: z.number().int().min(1).optional().default(1),
+  location: z.string().max(200).optional().nullable(),
+  country: z.string().max(100).optional().nullable(),
+  salaryMin: z.number().positive().optional().nullable(),
+  salaryMax: z.number().positive().optional().nullable(),
+  salaryType: z
+    .enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"])
     .optional()
-    .transform((val) => (val ? parseInt(val, 10) : 1))
-    .pipe(z.number().int().min(1)),
-
-  limit: z
-    .string()
+    .nullable(),
+  experienceMin: z.number().min(0).optional().nullable(),
+  experienceMax: z.number().min(0).optional().nullable(),
+  startDate: z.string().datetime().optional().nullable(),
+  endDate: z.string().datetime().optional().nullable(),
+  respondBy: z.string().datetime().optional().nullable(),
+  turnaroundDays: z.number().int().min(1).optional().nullable(),
+  skillIds: z
+    .array(
+      z.object({
+        skillId: z.string(),
+        isMandatory: z.boolean().optional().default(true),
+        experience: z.number().min(0).optional().nullable(),
+      })
+    )
     .optional()
-    .transform((val) => (val ? parseInt(val, 10) : 25))
-    .pipe(z.number().int().min(1).max(100)),
+    .default([]),
 });
 
-export const getRequirementParamsSchema = z.object({
-  id: z.string(),
+const salaryRefinement = (d: {
+  salaryMin?: number | null;
+  salaryMax?: number | null;
+}) => !d.salaryMin || !d.salaryMax || d.salaryMax >= d.salaryMin;
+
+const salaryRefinementOpts = {
+  message: "salaryMax must be >= salaryMin",
+  path: ["salaryMax"],
+};
+
+// ── POST /requirements ────────────────────────────────────────────────────────
+
+export const createRequirementSchema = requirementBaseSchema.refine(
+  salaryRefinement,
+  salaryRefinementOpts
+);
+
+// ── PUT /requirements/:id ─────────────────────────────────────────────────────
+
+export const updateRequirementSchema = requirementBaseSchema
+  .omit({ clientId: true })
+  .partial()
+  .refine(salaryRefinement, salaryRefinementOpts);
+
+// ── PATCH /requirements/:id/status ───────────────────────────────────────────
+
+export const updateStatusSchema = z.object({
+  toStatus: z.enum([
+    "DRAFT",
+    "PENDING_APPROVAL",
+    "ACTIVE",
+    "ON_HOLD",
+    "CLOSED",
+    "CANCELLED",
+  ]),
+  reason: z.string().max(500).optional(),
 });
 
-export const approveRequirementParamsSchema = z.object({
-  id: z.string(),
-});
+// ── POST /requirements/:id/assign ─────────────────────────────────────────────
 
-export const approveRequirementBodySchema = z
+export const createAssignmentSchema = z
   .object({
-    deliveryLeadId: z.string().optional(),
-    teamLeadId: z.string().optional(),
+    type: z.enum(["MANAGER", "TEAM", "INDIVIDUAL"]),
+    recruiterId: z.string().optional().nullable(),
+    teamId: z.string().optional().nullable(),
+    teamMemberId: z.string().optional().nullable(),
+    parentAssignmentId: z.string().optional().nullable(),
+    allocatedOpenings: z.number().int().min(1).optional(),
+    deadline: z.string().datetime().optional().nullable(),
   })
-  .optional();
+  .refine(
+    (d) => {
+      if (d.type === "MANAGER" && !d.recruiterId) return false;
+      if (d.type === "TEAM" && !d.teamId) return false;
+      if (d.type === "INDIVIDUAL" && !d.recruiterId) return false;
+      return true;
+    },
+    {
+      message:
+        "recruiterId required for MANAGER/INDIVIDUAL; teamId required for TEAM",
+    }
+  );
 
-export const changeRequirementStatusParamsSchema = z.object({
-  id: z.string(),
+// ── PATCH /requirements/:id/assignments/:assignmentId ─────────────────────────
+
+export const updateAssignmentSchema = z.object({
+  allocatedOpenings: z.number().int().min(1).optional(),
+  deadline: z.string().datetime().optional().nullable(),
 });
 
-export const changeRequirementStatusBodySchema = z
-  .object({
-    status: z
-      .enum([
-        "DRAFT",
-        "PENDING_APPROVAL",
-        "ACTIVE",
-        "ON_HOLD",
-        "CLOSED",
-        "CANCELLED",
-      ])
-      .optional(),
-    reason: z.string().optional(),
-  })
-  .optional();
+// ── PATCH /requirements/:id/assignments/:assignmentId/progress ────────────────
 
-export const assignRequirementParamsSchema = z.object({
-  id: z.string(),
+export const updateProgressSchema = z.object({
+  submissionsCount: z.number().int().min(0).optional(),
+  interviewsCount: z.number().int().min(0).optional(),
+  filledOpenings: z.number().int().min(0).optional(),
 });
 
-export const assignRequirementBodySchema = z
-  .object({
-    assignmentType: z.enum(AssignmentType),
-    status: z.enum(AssignmentStatus).default("ACTIVE"),
-    recruiterId: z.string().optional(),
-    teamId: z.string().optional(),
-    allocatedOpenings: z.number().int().optional(),
-    isAutoRouted: z.boolean().optional(),
-    isSystemAssigned: z.boolean().optional(),
-  })
-  .optional();
+// ── POST /requirements/:id/notes ──────────────────────────────────────────────
 
-export const addNotesParamsSchema = z.object({
-  id: z.string(),
+export const addNoteSchema = z.object({
+  content: z.string().min(1).max(2000).trim(),
 });
 
-export const addNotesBodySchema = z.object({
-  notes: z.string(),
-});
+// ── GET /requirements/calendar ────────────────────────────────────────────────
 
-export const getRequirementStatusHistoryParamsSchema = z.object({
-  id: z.string(),
-});
-
-export const fillAssignmentParamsSchema = z.object({
-  id: z.string(),
-  assignmentId: z.string(),
-});
-
-export const fillAssignmentBodySchema = z.object({
-  filledOpenings: z.number().int().positive(),
-});
-
-export const uploadDocumentsParamsSchema = z.object({
-  id: z.string(),
-});
-
-export const uploadDocumentsBodySchema = z.object({
-  type: z.enum(DocumentEventType),
-});
-
-export const resolveIssuesParamsSchema = z.object({
-  id: z.string(),
-  documentId: z.string(),
+export const calendarSchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
 });

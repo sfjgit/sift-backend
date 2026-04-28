@@ -1,23 +1,60 @@
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
-// import { prisma } from "../lib/prisma";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERNAL: build tree from ASSIGNS_TO edges
+//
+// Given a flat list of teams (with their childEdges loaded),
+// derive parent→child relationships purely from ASSIGNS_TO edges
+// and return root nodes with nested children.
+//
+// A team is a ROOT if no other team in the list has an ASSIGNS_TO
+// edge pointing to it (no incoming ASSIGNS_TO within this arc).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildTreeFromEdges(teams: any[]): any[] {
+  // Map id → node with children array
+  const nodeMap = new Map<string, any>();
+  for (const t of teams) {
+    nodeMap.set(t.id, { ...t, children: [] });
+  }
+
+  // Track which team IDs are children (have an incoming ASSIGNS_TO)
+  const hasParent = new Set<string>();
+
+  for (const t of teams) {
+    for (const edge of t.childEdges ?? []) {
+      if (edge.edgeType === "ASSIGNS_TO" && nodeMap.has(edge.childId)) {
+        nodeMap.get(edge.childId)!; // ensure exists
+        nodeMap.get(t.id)!.children.push(nodeMap.get(edge.childId)!);
+        hasParent.add(edge.childId);
+      }
+    }
+  }
+
+  // Roots = teams with no incoming ASSIGNS_TO from within this arc
+  const roots: any[] = [];
+  for (const t of teams) {
+    if (!hasParent.has(t.id)) roots.push(nodeMap.get(t.id)!);
+  }
+
+  return roots;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /teams
-// Query: buId?, category?, nodeType?, isActive?, search?
-// Returns flat list + tree structure
+// Query: buId?, arcId?, category?, nodeType?, isActive?, search?
+// Returns flat list + tree built from ASSIGNS_TO edges
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getTeams = async (req: Request, res: Response) => {
   try {
-    const { buId, category, nodeType, isActive, search } = req.query as Record<
-      string,
-      string
-    >;
+    const { buId, arcId, category, nodeType, isActive, search } =
+      req.query as Record<string, string>;
 
     const where: any = {};
-
     if (buId) where.businessUnitId = buId;
+    if (arcId) where.teamArcId = arcId;
     if (category) where.category = category;
     if (nodeType) where.nodeType = nodeType;
     if (isActive !== undefined) where.isActive = isActive === "true";
@@ -32,10 +69,11 @@ export const getTeams = async (req: Request, res: Response) => {
         isActive: true,
         nodeType: true,
         category: true,
-        parentTeamId: true,
         businessUnitId: true,
+        teamArcId: true,
         createdAt: true,
         businessUnit: { select: { id: true, name: true } },
+        teamArc: { select: { id: true, name: true } },
         _count: {
           select: { members: { where: { isActive: true } } },
         },
@@ -53,28 +91,33 @@ export const getTeams = async (req: Request, res: Response) => {
               },
             },
           },
-          orderBy: { teamRole: "asc" }, // LEAD before CO_LEAD
+          orderBy: { teamRole: "asc" },
+        },
+        childEdges: {
+          select: {
+            id: true,
+            edgeType: true,
+            isActive: true,
+            childId: true,
+            child: { select: { id: true, name: true, nodeType: true } },
+          },
+        },
+        parentEdges: {
+          select: {
+            id: true,
+            edgeType: true,
+            isActive: true,
+            parentId: true,
+            parent: { select: { id: true, name: true, nodeType: true } },
+          },
         },
       },
-      orderBy: [{ businessUnitId: "asc" }, { name: "asc" }],
+      orderBy: [{ teamArcId: "asc" }, { name: "asc" }],
     });
 
-    // Build tree client-side friendly — send flat + tree
-    const teamMap = new Map(
-      teams.map((t) => ({ ...t, children: [] as any[] })).map((t) => [t.id, t])
-    );
-    const roots: any[] = [];
+    const tree = buildTreeFromEdges(teams);
 
-    for (const team of teams) {
-      const node = teamMap.get(team.id)!;
-      if (team.parentTeamId && teamMap.has(team.parentTeamId)) {
-        teamMap.get(team.parentTeamId)!.children.push(node);
-      } else {
-        roots.push(node);
-      }
-    }
-
-    res.json({ success: true, data: roots, flat: teams });
+    res.json({ success: true, data: tree, flat: teams });
   } catch (err) {
     console.error("getTeams error:", err);
     res.status(500).json({ success: false, message: "Failed to fetch teams" });
@@ -83,18 +126,13 @@ export const getTeams = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /teams/:id
-// Full detail — members, edges, child teams, client assignments, req assignments
+// Full detail — members, edges, children, clients, reqs, history
+// "children" derived from ASSIGNS_TO childEdges
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getTeamById = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params as Record<string, string>;
-
-    if (!id) {
-      res.status(400).json({ success: false, message: "Team ID is required" });
-
-      return;
-    }
+    const { id } = req.params;
 
     const team = await prisma.team.findUnique({
       where: { id },
@@ -105,50 +143,14 @@ export const getTeamById = async (req: Request, res: Response) => {
         isActive: true,
         nodeType: true,
         category: true,
-        parentTeamId: true,
+        teamArcId: true,
         createdAt: true,
         updatedAt: true,
 
-        // BU
         businessUnit: { select: { id: true, name: true, isActive: true } },
+        teamArc: { select: { id: true, name: true, isActive: true } },
 
-        // Parent team (for breadcrumb/context)
-        parentTeam: {
-          select: {
-            id: true,
-            name: true,
-            nodeType: true,
-            category: true,
-            parentTeamId: true,
-            parentTeam: {
-              select: { id: true, name: true, nodeType: true },
-            },
-          },
-        },
-
-        // Direct child teams
-        childTeams: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            name: true,
-            nodeType: true,
-            category: true,
-            _count: { select: { members: { where: { isActive: true } } } },
-            members: {
-              where: { isActive: true, teamRole: { in: ["LEAD", "CO_LEAD"] } },
-              select: {
-                teamRole: true,
-                user: { select: { id: true, firstName: true, lastName: true } },
-              },
-              orderBy: { teamRole: "asc" },
-              take: 2,
-            },
-          },
-          orderBy: { name: "asc" },
-        },
-
-        // All active members with full user info
+        // Active members
         members: {
           where: { isActive: true },
           select: {
@@ -170,8 +172,7 @@ export const getTeamById = async (req: Request, res: Response) => {
           orderBy: [{ teamRole: "asc" }, { joinedAt: "asc" }],
         },
 
-        // TeamEdge — semantic relationships
-        // parentEdges = edges where THIS team is the child (edges coming in from parent)
+        // Incoming edges (this team is the child)
         parentEdges: {
           select: {
             id: true,
@@ -181,7 +182,7 @@ export const getTeamById = async (req: Request, res: Response) => {
             parent: { select: { id: true, name: true, nodeType: true } },
           },
         },
-        // childEdges = edges where THIS team is the parent (edges going out to children)
+        // Outgoing edges (this team is the parent)
         childEdges: {
           select: {
             id: true,
@@ -192,10 +193,8 @@ export const getTeamById = async (req: Request, res: Response) => {
           },
         },
 
-        // Visibility config
         visibilityConfig: true,
 
-        // Clients this team is assigned to
         clientAssignments: {
           select: {
             assignedAt: true,
@@ -219,7 +218,6 @@ export const getTeamById = async (req: Request, res: Response) => {
           orderBy: { assignedAt: "desc" },
         },
 
-        // Active requirement assignments to this team
         requirementAssignments: {
           where: { status: "ACTIVE" },
           select: {
@@ -254,7 +252,6 @@ export const getTeamById = async (req: Request, res: Response) => {
           take: 30,
         },
 
-        // Member history — last 30 events
         memberHistories: {
           select: {
             id: true,
@@ -272,13 +269,13 @@ export const getTeamById = async (req: Request, res: Response) => {
           take: 30,
         },
 
-        // Counts
         _count: {
           select: {
             members: { where: { isActive: true } },
-            childTeams: { where: { isActive: true } },
             clientAssignments: true,
             requirementAssignments: { where: { status: "ACTIVE" } },
+            // child count = teams this team has ASSIGNS_TO edges to
+            childEdges: { where: { edgeType: "ASSIGNS_TO", isActive: true } },
           },
         },
       },
@@ -289,7 +286,47 @@ export const getTeamById = async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data: team });
+    // Derive "parent teams" from incoming ASSIGNS_TO edges
+    const parentTeams = team.parentEdges
+      .filter((e) => e.edgeType === "ASSIGNS_TO")
+      .map((e) => e.parent);
+
+    // Derive "child teams" from outgoing ASSIGNS_TO edges — fetch their member counts
+    const childTeamIds = team.childEdges
+      .filter((e) => e.edgeType === "ASSIGNS_TO")
+      .map((e) => e.childId);
+
+    let childTeams: any[] = [];
+    if (childTeamIds.length > 0) {
+      childTeams = await prisma.team.findMany({
+        where: { id: { in: childTeamIds }, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          nodeType: true,
+          category: true,
+          _count: { select: { members: { where: { isActive: true } } } },
+          members: {
+            where: { isActive: true, teamRole: { in: ["LEAD", "CO_LEAD"] } },
+            select: {
+              teamRole: true,
+              user: { select: { id: true, firstName: true, lastName: true } },
+            },
+            orderBy: { teamRole: "asc" },
+            take: 2,
+          },
+        },
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...team,
+        parentTeams, // replaces old parentTeam (single) — now can have multiple
+        childTeams,
+      },
+    });
   } catch (err) {
     console.error("getTeamById error:", err);
     res.status(500).json({ success: false, message: "Failed to fetch team" });
@@ -298,72 +335,45 @@ export const getTeamById = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /teams
-// Creates team. If parentTeamId provided → auto-creates 3 TeamEdge rows (isActive: false)
+// Creates a standalone team. No parentTeamId.
+// Link it to other teams by creating edges via POST /teams/:id/edges
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const createTeam = async (req: Request, res: Response) => {
   try {
-    const {
-      name,
-      description,
-      nodeType,
-      category,
-      businessUnitId,
-      parentTeamId,
-    } = req.body;
+    const { name, description, nodeType, category, businessUnitId, teamArcId } =
+      req.body;
 
-    const team = await prisma.$transaction(async (tx) => {
-      const created = await tx.team.create({
-        data: {
-          name,
-          description: description ?? null,
-          nodeType: nodeType ?? "GROUP",
-          category: category ?? null,
-          businessUnitId: businessUnitId ?? null,
-          parentTeamId: parentTeamId ?? null,
-        },
-        select: {
-          id: true,
-          name: true,
-          nodeType: true,
-          category: true,
-          isActive: true,
-          parentTeamId: true,
-          businessUnitId: true,
-          createdAt: true,
-          businessUnit: { select: { id: true, name: true } },
-          parentTeam: { select: { id: true, name: true } },
-        },
-      });
+    const arc = await prisma.teamArc.findUnique({
+      where: { id: teamArcId },
+      select: { id: true, businessUnitId: true },
+    });
+    if (!arc) {
+      res.status(404).json({ success: false, message: "Team arc not found" });
+      return;
+    }
 
-      // Auto-create 3 TeamEdge rows if parent provided
-      if (parentTeamId) {
-        await tx.teamEdge.createMany({
-          data: [
-            {
-              parentId: parentTeamId,
-              childId: created.id,
-              edgeType: "ASSIGNS_TO",
-              isActive: false,
-            },
-            {
-              parentId: parentTeamId,
-              childId: created.id,
-              edgeType: "REPORTS_TO",
-              isActive: false,
-            },
-            {
-              parentId: parentTeamId,
-              childId: created.id,
-              edgeType: "VISIBILITY",
-              isActive: false,
-            },
-          ],
-          skipDuplicates: true,
-        });
-      }
-
-      return created;
+    const team = await prisma.team.create({
+      data: {
+        name,
+        description: description ?? null,
+        nodeType: nodeType ?? "GROUP",
+        category: category ?? null,
+        businessUnitId: businessUnitId ?? arc.businessUnitId,
+        teamArcId,
+      },
+      select: {
+        id: true,
+        name: true,
+        nodeType: true,
+        category: true,
+        isActive: true,
+        teamArcId: true,
+        businessUnitId: true,
+        createdAt: true,
+        businessUnit: { select: { id: true, name: true } },
+        teamArc: { select: { id: true, name: true } },
+      },
     });
 
     res
@@ -383,98 +393,57 @@ export const createTeam = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /teams/:id
-// Update team. If parentTeamId changes → delete old 3 edges, create 3 new ones
+// Update name, description, nodeType, category, isActive, teamArcId.
+// No parentTeamId — use edge endpoints to change links.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateTeam = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, description, nodeType, category, isActive, parentTeamId } =
+    const { name, description, nodeType, category, isActive, teamArcId } =
       req.body;
 
     const existing = await prisma.team.findUnique({
       where: { id },
-      select: { id: true, parentTeamId: true },
+      select: { id: true, teamArcId: true },
     });
-
     if (!existing) {
       res.status(404).json({ success: false, message: "Team not found" });
       return;
     }
 
-    const parentChanged =
-      "parentTeamId" in req.body && parentTeamId !== existing.parentTeamId;
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const team = await tx.team.update({
-        where: { id },
-        data: {
-          ...(name !== undefined && { name }),
-          ...(description !== undefined && { description }),
-          ...(nodeType !== undefined && { nodeType }),
-          ...(category !== undefined && { category }),
-          ...(isActive !== undefined && { isActive }),
-          ...(parentChanged && { parentTeamId: parentTeamId ?? null }),
-        },
-        select: {
-          id: true,
-          name: true,
-          nodeType: true,
-          category: true,
-          isActive: true,
-          parentTeamId: true,
-          businessUnit: { select: { id: true, name: true } },
-          parentTeam: { select: { id: true, name: true } },
-          updatedAt: true,
-        },
-      });
-
-      // Rebuild edges if parent changed
-      if (parentChanged) {
-        // Delete old edges for old parent
-        if (existing.parentTeamId) {
-          await tx.teamEdge.deleteMany({
-            where: {
-              OR: [
-                { parentId: existing.parentTeamId, childId: id },
-                { parentId: id, childId: existing.parentTeamId },
-              ],
-            },
-          });
-        }
-
-        // Create 3 new edges for new parent (inactive by default)
-        if (parentTeamId) {
-          await tx.teamEdge.createMany({
-            data: [
-              {
-                parentId: parentTeamId,
-                childId: id,
-                edgeType: "ASSIGNS_TO",
-                isActive: false,
-              },
-              {
-                parentId: parentTeamId,
-                childId: id,
-                edgeType: "REPORTS_TO",
-                isActive: false,
-              },
-              {
-                parentId: parentTeamId,
-                childId: id,
-                edgeType: "VISIBILITY",
-                isActive: false,
-              },
-            ],
-            skipDuplicates: true,
-          });
-        }
+    if (teamArcId && teamArcId !== existing.teamArcId) {
+      const arc = await prisma.teamArc.findUnique({ where: { id: teamArcId } });
+      if (!arc) {
+        res.status(404).json({ success: false, message: "Team arc not found" });
+        return;
       }
+    }
 
-      return team;
+    const team = await prisma.team.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(description !== undefined && { description }),
+        ...(nodeType !== undefined && { nodeType }),
+        ...(category !== undefined && { category }),
+        ...(isActive !== undefined && { isActive }),
+        ...(teamArcId !== undefined && { teamArcId }),
+      },
+      select: {
+        id: true,
+        name: true,
+        nodeType: true,
+        category: true,
+        isActive: true,
+        teamArcId: true,
+        updatedAt: true,
+        businessUnit: { select: { id: true, name: true } },
+        teamArc: { select: { id: true, name: true } },
+      },
     });
 
-    res.json({ success: true, message: "Team updated", data: updated });
+    res.json({ success: true, message: "Team updated", data: team });
   } catch (err: any) {
     console.error("updateTeam error:", err);
     if (err.code === "P2002") {
@@ -489,7 +458,8 @@ export const updateTeam = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /teams/:id
-// Blocked if has active members or active requirement assignments
+// Blocked if has active members or active requirement assignments.
+// Edges are cascade-deleted by Prisma (onDelete: Cascade on TeamEdge).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const deleteTeam = async (req: Request, res: Response) => {
@@ -505,12 +475,11 @@ export const deleteTeam = async (req: Request, res: Response) => {
           select: {
             members: { where: { isActive: true } },
             requirementAssignments: { where: { status: "ACTIVE" } },
-            childTeams: { where: { isActive: true } },
+            childEdges: { where: { edgeType: "ASSIGNS_TO", isActive: true } },
           },
         },
       },
     });
-
     if (!team) {
       res.status(404).json({ success: false, message: "Team not found" });
       return;
@@ -523,25 +492,22 @@ export const deleteTeam = async (req: Request, res: Response) => {
       });
       return;
     }
-
     if (team._count.requirementAssignments > 0) {
       res.status(409).json({
         success: false,
-        message: `Cannot delete — team has ${team._count.requirementAssignments} active requirement assignment(s).`,
+        message: `Cannot delete — team has ${team._count.requirementAssignments} active assignment(s).`,
       });
       return;
     }
-
-    if (team._count.childTeams > 0) {
+    if (team._count.childEdges > 0) {
       res.status(409).json({
         success: false,
-        message: `Cannot delete — team has ${team._count.childTeams} active child team(s).`,
+        message: `Cannot delete — team has ${team._count.childEdges} active child link(s). Unlink them first.`,
       });
       return;
     }
 
     await prisma.team.delete({ where: { id } });
-
     res.json({ success: true, message: `Team "${team.name}" deleted` });
   } catch (err) {
     console.error("deleteTeam error:", err);
@@ -550,8 +516,76 @@ export const deleteTeam = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /teams/:id/edges
+// Create an edge between this team and a target team.
+// direction: "outgoing" = this team is parent (assigns to target)
+//            "incoming" = target is parent (assigns to this team)
+// When creating ASSIGNS_TO this effectively "links" two teams in the hierarchy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createTeamEdge = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { targetTeamId, edgeType, direction = "outgoing" } = req.body;
+
+    const parentId = direction === "outgoing" ? id : targetTeamId;
+    const childId = direction === "outgoing" ? targetTeamId : id;
+
+    const [parent, child] = await Promise.all([
+      prisma.team.findUnique({
+        where: { id: parentId },
+        select: { id: true, name: true },
+      }),
+      prisma.team.findUnique({
+        where: { id: childId },
+        select: { id: true, name: true },
+      }),
+    ]);
+    if (!parent || !child) {
+      res
+        .status(404)
+        .json({ success: false, message: "One or both teams not found" });
+      return;
+    }
+
+    // Prevent self-loop
+    if (parentId === childId) {
+      res
+        .status(400)
+        .json({
+          success: false,
+          message: "Cannot create edge from a team to itself",
+        });
+      return;
+    }
+
+    const edge = await prisma.teamEdge.upsert({
+      where: { parentId_childId_edgeType: { parentId, childId, edgeType } },
+      update: { isActive: true },
+      create: { parentId, childId, edgeType, isActive: true },
+      select: {
+        id: true,
+        edgeType: true,
+        isActive: true,
+        parentId: true,
+        childId: true,
+        parent: { select: { id: true, name: true } },
+        child: { select: { id: true, name: true } },
+      },
+    });
+
+    res
+      .status(201)
+      .json({ success: true, message: "Edge created", data: edge });
+  } catch (err) {
+    console.error("createTeamEdge error:", err);
+    res.status(500).json({ success: false, message: "Failed to create edge" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PATCH /teams/:id/edges/:edgeId
-// Toggle a single edge isActive
+// Toggle a single edge isActive on/off.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateTeamEdge = async (req: Request, res: Response) => {
@@ -590,8 +624,73 @@ export const updateTeamEdge = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DELETE /teams/:id/edges/:edgeId
+// Hard-delete an edge. This IS the "unlink" operation.
+// Logs to TeamUnlinkHistory when deleting an ASSIGNS_TO edge.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const deleteTeamEdge = async (req: Request, res: Response) => {
+  try {
+    const { edgeId } = req.params;
+    const actorId = (req as any).user?.id;
+
+    const edge = await prisma.teamEdge.findUnique({
+      where: { id: edgeId },
+      select: { id: true, parentId: true, childId: true, edgeType: true },
+    });
+    if (!edge) {
+      res.status(404).json({ success: false, message: "Edge not found" });
+      return;
+    }
+
+    // Count active assignments affected (only relevant for ASSIGNS_TO)
+    let pendingCount = 0;
+    if (edge.edgeType === "ASSIGNS_TO") {
+      pendingCount = await prisma.requirementAssignment.count({
+        where: {
+          OR: [
+            { teamId: edge.childId, status: "ACTIVE" },
+            { teamId: edge.parentId, status: "ACTIVE" },
+          ],
+        },
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.teamEdge.delete({ where: { id: edgeId } });
+
+      // Log unlink history only for ASSIGNS_TO (structural link)
+      if (edge.edgeType === "ASSIGNS_TO" && actorId) {
+        await tx.teamUnlinkHistory.create({
+          data: {
+            teamId: edge.childId,
+            unlinkedFromTeamId: edge.parentId,
+            unlinkedById: actorId,
+            pendingAssignmentsCount: pendingCount,
+          },
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: "Edge deleted",
+      ...(pendingCount > 0 && {
+        warning: `${pendingCount} active assignment(s) may be affected by this unlink`,
+      }),
+    });
+  } catch (err: any) {
+    console.error("deleteTeamEdge error:", err);
+    if (err.code === "P2025") {
+      res.status(404).json({ success: false, message: "Edge not found" });
+      return;
+    }
+    res.status(500).json({ success: false, message: "Failed to delete edge" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /teams/:id/members
-// Add one or more members. Writes TeamMemberHistory (JOINED).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const addTeamMembers = async (req: Request, res: Response) => {
@@ -605,13 +704,6 @@ export const addTeamMembers = async (req: Request, res: Response) => {
     };
     const actorId = (req as any).user?.id;
 
-    if (!members?.length) {
-      res
-        .status(400)
-        .json({ success: false, message: "members[] is required" });
-      return;
-    }
-
     const team = await prisma.team.findUnique({
       where: { id },
       select: { id: true },
@@ -624,7 +716,6 @@ export const addTeamMembers = async (req: Request, res: Response) => {
     const results = await prisma.$transaction(async (tx) => {
       const created = [];
       for (const m of members) {
-        // Upsert — re-activates if previously removed
         const member = await tx.teamMember.upsert({
           where: { userId_teamId: { userId: m.userId, teamId: id } },
           create: {
@@ -677,10 +768,12 @@ export const addTeamMembers = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("addTeamMembers error:", err);
     if (err.code === "P2002") {
-      res.status(409).json({
-        success: false,
-        message: "One or more users are already members",
-      });
+      res
+        .status(409)
+        .json({
+          success: false,
+          message: "One or more users are already members",
+        });
       return;
     }
     res.status(500).json({ success: false, message: "Failed to add members" });
@@ -689,7 +782,6 @@ export const addTeamMembers = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /teams/:id/members/:userId/role
-// Change a member's teamRole
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateMemberRole = async (req: Request, res: Response) => {
@@ -697,15 +789,9 @@ export const updateMemberRole = async (req: Request, res: Response) => {
     const { id, userId } = req.params;
     const { teamRole } = req.body;
 
-    if (!["LEAD", "CO_LEAD", "MEMBER"].includes(teamRole)) {
-      res.status(400).json({ success: false, message: "Invalid teamRole" });
-      return;
-    }
-
     const member = await prisma.teamMember.findUnique({
       where: { userId_teamId: { userId, teamId: id } },
     });
-
     if (!member || !member.isActive) {
       res
         .status(404)
@@ -732,7 +818,7 @@ export const updateMemberRole = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /teams/:id/members/:userId
-// Soft-remove member. Writes TeamMemberHistory (LEFT).
+// Soft-remove. Writes TeamMemberHistory LEFT event.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const removeTeamMember = async (req: Request, res: Response) => {
@@ -745,7 +831,6 @@ export const removeTeamMember = async (req: Request, res: Response) => {
       where: { userId_teamId: { userId, teamId: id } },
       select: { id: true, isActive: true },
     });
-
     if (!member || !member.isActive) {
       res
         .status(404)
@@ -763,7 +848,6 @@ export const removeTeamMember = async (req: Request, res: Response) => {
           deactivationReason: reason ?? null,
         },
       });
-
       await tx.teamMemberHistory.create({
         data: {
           teamMemberId: member.id,
@@ -787,7 +871,6 @@ export const removeTeamMember = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /teams/:id/members
-// Returns active members with full user details
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getTeamMembers = async (req: Request, res: Response) => {
@@ -798,7 +881,6 @@ export const getTeamMembers = async (req: Request, res: Response) => {
       where: { id },
       select: { id: true, name: true },
     });
-
     if (!team) {
       res.status(404).json({ success: false, message: "Team not found" });
       return;
@@ -837,7 +919,6 @@ export const getTeamMembers = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /teams/:id/available-users
-// Users in the same BU who are NOT already active members of this team
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getAvailableUsers = async (req: Request, res: Response) => {
@@ -849,13 +930,11 @@ export const getAvailableUsers = async (req: Request, res: Response) => {
       where: { id },
       select: { businessUnitId: true },
     });
-
     if (!team) {
       res.status(404).json({ success: false, message: "Team not found" });
       return;
     }
 
-    // Current active member userIds
     const existing = await prisma.teamMember.findMany({
       where: { teamId: id, isActive: true },
       select: { userId: true },
@@ -894,5 +973,297 @@ export const getAvailableUsers = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch available users" });
+  }
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ARC CONTROLLERS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /arcs
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getArcs = async (req: Request, res: Response) => {
+  try {
+    const { buId, isActive, search } = req.query as Record<string, string>;
+
+    const where: any = {};
+    if (buId) where.businessUnitId = buId;
+    if (isActive !== undefined) where.isActive = isActive === "true";
+    if (search) where.name = { contains: search, mode: "insensitive" };
+
+    const arcs = await prisma.teamArc.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        businessUnit: { select: { id: true, name: true } },
+        _count: { select: { teams: { where: { isActive: true } } } },
+        // Root teams = teams in this arc with no incoming ASSIGNS_TO
+        // We can't filter that in Prisma without a raw query, so return all
+        // and let the frontend determine roots from edges
+        teams: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            name: true,
+            nodeType: true,
+            category: true,
+            _count: { select: { members: { where: { isActive: true } } } },
+            parentEdges: {
+              where: { edgeType: "ASSIGNS_TO" },
+              select: { parentId: true },
+            },
+          },
+        },
+      },
+      orderBy: [{ businessUnitId: "asc" }, { name: "asc" }],
+    });
+
+    // Tag root teams server-side for convenience
+    const arcsWithRoots = arcs.map((arc) => ({
+      ...arc,
+      rootTeams: arc.teams.filter((t) => t.parentEdges.length === 0),
+    }));
+
+    res.json({ success: true, data: arcsWithRoots });
+  } catch (err) {
+    console.error("getArcs error:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch arcs" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /arcs/:id
+// Full arc — all teams with edges, tree built from ASSIGNS_TO
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getArcById = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const arc = await prisma.teamArc.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        businessUnit: { select: { id: true, name: true, isActive: true } },
+        _count: { select: { teams: { where: { isActive: true } } } },
+      },
+    });
+    if (!arc) {
+      res.status(404).json({ success: false, message: "Arc not found" });
+      return;
+    }
+
+    const teams = await prisma.team.findMany({
+      where: { teamArcId: id, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        nodeType: true,
+        category: true,
+        createdAt: true,
+        _count: { select: { members: { where: { isActive: true } } } },
+        members: {
+          where: { isActive: true, teamRole: { in: ["LEAD", "CO_LEAD"] } },
+          select: {
+            teamRole: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+              },
+            },
+          },
+          orderBy: { teamRole: "asc" },
+        },
+        // All edges for layout + display
+        parentEdges: {
+          select: {
+            id: true,
+            edgeType: true,
+            isActive: true,
+            parentId: true,
+            parent: { select: { id: true, name: true, nodeType: true } },
+          },
+        },
+        childEdges: {
+          select: {
+            id: true,
+            edgeType: true,
+            isActive: true,
+            childId: true,
+            child: { select: { id: true, name: true, nodeType: true } },
+          },
+        },
+      },
+      orderBy: { name: "asc" },
+    });
+
+    // Build tree from ASSIGNS_TO edges
+    const tree = buildTreeFromEdges(teams);
+
+    res.json({
+      success: true,
+      data: {
+        ...arc,
+        tree, // top-down hierarchy derived from ASSIGNS_TO
+        flat: teams,
+      },
+    });
+  } catch (err) {
+    console.error("getArcById error:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch arc" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /arcs
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createArc = async (req: Request, res: Response) => {
+  try {
+    const { name, description, businessUnitId } = req.body;
+
+    const bu = await prisma.businessUnit.findUnique({
+      where: { id: businessUnitId },
+    });
+    if (!bu) {
+      res
+        .status(404)
+        .json({ success: false, message: "Business unit not found" });
+      return;
+    }
+
+    const arc = await prisma.teamArc.create({
+      data: {
+        name,
+        description: description ?? null,
+        businessUnitId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        createdAt: true,
+        businessUnit: { select: { id: true, name: true } },
+      },
+    });
+
+    res.status(201).json({ success: true, message: "Arc created", data: arc });
+  } catch (err: any) {
+    console.error("createArc error:", err);
+    if (err.code === "P2002") {
+      res
+        .status(409)
+        .json({
+          success: false,
+          message: "Arc name already exists in this BU",
+        });
+      return;
+    }
+    res.status(500).json({ success: false, message: "Failed to create arc" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /arcs/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateArc = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, description, isActive } = req.body;
+
+    const existing = await prisma.teamArc.findUnique({ where: { id } });
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Arc not found" });
+      return;
+    }
+
+    const arc = await prisma.teamArc.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(description !== undefined && { description }),
+        ...(isActive !== undefined && { isActive }),
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        isActive: true,
+        updatedAt: true,
+        businessUnit: { select: { id: true, name: true } },
+      },
+    });
+
+    res.json({ success: true, message: "Arc updated", data: arc });
+  } catch (err: any) {
+    console.error("updateArc error:", err);
+    if (err.code === "P2002") {
+      res
+        .status(409)
+        .json({
+          success: false,
+          message: "Arc name already exists in this BU",
+        });
+      return;
+    }
+    res.status(500).json({ success: false, message: "Failed to update arc" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /arcs/:id
+// Blocked if has active teams
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const deleteArc = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const arc = await prisma.teamArc.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        _count: { select: { teams: { where: { isActive: true } } } },
+      },
+    });
+    if (!arc) {
+      res.status(404).json({ success: false, message: "Arc not found" });
+      return;
+    }
+
+    if (arc._count.teams > 0) {
+      res.status(409).json({
+        success: false,
+        message: `Cannot delete — arc has ${arc._count.teams} active team(s). Remove or reassign them first.`,
+      });
+      return;
+    }
+
+    await prisma.teamArc.delete({ where: { id } });
+    res.json({ success: true, message: `Arc "${arc.name}" deleted` });
+  } catch (err) {
+    console.error("deleteArc error:", err);
+    res.status(500).json({ success: false, message: "Failed to delete arc" });
   }
 };
