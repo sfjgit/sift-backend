@@ -1,87 +1,52 @@
-import {
-  createBusinessUnit,
-  getAllBusinessUnits,
-  getBusinessUnitTree,
-  getSingleBusinessUnit,
-  updateBusinessUnit,
-} from "@/controller/businessUnit.controller";
-import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/role";
-import {
-  createBusinessUnitSchema,
-  getBusinessUnitTreeSchema,
-  getSingleBusinessUnitParamsSchema,
-  updateBusinessUnitBodySchema,
-  updateBusinessUnitParamsSchema,
-} from "@/validators/businessUnit.validators";
-import { validate } from "@/validators/validator";
 import { Router } from "express";
+import { authenticateUser } from "@/middleware/auth";
+import {
+  scopeFilter,
+  checkPermission,
+} from "@/middleware/scopeFilter.middleware";
+// import { validate } from "@/middleware/validate";
+import {
+  createBUBody,
+  updateBUBody,
+  buIdParams,
+} from "@/validators/bu.validator";
+import {
+  listBusinessUnits,
+  getBusinessUnitById,
+  createBusinessUnit,
+  updateBusinessUnit,
+  deleteBusinessUnit,
+} from "@/controller/bu.controller";
+import { validate } from "@/validators/validator";
 
 const router = Router();
 
-/**
- * @route   POST /api/business-units
- * @desc    Create new business unit
- * @access  Super Admin
- */
+router.use(authenticateUser);
+router.use(scopeFilter("business_units"));
+
+router.get("/", listBusinessUnits);
+
 router.post(
   "/",
-  authenticateUser,
-  authorize("business_units", "canAdd"),
-  validate.body(createBusinessUnitSchema),
-  createBusinessUnit,
+  checkPermission("canAdd"),
+  validate.body(createBUBody),
+  createBusinessUnit
 );
 
-/**
- * @route   GET /api/business-units
- * @desc    Get all business units
- * @access  Admin
- */
-router.get(
-  "/",
-  authenticateUser,
-  authorize("business_units", "canView"),
-  getAllBusinessUnits,
-);
+router.get("/:id", validate.params(buIdParams), getBusinessUnitById);
 
-/**
- * @route   GET /api/business-units/:id
- * @desc    Get single business unit by id
- * @access  Admin
- */
-router.get(
+router.put(
   "/:id",
-  authenticateUser,
-  authorize("business_units", "canView"),
-  validate.params(getSingleBusinessUnitParamsSchema),
-  getSingleBusinessUnit,
+  checkPermission("canEdit"),
+  validate.request({ params: buIdParams, body: updateBUBody }),
+  updateBusinessUnit
 );
 
-/**
- * @route   PATCH /api/business-units/:id
- * @desc    Update BU name or parent
- * @access  Super Admin
- */
-router.patch(
+router.delete(
   "/:id",
-  authenticateUser,
-  authorize("business_units", "canEdit"),
-  validate.params(updateBusinessUnitParamsSchema),
-  validate.body(updateBusinessUnitBodySchema),
-  updateBusinessUnit,
-);
-
-/**
- * @route   GET /api/business-units/:id/tree
- * @desc    Get BU tree
- * @access  Admin
- */
-router.get(
-  "/:id/tree",
-  authenticateUser,
-  authorize("business_units", "canView"),
-  validate.params(getBusinessUnitTreeSchema),
-  getBusinessUnitTree,
+  checkPermission("canDelete"),
+  validate.params(buIdParams),
+  deleteBusinessUnit
 );
 
 export default router;

@@ -1,71 +1,100 @@
 import { z } from "zod";
-import { TeamRole } from "@prisma/client";
 
-export const createTeamSchema = z.object({
-  name: z
-    .string()
-    .min(2, { message: "Name must be at least 2 characters long" }),
-  description: z
-    .string()
-    .min(2, { message: "Description must be at least 2 characters long" }),
-  isActive: z.boolean().default(true),
-  category: z.string().optional(),
-  parentTeamId: z.string().optional(),
-  businessUnitId: z.string().min(1),
-});
+const uuid = z.string().min(1).max(100);
+
+const teamRoleEnum = z.enum(["LEAD", "CO_LEAD", "MEMBER"]);
+const nodeTypeEnum = z.enum(["MANAGEMENT", "GROUP", "INDIVIDUAL"]);
+const categoryEnum = z.enum(["DELIVERY", "SALES", "SUPPORT", "MANAGEMENT"]);
+const edgeTypeEnum = z.enum(["ASSIGNS_TO", "REPORTS_TO", "VISIBILITY"]);
+
+// ── GET /teams ───────────────────────────────────────────────────────────────
 
 export const getTeamsSchema = z.object({
-  name: z.string().optional(),
-  isActive: z
-    .string()
-    .transform((val) => val === "true")
-    .optional(),
-  category: z.string().optional(),
-  parentTeamId: z.string().optional(),
-  businessUnitId: z.string().optional(),
-  search: z.string().optional(),
+  buId: uuid.optional(),
+  category: categoryEnum.optional(),
+  nodeType: nodeTypeEnum.optional(),
+  isActive: z.enum(["true", "false"]).optional(),
+  search: z.string().min(1).max(100).optional(),
 });
 
-export const getSingleTeamSchema = z.object({
-  id: z.string(),
+// ── GET /teams/:id ───────────────────────────────────────────────────────────
+
+export const getTeamByIdSchema = z.object({
+  id: uuid,
 });
 
-export const updateTeamsParamsSchema = z.object({
-  id: z.string(),
+// ── POST /teams ──────────────────────────────────────────────────────────────
+
+export const createTeamSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  description: z.string().max(500).optional().nullable(),
+  nodeType: nodeTypeEnum.optional().default("GROUP"),
+  category: categoryEnum.optional().nullable(),
+  businessUnitId: uuid.optional().nullable(),
+  parentTeamId: uuid.optional().nullable(),
 });
 
-export const updateTeamsBodySchema = z.object({
-  name: z
-    .string()
-    .min(2, { message: "Name must be at least 2 characters long" })
-    .optional(),
-  description: z
-    .string()
-    .min(2, { message: "Description must be at least 2 characters long" })
-    .optional(),
-  isActive: z.boolean().default(true).optional(),
-  category: z.string().optional(),
-  parentTeamId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
+// ── PUT /teams/:id ───────────────────────────────────────────────────────────
+
+export const updateTeamSchema = z.object({
+  name: z.string().min(1).max(100).trim().optional(),
+  description: z.string().max(500).optional().nullable(),
+  nodeType: nodeTypeEnum.optional(),
+  category: categoryEnum.optional().nullable(),
+  isActive: z.boolean().optional(),
+  parentTeamId: uuid.optional().nullable(),
 });
 
-export const addTeamMembersParamsSchema = z.object({
-  id: z.string(),
+// ── DELETE /teams/:id ────────────────────────────────────────────────────────
+
+export const deleteTeamSchema = z.object({
+  id: uuid,
 });
 
-export const addTeamMembersBodySchema = z.array(
-  z.object({
-    userId: z.string(),
-    teamRole: z.enum(TeamRole).optional(),
-    isActive: z.boolean().optional(),
-  })
-);
+// ── PATCH /teams/:id/edges/:edgeId ───────────────────────────────────────────
 
-export const removeTeamMembersParamsSchema = z.object({
-  id: z.string().uuid(),
-  userId: z.string().uuid(),
+export const updateTeamEdgeSchema = z.object({
+  isActive: z.boolean(),
 });
 
-export const getTeamMembersParamsSchema = z.object({
-  id: z.string().uuid(),
+// ── POST /teams/:id/members ──────────────────────────────────────────────────
+
+export const addTeamMembersSchema = z.object({
+  members: z
+    .array(
+      z.object({
+        userId: uuid,
+        teamRole: teamRoleEnum.optional().default("MEMBER"),
+      })
+    )
+    .min(1, "At least one member required")
+    .max(50, "Cannot add more than 50 members at once"),
+});
+
+// ── PATCH /teams/:id/members/:userId/role ────────────────────────────────────
+
+export const updateMemberRoleSchema = z.object({
+  id: uuid.optional(), // params
+  userId: uuid.optional(), // params
+  teamRole: teamRoleEnum, // body
+});
+
+// ── DELETE /teams/:id/members/:userId ────────────────────────────────────────
+
+export const removeTeamMemberSchema = z.object({
+  id: uuid,
+  userId: uuid,
+  reason: z.string().max(500).optional(),
+});
+
+// ── GET /teams/:id/members ───────────────────────────────────────────────────
+
+export const getTeamMembersSchema = z.object({
+  id: uuid,
+});
+
+// ── GET /teams/:id/available-users ───────────────────────────────────────────
+
+export const getAvailableUsersSchema = z.object({
+  id: uuid,
 });

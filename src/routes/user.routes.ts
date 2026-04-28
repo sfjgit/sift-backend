@@ -1,104 +1,74 @@
-import {
-  deactivateUser,
-  getAllUsers,
-  getSingleUser,
-  reportingManager,
-  subordinates,
-  updateUsers,
-} from "@/controller/user.controller";
-import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/role";
-import {
-  deactivateUserParamsSchema,
-  getAllUsersSchema,
-  getSingleUsersSchema,
-  reportingManagerSchema,
-  userIdParamsSchema,
-  userUpdateBodySchema,
-} from "@/validators/user.validators";
-import { validate } from "@/validators/validator";
 import { Router } from "express";
+import { authenticateUser } from "@/middleware/auth";
+import {
+  scopeFilter,
+  checkPermission,
+} from "@/middleware/scopeFilter.middleware";
+import {
+  createUserBody,
+  updateUserBody,
+  deactivateUserBody,
+  userIdParams,
+  listUsersQuery,
+} from "@/validators/user.validators";
+import {
+  listUsers,
+  getUserById,
+  createUser,
+  updateUser,
+  deactivateUser,
+  reactivateUser,
+  getUserFormData,
+  searchUsers,
+} from "@/controller/user.controller";
+import { validate } from "@/validators/validator";
 
 const router = Router();
 
-/**
- * @route   POST /api/user
- * @desc    get all user
- * @access  Super Admin,admin
- */
-router.get(
+// All routes: auth → scope → permission check → validate → controller
+router.use(authenticateUser);
+router.use(scopeFilter("users"));
+
+// ── Utility — before /:id ────────────────────────────────────────────────────
+router.get("/form-data", getUserFormData);
+router.get("/search", searchUsers);
+
+// ── List ─────────────────────────────────────────────────────────────────────
+router.get("/", validate.query(listUsersQuery), listUsers);
+
+// ── Create ───────────────────────────────────────────────────────────────────
+router.post(
   "/",
-  authenticateUser,
-  authorize("users", "canView"),
-  validate.query(getAllUsersSchema),
-  getAllUsers,
+  checkPermission("canAdd"),
+  validate.body(createUserBody),
+  createUser
 );
 
-/**
- * @route   Get /api/user/:id
- * @desc    get single user
- * @access  Super Admin,admin
- */
-router.get(
+// ── Get by ID ────────────────────────────────────────────────────────────────
+router.get("/:id", validate.params(userIdParams), getUserById);
+
+// ── Update ───────────────────────────────────────────────────────────────────
+router.put(
   "/:id",
-  authenticateUser,
-  authorize("users", "canView"),
-  validate.params(getSingleUsersSchema),
-  getSingleUser,
+  checkPermission("canEdit"),
+  validate.request({ params: userIdParams, body: updateUserBody }),
+  updateUser
 );
 
-/**
- * @route   Patch /api/user/:id
- * @desc    update single user
- * @access  Super Admin,admin
- */
-router.patch(
-  "/:id",
-  authenticateUser,
-  authorize("users", "canEdit"),
-  validate.params(userIdParamsSchema),
-  validate.body(userUpdateBodySchema),
-  updateUsers,
-);
-
-/**
- * @route   PATCH /api/users/:id/deactivate
- * @desc    Deactivating the existing user
- * @access  Super Admin,admin
- */
-
-router.patch(
+// ── Deactivate ───────────────────────────────────────────────────────────────
+router.put(
   "/:id/deactivate",
-  authenticateUser,
-  authorize("users", "canEdit"),
-  validate.params(deactivateUserParamsSchema),
-  deactivateUser,
+  checkPermission("canDelete"),
+  validate.request({ params: userIdParams, body: deactivateUserBody }),
+  deactivateUser
 );
 
-/**
- * @route   PATCH /api/users/:id/reporting-to
- * @desc    Adding the reporting manager
- * @access  Super Admin,admin
- */
-router.patch(
-  "/:id/reporting-to",
-  authenticateUser,
-  authorize("users", "canEdit"),
-  validate.params(userIdParamsSchema),
-  validate.body(reportingManagerSchema),
-  reportingManager,
+// ── Reactivate ───────────────────────────────────────────────────────────────
+router.put(
+  "/:id/reactivate",
+  checkPermission("canDelete"),
+  validate.params(userIdParams),
+  reactivateUser
 );
 
-// /**
-//  * @route   GET /api/users/:id/subordinates
-//  * @desc    Fetching subordinates
-//  * @access  Super Admin,admin,users
-//  */
-router.get(
-  "/:id/subordinates",
-  authenticateUser,
-  authorize("users", "canView"),
-  validate.params(userIdParamsSchema),
-  subordinates,
-);
 export default router;

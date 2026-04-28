@@ -1,136 +1,113 @@
-import { MODULES } from "@/constants/scopes";
-import {
-  addTeamMembers,
-  createTeam,
-  deleteTeams,
-  getAllTeamMembers,
-  getSingleTeam,
-  getTeams,
-  removeTeamMembers,
-  updateTeams,
-} from "@/controller/team.controller";
-import { authenticateUser } from "@/middleware/auth";
-import { checkPermission } from "@/middleware/checkPermission";
-import { authorize } from "@/middleware/role";
-import {
-  addTeamMembersBodySchema,
-  addTeamMembersParamsSchema,
-  createTeamSchema,
-  getSingleTeamSchema,
-  getTeamMembersParamsSchema,
-  getTeamsSchema,
-  removeTeamMembersParamsSchema,
-  updateTeamsBodySchema,
-  updateTeamsParamsSchema,
-} from "@/validators/team.validators";
-import { validate, validateParams } from "@/validators/validator";
 import { Router } from "express";
+import { authenticateUser } from "@/middleware/auth";
+import { validate } from "@/validators/validator";
+import {
+  getTeamsSchema,
+  getTeamByIdSchema,
+  createTeamSchema,
+  updateTeamSchema,
+  deleteTeamSchema,
+  updateTeamEdgeSchema,
+  addTeamMembersSchema,
+  updateMemberRoleSchema,
+  removeTeamMemberSchema,
+  getTeamMembersSchema,
+  getAvailableUsersSchema,
+} from "@/validators/team.validators";
+import {
+  getTeams,
+  getTeamById,
+  createTeam,
+  updateTeam,
+  deleteTeam,
+  updateTeamEdge,
+  addTeamMembers,
+  updateMemberRole,
+  removeTeamMember,
+  getTeamMembers,
+  getAvailableUsers,
+} from "@/controller/team.controller";
 
 const router = Router();
 
-/**
- * @route   POST /api/teams
- * @desc    Create new team
- * @access  Admin
- */
-router.post(
-  "/",
-  authenticateUser,
-  // authorize("teams", "canAdd"),
-  checkPermission(MODULES.TEAMS, "canView"),
-  validate.body(createTeamSchema),
-  createTeam
-);
+// ── Collection ──────────────────────────────────────────────────────────────
 
-/**
- * @route   GET /api/teams
- * @desc    Get all teams
- * @access  Admin
- */
-router.get(
-  "/",
-  authenticateUser,
-  authorize("teams", "canView"),
-  validate.query(getTeamsSchema),
-  getTeams
-);
+router.get("/", authenticateUser, validate.query(getTeamsSchema), getTeams);
 
-/**
- * @route   GET /api/teams/:id
- * @desc    Get single team
- * @access  Admin
- */
+router.post("/", authenticateUser, validate.body(createTeamSchema), createTeam);
+
+// ── Single team ──────────────────────────────────────────────────────────────
+
 router.get(
   "/:id",
   authenticateUser,
-  authorize("teams", "canView"),
-  validate.params(getSingleTeamSchema),
-  getSingleTeam
+  validate.params(getTeamByIdSchema),
+  getTeamById
 );
 
-/**
- * @route   PATCH /api/teams/:id
- * @desc    Update teams
- * @access  Admin
- */
+router.put(
+  "/:id",
+  authenticateUser,
+  validate.params(getTeamByIdSchema),
+  validate.body(updateTeamSchema),
+  updateTeam
+);
+
+router.delete(
+  "/:id",
+  authenticateUser,
+  validate.params(deleteTeamSchema),
+  deleteTeam
+);
+
+// ── Edge management ──────────────────────────────────────────────────────────
+
 router.patch(
-  "/:id",
+  "/:id/edges/:edgeId",
   authenticateUser,
-  authorize("teams", "canEdit"),
-  validate.params(updateTeamsParamsSchema),
-  validate.body(updateTeamsBodySchema),
-  updateTeams
+  validate.body(updateTeamEdgeSchema),
+  updateTeamEdge
 );
 
-/**
- * @route   POST /api/teams/:id/members
- * @desc    Add team members
- * @access  Admin
- */
+// ── Member management ────────────────────────────────────────────────────────
+
+router.get(
+  "/:id/members",
+  authenticateUser,
+  validate.params(getTeamMembersSchema),
+  getTeamMembers
+);
+
 router.post(
   "/:id/members",
   authenticateUser,
-  authorize("teams", "canAdd"),
-  validate.params(addTeamMembersParamsSchema),
-  validate.body(addTeamMembersBodySchema),
+  validate.params(getTeamMembersSchema),
+  validate.body(addTeamMembersSchema),
   addTeamMembers
 );
 
-/**
- * @route   DELETE /api/teams/:id/members/:userId
- * @desc    Remove team members
- * @access  Admin
- */
+router.patch(
+  "/:id/members/:userId/role",
+  authenticateUser,
+  validate.params(updateMemberRoleSchema),
+  validate.body(updateMemberRoleSchema),
+  updateMemberRole
+);
+
 router.delete(
   "/:id/members/:userId",
   authenticateUser,
-  authorize("teams", "canDelete"),
-  validate.params(removeTeamMembersParamsSchema),
-  removeTeamMembers
+  validate.params(removeTeamMemberSchema),
+  removeTeamMember
 );
 
-/**
- * @route   GET /api/teams/:id/members
- * @desc    Get all team members
- * @access  Admin
- */
+// ── Available users for adding to team ───────────────────────────────────────
+
 router.get(
-  "/:id/members",
+  "/:id/available-users",
   authenticateUser,
-  authorize("teams", "canView"),
-  validate.params(getTeamMembersParamsSchema),
-  getAllTeamMembers
+  validate.params(getAvailableUsersSchema),
+  getAvailableUsers
 );
 
-/**
- * @route   DELETE /api/teams
- * @desc    delete team
- * @access  Admin
- */
-router.delete(
-  "/:id",
-  authenticateUser,
-  validateParams(updateTeamsParamsSchema),
-  deleteTeams
-);
 export default router;

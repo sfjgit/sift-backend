@@ -23,7 +23,7 @@ import { Request, Response, NextFunction } from "express";
 export const authenticateUser = async (
   req: Request,
   res: Response,
-  next: NextFunction,
+  next: NextFunction
 ) => {
   try {
     // Get access token from cookies or Authorization header
@@ -115,7 +115,7 @@ export const setTokenCookies = (
   res: Response,
   accessToken: string,
   refreshToken: string,
-  req: Request, // pass req in so we can inspect the origin
+  req: Request // pass req in so we can inspect the origin
 ) => {
   const origin = req.headers.origin || req.headers.referer || "";
 
@@ -136,7 +136,7 @@ export const setTokenCookies = (
   res.cookie("accessToken", accessToken, {
     ...base,
     httpOnly: false,
-    maxAge: 1 * 60 * 1000,
+    maxAge: 15 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {

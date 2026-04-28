@@ -1,68 +1,61 @@
-import {
-  createRole,
-  deleteRole,
-  getAllRoles,
-  getSingleRole,
-  setRolePermissions,
-} from "@/controller/role.controller";
-import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/role";
-import {
-  createRoleSchema,
-  deleteRoleSchema,
-  getSingleRoleSchema,
-  rolePermissionsBodySchema,
-  rolePermissionsParamsSchema,
-} from "@/validators/role.validators";
-import { validate } from "@/validators/validator";
 import { Router } from "express";
+import { authenticateUser } from "@/middleware/auth";
+import {
+  scopeFilter,
+  checkPermission,
+} from "@/middleware/scopeFilter.middleware";
+// import { validate } from "@/middleware/validate";
+import {
+  createRoleBody,
+  updateRoleBody,
+  roleIdParams,
+} from "@/validators/role.validator";
+import {
+  listRoles,
+  getRoleById,
+  createRole,
+  updateRole,
+  deleteRole,
+  getModules,
+} from "@/controller/role.controller";
+import { validate } from "@/validators/validator";
 
 const router = Router();
 
-/**
- * @route   POST /api/roles
- * @desc    Create new role
- * @access  Admin
- */
-router.post("/", authenticateUser, validate.body(createRoleSchema), createRole);
+router.use(authenticateUser);
+router.use(scopeFilter("settings")); // roles live under settings module
 
-/**
- * @route   GET /api/roles
- * @desc    Get all roles
- * @access  Super Admin
- */
-router.get("/", authenticateUser, getAllRoles);
+// ── Utility — before /:id ────────────────────────────────────────────────────
+router.get("/modules", getModules);
 
-/**
- * @route   GET /api/roles/:id
- * @desc    Get single role
- * @access  Super Admin
- */
-router.get(
-  "/:id",
-  authenticateUser,
-  validate.params(getSingleRoleSchema),
-  getSingleRole,
+// ── List ─────────────────────────────────────────────────────────────────────
+router.get("/", listRoles);
+
+// ── Create ───────────────────────────────────────────────────────────────────
+router.post(
+  "/",
+  checkPermission("canAdd"),
+  validate.body(createRoleBody),
+  createRole
 );
 
-/**
- * @route   DELETE /api/roles/:id
- * @desc    Delete role
- * @access  Super Admin
- */
+// ── Get by ID ────────────────────────────────────────────────────────────────
+router.get("/:id", validate.params(roleIdParams), getRoleById);
+
+// ── Update ───────────────────────────────────────────────────────────────────
+router.put(
+  "/:id",
+  checkPermission("canEdit"),
+  validate.request({ params: roleIdParams, body: updateRoleBody }),
+  updateRole
+);
+
+// ── Delete ───────────────────────────────────────────────────────────────────
 router.delete(
   "/:id",
-  authenticateUser,
-  validate.params(deleteRoleSchema),
-  deleteRole,
-);
-
-router.put(
-  "/:id/permissions",
-  authenticateUser,
-  validate.params(rolePermissionsParamsSchema),
-  validate.body(rolePermissionsBodySchema),
-  setRolePermissions,
+  checkPermission("canDelete"),
+  validate.params(roleIdParams),
+  deleteRole
 );
 
 export default router;
