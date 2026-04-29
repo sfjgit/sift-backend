@@ -97,7 +97,7 @@ export const addTeamMembersSchema = z.object({
 export const updateMemberRoleSchema = z.object({
   id: uuid.optional(),
   userId: uuid.optional(),
-  teamRole: teamRoleEnum,
+  teamRole: teamRoleEnum.optional().default("MEMBER"),
 });
 
 // ── DELETE /teams/:id/members/:userId ─────────────────────────────────────────

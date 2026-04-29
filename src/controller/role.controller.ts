@@ -5,11 +5,38 @@ import type {
   UpdateRoleInput,
 } from "@/validators/role.validator";
 
-// ─────────────────────────────────────────
-// LIST ROLES
+// ─────────────────────────────────────────────────────────────────────────────
+// ALL modules in the system — hardcoded, not derived from DB
+// This is the source of truth for what modules exist.
+// Adding a new module here makes it appear in the permissions matrix immediately.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const SYSTEM_MODULES = [
+  "dashboard",
+  "requirements",
+  "clients",
+  "candidates",
+  "users",
+  "teams",
+  "roles",
+  "settings",
+  "reports",
+  "business-units",
+] as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /roles/modules
+// Always returns the full system module list.
+// No longer depends on what permissions exist in DB.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getModules = async (_req: Request, res: Response) => {
+  res.json({ success: true, data: SYSTEM_MODULES });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /roles
-// Returns all roles with user count + permission count
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const listRoles = async (req: Request, res: Response) => {
   try {
@@ -22,12 +49,7 @@ export const listRoles = async (req: Request, res: Response) => {
         isSystem: true,
         createdAt: true,
         updatedAt: true,
-        _count: {
-          select: {
-            users: true,
-            permissions: true,
-          },
-        },
+        _count: { select: { users: true, permissions: true } },
         permissions: {
           select: {
             module: true,
@@ -43,16 +65,14 @@ export const listRoles = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: roles });
   } catch (err) {
-    console.error("listRoles error:", err);
+    console.error("listRoles:", err);
     res.status(500).json({ success: false, message: "Failed to fetch roles" });
   }
 };
 
-// ─────────────────────────────────────────
-// GET ROLE BY ID
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /roles/:id
-// Full detail — permissions matrix + users assigned
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const getRoleById = async (req: Request, res: Response) => {
   try {
@@ -67,6 +87,7 @@ export const getRoleById = async (req: Request, res: Response) => {
         isSystem: true,
         createdAt: true,
         updatedAt: true,
+        _count: { select: { users: true, permissions: true } },
         permissions: {
           select: {
             id: true,
@@ -89,11 +110,8 @@ export const getRoleById = async (req: Request, res: Response) => {
             employeeId: true,
             businessUnit: { select: { id: true, name: true } },
           },
-          take: 50, // cap at 50 for display
+          take: 50,
           orderBy: { firstName: "asc" },
-        },
-        _count: {
-          select: { users: true, permissions: true },
         },
       },
     });
@@ -103,50 +121,45 @@ export const getRoleById = async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data: role });
+    // Merge DB permissions with full module list so frontend always gets all modules
+    // Modules with no saved permission get default "no access" values
+    const permissionsByModule = Object.fromEntries(
+      role.permissions.map((p) => [p.module, p])
+    );
+
+    const fullPermissions = SYSTEM_MODULES.map((module) => ({
+      module,
+      canView: false,
+      canAdd: false,
+      canEdit: false,
+      canDelete: false,
+      scope: "OWN" as const,
+      ...(permissionsByModule[module] ?? {}),
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        ...role,
+        permissions: fullPermissions,
+        modules: SYSTEM_MODULES, // convenience — frontend can use this directly
+      },
+    });
   } catch (err) {
-    console.error("getRoleById error:", err);
+    console.error("getRoleById:", err);
     res.status(500).json({ success: false, message: "Failed to fetch role" });
   }
 };
 
-// ─────────────────────────────────────────
-// GET MODULES
-// GET /roles/modules
-// Distinct module names from all RolePermission rows.
-// Used to build the permissions matrix form dynamically.
-// ─────────────────────────────────────────
-
-export const getModules = async (req: Request, res: Response) => {
-  try {
-    const rows = await prisma.rolePermission.findMany({
-      distinct: ["module"],
-      select: { module: true },
-      orderBy: { module: "asc" },
-    });
-
-    const modules = rows.map((r) => r.module);
-
-    res.json({ success: true, data: modules });
-  } catch (err) {
-    console.error("getModules error:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch modules" });
-  }
-};
-
-// ─────────────────────────────────────────
-// CREATE ROLE
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /roles
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const createRole = async (req: Request, res: Response) => {
   try {
     const body = req.body as CreateRoleInput;
     const actorId = req.user!.id;
 
-    // Name uniqueness check
     const existing = await prisma.role.findUnique({
       where: { name: body.name },
     });
@@ -157,13 +170,18 @@ export const createRole = async (req: Request, res: Response) => {
       return;
     }
 
+    // Only save permissions where at least one action is enabled
+    const activePermissions = (body.permissions ?? []).filter(
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
+    );
+
     const role = await prisma.role.create({
       data: {
-        name: body.name,
+        name: body.name.trim().toUpperCase().replace(/\s+/g, "_"),
         description: body.description ?? null,
-        isSystem: false, // user-created roles are never system roles
+        isSystem: false,
         permissions: {
-          create: body.permissions.map((p) => ({
+          create: activePermissions.map((p) => ({
             module: p.module,
             canView: p.canView,
             canAdd: p.canAdd,
@@ -179,16 +197,6 @@ export const createRole = async (req: Request, res: Response) => {
         description: true,
         isSystem: true,
         createdAt: true,
-        permissions: {
-          select: {
-            module: true,
-            canView: true,
-            canAdd: true,
-            canEdit: true,
-            canDelete: true,
-            scope: true,
-          },
-        },
       },
     });
 
@@ -204,23 +212,19 @@ export const createRole = async (req: Request, res: Response) => {
       },
     });
 
-    res.status(201).json({
-      success: true,
-      data: role,
-      message: "Role created successfully",
-    });
+    res
+      .status(201)
+      .json({ success: true, data: role, message: "Role created" });
   } catch (err) {
-    console.error("createRole error:", err);
+    console.error("createRole:", err);
     res.status(500).json({ success: false, message: "Failed to create role" });
   }
 };
 
-// ─────────────────────────────────────────
-// UPDATE ROLE
+// ─────────────────────────────────────────────────────────────────────────────
 // PUT /roles/:id
-// Wipes and recreates permissions on every update
-// so the matrix stays in sync with what frontend sends
-// ─────────────────────────────────────────
+// Wipes and recreates only the active permissions.
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const updateRole = async (req: Request, res: Response) => {
   try {
@@ -234,7 +238,6 @@ export const updateRole = async (req: Request, res: Response) => {
       return;
     }
 
-    // Block renaming system roles
     if (existing.isSystem && body.name && body.name !== existing.name) {
       res.status(403).json({
         success: false,
@@ -243,7 +246,6 @@ export const updateRole = async (req: Request, res: Response) => {
       return;
     }
 
-    // Name uniqueness if changing
     if (body.name && body.name !== existing.name) {
       const clash = await prisma.role.findUnique({
         where: { name: body.name },
@@ -256,38 +258,39 @@ export const updateRole = async (req: Request, res: Response) => {
       }
     }
 
-    const oldData = {
-      name: existing.name,
-      description: existing.description,
-    };
+    // Only persist permissions with at least one action enabled
+    const activePermissions = (body.permissions ?? []).filter(
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
+    );
 
-    // Transaction — update role + wipe+recreate permissions atomically
     const updated = await prisma.$transaction(async (tx) => {
-      // Update role metadata
       const role = await tx.role.update({
         where: { id },
         data: {
-          ...(body.name !== undefined ? { name: body.name } : {}),
-          ...(body.description !== undefined
-            ? { description: body.description }
-            : {}),
+          ...(body.name !== undefined && {
+            name: body.name.trim().toUpperCase().replace(/\s+/g, "_"),
+          }),
+          ...(body.description !== undefined && {
+            description: body.description,
+          }),
         },
       });
 
-      // Wipe and recreate permissions if provided
-      if (body.permissions && body.permissions.length > 0) {
+      if (body.permissions !== undefined) {
         await tx.rolePermission.deleteMany({ where: { roleId: id } });
-        await tx.rolePermission.createMany({
-          data: body.permissions.map((p) => ({
-            roleId: id,
-            module: p.module,
-            canView: p.canView,
-            canAdd: p.canAdd,
-            canEdit: p.canEdit,
-            canDelete: p.canDelete,
-            scope: p.scope,
-          })),
-        });
+        if (activePermissions.length > 0) {
+          await tx.rolePermission.createMany({
+            data: activePermissions.map((p) => ({
+              roleId: id,
+              module: p.module,
+              canView: p.canView,
+              canAdd: p.canAdd,
+              canEdit: p.canEdit,
+              canDelete: p.canDelete,
+              scope: p.scope,
+            })),
+          });
+        }
       }
 
       return role;
@@ -299,29 +302,23 @@ export const updateRole = async (req: Request, res: Response) => {
         action: "UPDATE",
         module: "roles",
         recordId: id,
-        oldData,
-        newData: { name: body.name, description: body.description },
+        oldData: { name: existing.name },
+        newData: { name: body.name },
         ip: req.ip,
         userAgent: req.headers["user-agent"] ?? null,
       },
     });
 
-    res.json({
-      success: true,
-      data: updated,
-      message: "Role updated successfully",
-    });
+    res.json({ success: true, data: updated, message: "Role updated" });
   } catch (err) {
-    console.error("updateRole error:", err);
+    console.error("updateRole:", err);
     res.status(500).json({ success: false, message: "Failed to update role" });
   }
 };
 
-// ─────────────────────────────────────────
-// DELETE ROLE
+// ─────────────────────────────────────────────────────────────────────────────
 // DELETE /roles/:id
-// Blocked if: isSystem OR has active users assigned
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const deleteRole = async (req: Request, res: Response) => {
   try {
@@ -342,24 +339,20 @@ export const deleteRole = async (req: Request, res: Response) => {
       res.status(404).json({ success: false, message: "Role not found" });
       return;
     }
-
     if (role.isSystem) {
-      res.status(403).json({
-        success: false,
-        message: "System roles cannot be deleted",
-      });
+      res
+        .status(403)
+        .json({ success: false, message: "System roles cannot be deleted" });
       return;
     }
-
     if (role._count.users > 0) {
       res.status(409).json({
         success: false,
-        message: `Cannot delete — ${role._count.users} user(s) are assigned to this role. Reassign them first.`,
+        message: `Cannot delete — ${role._count.users} user(s) assigned. Reassign them first.`,
       });
       return;
     }
 
-    // Cascade deletes RolePermission rows via schema onDelete: Cascade
     await prisma.role.delete({ where: { id } });
 
     await prisma.auditLog.create({
@@ -374,9 +367,9 @@ export const deleteRole = async (req: Request, res: Response) => {
       },
     });
 
-    res.json({ success: true, message: "Role deleted successfully" });
+    res.json({ success: true, message: "Role deleted" });
   } catch (err) {
-    console.error("deleteRole error:", err);
+    console.error("deleteRole:", err);
     res.status(500).json({ success: false, message: "Failed to delete role" });
   }
 };

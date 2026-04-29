@@ -5,215 +5,191 @@ import {
   checkPermission,
 } from "@/middleware/scopeFilter.middleware";
 import { validate } from "@/validators/validator";
-
-// Controllers
-import {
-  createClient,
-  updateClient,
-  approveClient,
-  getAllClients,
-  getClientById,
-  deleteClient,
-  addClientContact,
-  updateClientContact,
-  removeClientContact,
-  assignContactHandler,
-  removeContactHandler,
-  assignClientHandler,
-  removeClientHandler,
-  assignClientToTeam,
-  removeClientFromTeam,
-  addClientNote,
-} from "@/controller/client.controller";
-
-// Validators
 import {
   createClientSchema,
   updateClientSchema,
-  clientIdSchema,
-  getAllClientsSchema,
-  contactSchema,
-  contactIdSchema,
-  assignContactHandlerSchema,
-  contactHandlerParamsSchema,
-  assignClientHandlerSchema,
-  assignClientTeamSchema,
-  clientNoteSchema,
+  updateClientStatusSchema,
+  addHandlerSchema,
+  updateHandlerRoleSchema,
+  removeHandlerSchema,
+  addContactSchema,
+  updateContactSchema,
+  addClientNoteSchema,
+  assignTeamSchema,
 } from "@/validators/client.validators";
+import {
+  getClients,
+  getMyClients,
+  getClientById,
+  createClient,
+  updateClient,
+  updateClientStatus,
+  deleteClient,
+  addHandler,
+  removeHandler,
+  updateHandlerRole,
+  getContacts,
+  addContact,
+  updateContact,
+  removeContact,
+  addClientNote,
+  deleteClientNote,
+  assignTeam,
+  removeTeamAssignment,
+} from "@/controller/client.controller";
 
 const router = Router();
+const scope = scopeFilter("clients");
 
-/**
- * CLIENT CORE
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregates — BEFORE /:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/mine", authenticateUser, getMyClients);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collection
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/", authenticateUser, scope, getClients);
 
 router.post(
   "/",
   authenticateUser,
-  scopeFilter("clients"),
+  scope,
   checkPermission("canAdd"),
   validate.body(createClientSchema),
   createClient
 );
 
-router.get(
-  "/",
-  authenticateUser,
-  scopeFilter("clients"),
-  validate.query(getAllClientsSchema),
-  getAllClients
-);
+// ─────────────────────────────────────────────────────────────────────────────
+// Single client
+// ─────────────────────────────────────────────────────────────────────────────
 
-router.get(
+router.get("/:id", authenticateUser, scope, getClientById);
+
+router.put(
   "/:id",
   authenticateUser,
-  scopeFilter("clients"),
-  validate.params(clientIdSchema),
-  getClientById
-);
-
-router.patch(
-  "/:id",
-  authenticateUser,
-  scopeFilter("clients"),
+  scope,
   checkPermission("canEdit"),
-  validate.params(clientIdSchema),
   validate.body(updateClientSchema),
   updateClient
 );
 
+router.patch(
+  "/:id/status",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(updateClientStatusSchema),
+  updateClientStatus
+);
+
 router.delete(
   "/:id",
   authenticateUser,
-  scopeFilter("clients"),
+  scope,
   checkPermission("canDelete"),
-  validate.params(clientIdSchema),
   deleteClient
 );
 
-router.post(
-  "/:id/approve",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(clientIdSchema),
-  approveClient
-);
-
-/**
- * CONTACTS
- */
-
-router.post(
-  "/:id/contacts",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(clientIdSchema),
-  validate.body(contactSchema),
-  addClientContact
-);
-
-router.patch(
-  "/:id/contacts/:contactId",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canEdit"),
-  validate.params(contactIdSchema),
-  validate.body(contactSchema),
-  updateClientContact
-);
-
-router.delete(
-  "/:id/contacts/:contactId",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canDelete"),
-  validate.params(contactIdSchema),
-  removeClientContact
-);
-
-/**
- * CONTACT HANDLERS
- */
-
-router.post(
-  "/:id/contacts/:contactId/handlers",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(contactHandlerParamsSchema),
-  validate.body(assignContactHandlerSchema),
-  assignContactHandler
-);
-
-router.delete(
-  "/:id/contacts/:contactId/handlers/:handlerId",
-  authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canDelete"),
-  validate.params(contactHandlerParamsSchema),
-  removeContactHandler
-);
-
-/**
- * CLIENT HANDLERS
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Handlers
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post(
   "/:id/handlers",
   authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(clientIdSchema),
-  validate.body(assignClientHandlerSchema),
-  assignClientHandler
+  scope,
+  checkPermission("canEdit"),
+  validate.body(addHandlerSchema),
+  addHandler
+);
+
+router.patch(
+  "/:id/handlers/:handlerId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(updateHandlerRoleSchema),
+  updateHandlerRole
 );
 
 router.delete(
   "/:id/handlers/:handlerId",
   authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canDelete"),
-  validate.params(clientIdSchema),
-  removeClientHandler
+  scope,
+  checkPermission("canEdit"),
+  validate.body(removeHandlerSchema),
+  removeHandler
 );
 
-/**
- * TEAM ASSIGNMENT
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Contacts
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/:id/contacts", authenticateUser, scope, getContacts);
 
 router.post(
-  "/:id/teams",
+  "/:id/contacts",
   authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(clientIdSchema),
-  validate.body(assignClientTeamSchema),
-  assignClientToTeam
+  scope,
+  checkPermission("canEdit"),
+  validate.body(addContactSchema),
+  addContact
+);
+
+router.put(
+  "/:id/contacts/:contactId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(updateContactSchema),
+  updateContact
 );
 
 router.delete(
-  "/:id/teams/:teamId",
+  "/:id/contacts/:contactId",
   authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canDelete"),
-  validate.params(clientIdSchema),
-  removeClientFromTeam
+  scope,
+  checkPermission("canEdit"),
+  removeContact
 );
 
-/**
- * NOTES
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Notes
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post(
   "/:id/notes",
   authenticateUser,
-  scopeFilter("clients"),
-  checkPermission("canAdd"),
-  validate.params(clientIdSchema),
-  validate.body(clientNoteSchema),
+  scope,
+  validate.body(addClientNoteSchema),
   addClientNote
+);
+
+router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteClientNote);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Team assignments
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  "/:id/teams",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(assignTeamSchema),
+  assignTeam
+);
+
+router.delete(
+  "/:id/teams/:assignmentId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  removeTeamAssignment
 );
 
 export default router;

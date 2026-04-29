@@ -34,6 +34,7 @@ import {
   checkPermission,
   scopeFilter,
 } from "@/middleware/scopeFilter.middleware";
+import { getAssignableTargets } from "@/controller/workspace.controller";
 
 const router = Router();
 const scope = scopeFilter("requirements");
@@ -79,7 +80,15 @@ router.post(
   validate.body(createRequirementSchema),
   createRequirement
 );
-
+// GET /requirements/:id/assignable-targets
+// Returns DM teams (for sales) or child teams+members (for DM)
+// based on who is calling and what's already assigned
+router.get(
+  "/:id/assignable-targets",
+  authenticateUser,
+  scope,
+  getAssignableTargets
+);
 // ─────────────────────────────────────────────────────────────────────────────
 // Single requirement
 // ─────────────────────────────────────────────────────────────────────────────

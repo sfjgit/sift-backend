@@ -191,7 +191,6 @@ export const getUserById = async (req: Request, res: Response) => {
         isSuperAdmin: true,
         createdAt: true,
         updatedAt: true,
-
         role: {
           select: {
             id: true,
@@ -246,8 +245,8 @@ export const getUserById = async (req: Request, res: Response) => {
                 name: true,
                 category: true,
                 nodeType: true,
+                // NO parentTeam — hierarchy is via TeamEdge only
                 businessUnit: { select: { id: true, name: true } },
-                parentTeam: { select: { id: true, name: true } },
               },
             },
           },

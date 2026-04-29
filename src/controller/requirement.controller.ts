@@ -1,7 +1,6 @@
 import { reqScopeWhere } from "@/middleware/scopeFilter.middleware";
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
-// import { reqScopeWhere } from "@/middleware/scope";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -18,7 +17,6 @@ function generateReqCode(buName: string): string {
   return `${prefix}-R-${year}${rand}`;
 }
 
-/** Log to RequirementActivity */
 async function logActivity(
   tx: any,
   requirementId: string,
@@ -32,7 +30,63 @@ async function logActivity(
   });
 }
 
-// Full select used by detail + list
+// ─────────────────────────────────────────────────────────────────────────────
+// Select shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REQ_LIST_SELECT = {
+  id: true,
+  reqCode: true,
+  title: true,
+  status: true,
+  priority: true,
+  jobType: true,
+  remoteType: true,
+  totalOpenings: true,
+  filledOpenings: true,
+  activeApplications: true,
+  salaryMin: true,
+  salaryMax: true,
+  salaryType: true,
+  respondBy: true,
+  turnaroundDays: true,
+  isRespondByBreached: true,
+  isTurnaroundBreached: true,
+  startDate: true,
+  endDate: true,
+  location: true,
+  country: true,
+  createdAt: true,
+  updatedAt: true,
+  businessUnit: { select: { id: true, name: true } },
+  client: { select: { id: true, name: true, industry: true } },
+  clientContact: {
+    select: { id: true, firstName: true, lastName: true, designation: true },
+  },
+  createdBy: {
+    select: { id: true, firstName: true, lastName: true, employeeId: true },
+  },
+  approvedBy: { select: { id: true, firstName: true, lastName: true } },
+  skills: {
+    where: { isMandatory: true },
+    select: { skill: { select: { id: true, canonicalName: true } } },
+    take: 5,
+  },
+  assignments: {
+    where: { status: "ACTIVE" },
+    select: {
+      id: true,
+      assignmentType: true,
+      allocatedOpenings: true,
+      filledOpenings: true,
+      deadline: true,
+      breachedAt: true,
+      recruiter: { select: { id: true, firstName: true, lastName: true } },
+      team: { select: { id: true, name: true } },
+    },
+  },
+} as const;
+
 const REQ_DETAIL_SELECT = {
   id: true,
   reqCode: true,
@@ -108,25 +162,38 @@ const REQ_DETAIL_SELECT = {
     },
     take: 1,
   },
-};
+} as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements
-// Scope-aware list with pagination + filters
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirements = async (req: Request, res: Response) => {
   try {
     const {
+      // text
+      search,
+      // exact filters
       status,
       priority,
-      clientId,
-      buId,
       jobType,
       remoteType,
+      // relation filters
+      clientId,
+      buId,
+      createdById,
+      assignedTeamId,
+      // boolean toggles
       assignedToMe,
       breached,
-      search,
+      // date range filters
+      respondByFrom,
+      respondByTo,
+      startDateFrom,
+      startDateTo,
+      createdFrom,
+      createdTo,
+      // pagination
       page = "1",
       limit = "25",
       sortBy = "createdAt",
@@ -134,85 +201,89 @@ export const getRequirements = async (req: Request, res: Response) => {
     } = req.query as Record<string, string>;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = parseInt(limit);
+    const take = Math.min(parseInt(limit), 100); // cap at 100
 
-    // Base scope where (from middleware)
     const scopeWhere = reqScopeWhere(req.scopeFilter);
 
-    // Additional filters layered on top
-    const extraWhere: any = {};
-    if (status) extraWhere.status = status;
-    if (priority) extraWhere.priority = priority;
-    if (clientId) extraWhere.clientId = clientId;
-    if (buId) extraWhere.businessUnitId = buId;
-    if (jobType) extraWhere.jobType = jobType;
-    if (remoteType) extraWhere.remoteType = remoteType;
-    if (breached === "true") extraWhere.isRespondByBreached = true;
-    if (search)
-      extraWhere.OR = [
-        { title: { contains: search, mode: "insensitive" } },
-        { reqCode: { contains: search, mode: "insensitive" } },
-        { client: { name: { contains: search, mode: "insensitive" } } },
-      ];
+    const where: any = { ...scopeWhere, deletedAt: null };
 
-    // assignedToMe — recruiter filtering to only their assignments
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (jobType) where.jobType = jobType;
+    if (remoteType) where.remoteType = remoteType;
+    if (clientId) where.clientId = clientId;
+    if (buId) where.businessUnitId = buId;
+    if (createdById) where.createdById = createdById;
+
+    if (breached === "true") where.isRespondByBreached = true;
+
+    // assignedToMe — only reqs where caller has an active INDIVIDUAL assignment
     if (assignedToMe === "true" && req.user?.id) {
-      extraWhere.assignments = {
+      where.assignments = {
         some: { recruiterId: req.user.id, status: "ACTIVE" },
       };
     }
 
-    const where = { ...scopeWhere, ...extraWhere };
+    // assignedTeamId — reqs assigned to a specific team
+    if (assignedTeamId) {
+      where.assignments = {
+        some: { teamId: assignedTeamId, status: "ACTIVE" },
+      };
+    }
+
+    // respondBy date range
+    if (respondByFrom || respondByTo) {
+      where.respondBy = {
+        ...(respondByFrom && { gte: new Date(respondByFrom) }),
+        ...(respondByTo && { lte: new Date(respondByTo) }),
+      };
+    }
+
+    // startDate range
+    if (startDateFrom || startDateTo) {
+      where.startDate = {
+        ...(startDateFrom && { gte: new Date(startDateFrom) }),
+        ...(startDateTo && { lte: new Date(startDateTo) }),
+      };
+    }
+
+    // createdAt range
+    if (createdFrom || createdTo) {
+      where.createdAt = {
+        ...(createdFrom && { gte: new Date(createdFrom) }),
+        ...(createdTo && { lte: new Date(createdTo) }),
+      };
+    }
+
+    // search across title, reqCode, client name
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: "insensitive" } },
+        { reqCode: { contains: search, mode: "insensitive" } },
+        { client: { name: { contains: search, mode: "insensitive" } } },
+        { description: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    // sortBy whitelist
+    const SORTABLE = [
+      "createdAt",
+      "updatedAt",
+      "respondBy",
+      "priority",
+      "status",
+      "startDate",
+    ];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { createdAt: "desc" as const };
 
     const [total, requirements] = await Promise.all([
       prisma.requirement.count({ where }),
       prisma.requirement.findMany({
         where,
-        select: {
-          id: true,
-          reqCode: true,
-          title: true,
-          status: true,
-          priority: true,
-          jobType: true,
-          remoteType: true,
-          totalOpenings: true,
-          filledOpenings: true,
-          salaryMin: true,
-          salaryMax: true,
-          salaryType: true,
-          respondBy: true,
-          turnaroundDays: true,
-          isRespondByBreached: true,
-          isTurnaroundBreached: true,
-          createdAt: true,
-          updatedAt: true,
-          businessUnit: { select: { id: true, name: true } },
-          client: { select: { id: true, name: true } },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          skills: {
-            where: { isMandatory: true },
-            select: { skill: { select: { canonicalName: true } } },
-            take: 5,
-          },
-          // Active assignment chain summary
-          assignments: {
-            where: { status: "ACTIVE" },
-            select: {
-              id: true,
-              assignmentType: true,
-              allocatedOpenings: true,
-              filledOpenings: true,
-              recruiterId: true,
-              teamId: true,
-              recruiter: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-              team: { select: { id: true, name: true } },
-            },
-          },
-        },
-        orderBy: { [sortBy]: sortDir as "asc" | "desc" },
+        select: REQ_LIST_SELECT,
+        orderBy,
         skip,
         take,
       }),
@@ -227,7 +298,6 @@ export const getRequirements = async (req: Request, res: Response) => {
         limit: take,
         pages: Math.ceil(total / take),
       },
-      // Permission flags for UI
       permissions: {
         canAdd: req.modulePermission.canAdd,
         canEdit: req.modulePermission.canEdit,
@@ -244,20 +314,18 @@ export const getRequirements = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id
-// Full detail + full assignment chain + notes + activity + status history
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const req_ = await prisma.requirement.findFirst({
-      where: { id, ...reqScopeWhere(req.scopeFilter) },
+    const requirement = await prisma.requirement.findFirst({
+      where: { id, deletedAt: null, ...reqScopeWhere(req.scopeFilter) },
       select: {
         ...REQ_DETAIL_SELECT,
-        // Full assignment chain — nested parent→team→individual
         assignments: {
-          where: { status: "ACTIVE", parentAssignmentId: null }, // top-level MANAGER assignments
+          where: { status: "ACTIVE", parentAssignmentId: null },
           select: {
             id: true,
             assignmentType: true,
@@ -281,7 +349,6 @@ export const getRequirementById = async (req: Request, res: Response) => {
             assignedBy: {
               select: { id: true, firstName: true, lastName: true },
             },
-            // Level 2 — TEAM assignments
             childAssignments: {
               where: { status: "ACTIVE" },
               select: {
@@ -306,7 +373,6 @@ export const getRequirementById = async (req: Request, res: Response) => {
                 assignedBy: {
                   select: { id: true, firstName: true, lastName: true },
                 },
-                // Level 3 — INDIVIDUAL assignments
                 childAssignments: {
                   where: { status: "ACTIVE" },
                   select: {
@@ -388,7 +454,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
       },
     });
 
-    if (!req_) {
+    if (!requirement) {
       res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
@@ -397,7 +463,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      data: req_,
+      data: requirement,
       permissions: {
         canEdit: req.modulePermission.canEdit,
         canDelete: req.modulePermission.canDelete,
@@ -413,7 +479,6 @@ export const getRequirementById = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /requirements
-// Sales creates a requirement. Status starts as DRAFT.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const createRequirement = async (req: Request, res: Response) => {
@@ -447,21 +512,21 @@ export const createRequirement = async (req: Request, res: Response) => {
       endDate,
       respondBy,
       turnaroundDays,
-      skillIds, // [{ skillId, isMandatory, experience }]
+      skillIds = [],
     } = req.body;
 
     const actorId = req.user!.id;
     const buId = businessUnitId ?? req.user!.businessUnitId;
 
-    // Generate unique reqCode
     const bu = buId
       ? await prisma.businessUnit.findUnique({
           where: { id: buId },
           select: { name: true },
         })
       : null;
+
+    // generate unique reqCode
     let reqCode = generateReqCode(bu?.name ?? "SFJ");
-    // Ensure uniqueness
     let attempts = 0;
     while (await prisma.requirement.findUnique({ where: { reqCode } })) {
       reqCode = generateReqCode(bu?.name ?? "SFJ");
@@ -504,8 +569,7 @@ export const createRequirement = async (req: Request, res: Response) => {
         },
       });
 
-      // Link skills
-      if (skillIds?.length) {
+      if (skillIds.length) {
         await tx.requirementSkill.createMany({
           data: skillIds.map((s: any) => ({
             requirementId: created.id,
@@ -517,7 +581,6 @@ export const createRequirement = async (req: Request, res: Response) => {
         });
       }
 
-      // Status history
       await tx.requirementStatusHistory.create({
         data: {
           requirementId: created.id,
@@ -533,7 +596,7 @@ export const createRequirement = async (req: Request, res: Response) => {
         created.id,
         actorId,
         "REQUIREMENT_CREATED",
-        `Requirement ${created.reqCode} created`
+        `${created.reqCode} created`
       );
 
       return created;
@@ -554,7 +617,6 @@ export const createRequirement = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /requirements/:id
-// Edit core fields. Status NOT changed here — use PATCH /status.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateRequirement = async (req: Request, res: Response) => {
@@ -571,9 +633,10 @@ export const updateRequirement = async (req: Request, res: Response) => {
     const actorId = req.user!.id;
 
     const existing = await prisma.requirement.findFirst({
-      where: { id, ...reqScopeWhere(req.scopeFilter) },
-      select: { id: true, status: true },
+      where: { id, deletedAt: null, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true, status: true, reqCode: true },
     });
+
     if (!existing) {
       res
         .status(404)
@@ -581,7 +644,6 @@ export const updateRequirement = async (req: Request, res: Response) => {
       return;
     }
 
-    // Only DRAFT and PENDING_APPROVAL can be freely edited
     if (
       !["DRAFT", "PENDING_APPROVAL"].includes(existing.status) &&
       !req.user?.isSuperAdmin
@@ -596,8 +658,8 @@ export const updateRequirement = async (req: Request, res: Response) => {
     const {
       title,
       description,
-      clientId,
       clientContactId,
+      businessUnitId,
       jobType,
       remoteType,
       priority,
@@ -617,13 +679,13 @@ export const updateRequirement = async (req: Request, res: Response) => {
     } = req.body;
 
     const updated = await prisma.$transaction(async (tx) => {
-      const req_ = await tx.requirement.update({
+      const result = await tx.requirement.update({
         where: { id },
         data: {
           ...(title !== undefined && { title }),
           ...(description !== undefined && { description }),
-          ...(clientId !== undefined && { clientId }),
           ...(clientContactId !== undefined && { clientContactId }),
+          ...(businessUnitId !== undefined && { businessUnitId }),
           ...(jobType !== undefined && { jobType }),
           ...(remoteType !== undefined && { remoteType }),
           ...(priority !== undefined && { priority }),
@@ -649,7 +711,7 @@ export const updateRequirement = async (req: Request, res: Response) => {
         select: { id: true, reqCode: true, title: true, status: true },
       });
 
-      // Replace skills if provided
+      // replace skills if provided
       if (skillIds !== undefined) {
         await tx.requirementSkill.deleteMany({ where: { requirementId: id } });
         if (skillIds.length) {
@@ -669,9 +731,9 @@ export const updateRequirement = async (req: Request, res: Response) => {
         id,
         actorId,
         "STATUS_CHANGED",
-        `Requirement ${req_.reqCode} updated`
+        `${result.reqCode} updated`
       );
-      return req_;
+      return result;
     });
 
     res.json({ success: true, message: "Requirement updated", data: updated });
@@ -685,16 +747,10 @@ export const updateRequirement = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /requirements/:id/status
-// Status machine:
-//   DRAFT → PENDING_APPROVAL (sales submits)
-//   PENDING_APPROVAL → ACTIVE (admin approves)
-//   PENDING_APPROVAL → DRAFT (admin rejects / sales pulls back)
-//   ACTIVE → ON_HOLD | CLOSED | CANCELLED
-//   ON_HOLD → ACTIVE | CANCELLED
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
-  DRAFT: ["PENDING_APPROVAL"],
+  DRAFT: ["PENDING_APPROVAL", "ACTIVE", "CANCELLED"],
   PENDING_APPROVAL: ["ACTIVE", "DRAFT"],
   ACTIVE: ["ON_HOLD", "CLOSED", "CANCELLED"],
   ON_HOLD: ["ACTIVE", "CANCELLED"],
@@ -708,15 +764,11 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
     const { toStatus, reason } = req.body;
     const actorId = req.user!.id;
 
-    if (!toStatus) {
-      res.status(400).json({ success: false, message: "toStatus is required" });
-      return;
-    }
-
     const existing = await prisma.requirement.findFirst({
-      where: { id, ...reqScopeWhere(req.scopeFilter) },
-      select: { id: true, status: true, reqCode: true, totalOpenings: true },
+      where: { id, deletedAt: null, ...reqScopeWhere(req.scopeFilter) },
+      select: { id: true, status: true, reqCode: true },
     });
+
     if (!existing) {
       res
         .status(404)
@@ -728,7 +780,7 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
     if (!allowed.includes(toStatus)) {
       res.status(409).json({
         success: false,
-        message: `Cannot transition from ${
+        message: `Cannot transition ${
           existing.status
         } → ${toStatus}. Allowed: ${allowed.join(", ") || "none"}`,
       });
@@ -741,16 +793,12 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
         data.approvedById = actorId;
         data.approvedAt = new Date();
       }
-      if (toStatus === "CLOSED") {
-        data.closedById = actorId;
-        data.closedAt = new Date();
-      }
-      if (toStatus === "CANCELLED") {
+      if (toStatus === "CLOSED" || toStatus === "CANCELLED") {
         data.closedById = actorId;
         data.closedAt = new Date();
       }
 
-      const req_ = await tx.requirement.update({
+      const result = await tx.requirement.update({
         where: { id },
         data,
         select: { id: true, reqCode: true, status: true },
@@ -772,18 +820,19 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
           : toStatus === "CLOSED"
           ? "REQUIREMENT_CLOSED"
           : "STATUS_CHANGED";
+
       await logActivity(
         tx,
         id,
         actorId,
         actType,
-        `Status changed: ${existing.status} → ${toStatus}${
+        `Status: ${existing.status} → ${toStatus}${
           reason ? ` (${reason})` : ""
         }`,
         { from: existing.status, to: toStatus }
       );
 
-      return req_;
+      return result;
     });
 
     res.json({
@@ -801,26 +850,14 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /requirements/:id/assign
-// Create an assignment. Handles all 3 levels.
-//
-// Level 1 — MANAGER:  { type: "MANAGER", recruiterId, allocatedOpenings? }
-// Level 2 — TEAM:     { type: "TEAM",    teamId, parentAssignmentId, allocatedOpenings? }
-// Level 3 — INDIVIDUAL: { type: "INDIVIDUAL", recruiterId, teamMemberId?, parentAssignmentId, allocatedOpenings? }
-//
-// Rules enforced:
-//   - MANAGER assignment must not already exist (one DM per req)
-//   - TEAM assignment requires a parent MANAGER assignment
-//   - INDIVIDUAL requires a parent TEAM assignment (or direct from MANAGER if DM bypasses)
-//   - Requirement must be ACTIVE
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     if (!req.modulePermission.canEdit) {
-      res.status(403).json({
-        success: false,
-        message: "No permission to assign requirements",
-      });
+      res
+        .status(403)
+        .json({ success: false, message: "No permission to assign" });
       return;
     }
 
@@ -837,9 +874,14 @@ export const createAssignment = async (req: Request, res: Response) => {
     const actorId = req.user!.id;
 
     const requirement = await prisma.requirement.findFirst({
-      where: { id: requirementId, ...reqScopeWhere(req.scopeFilter) },
+      where: {
+        id: requirementId,
+        deletedAt: null,
+        ...reqScopeWhere(req.scopeFilter),
+      },
       select: { id: true, reqCode: true, status: true, totalOpenings: true },
     });
+
     if (!requirement) {
       res
         .status(404)
@@ -854,7 +896,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
 
-    // Validate parent chain
     if (type === "MANAGER") {
       const existing = await prisma.requirementAssignment.findFirst({
         where: { requirementId, assignmentType: "MANAGER", status: "ACTIVE" },
@@ -862,18 +903,18 @@ export const createAssignment = async (req: Request, res: Response) => {
       if (existing) {
         res.status(409).json({
           success: false,
-          message:
-            "A manager assignment already exists. Remove it first or update allocatedOpenings.",
+          message: "A manager assignment already exists",
         });
         return;
       }
     }
 
-    if ((type === "TEAM" || type === "INDIVIDUAL") && !parentAssignmentId) {
+    // INDIVIDUAL always needs a parent
+    // TEAM at top level (sales → DM) has no parent — that's valid
+    if (type === "INDIVIDUAL" && !parentAssignmentId) {
       res.status(400).json({
         success: false,
-        message:
-          "parentAssignmentId is required for TEAM and INDIVIDUAL assignments",
+        message: "parentAssignmentId required for INDIVIDUAL assignments",
       });
       return;
     }
@@ -904,22 +945,18 @@ export const createAssignment = async (req: Request, res: Response) => {
 
       const who =
         type === "TEAM"
-          ? `Team: ${
-              (
-                await tx.team.findUnique({
-                  where: { id: teamId },
-                  select: { name: true },
-                })
-              )?.name
-            }`
-          : `${
-              (
-                await tx.user.findUnique({
-                  where: { id: recruiterId },
-                  select: { firstName: true, lastName: true },
-                })
-              )?.firstName ?? "unknown"
-            }`;
+          ? (
+              await tx.team.findUnique({
+                where: { id: teamId },
+                select: { name: true },
+              })
+            )?.name ?? "Team"
+          : (
+              await tx.user.findUnique({
+                where: { id: recruiterId },
+                select: { firstName: true },
+              })
+            )?.firstName ?? "Unknown";
 
       await logActivity(
         tx,
@@ -949,10 +986,8 @@ export const createAssignment = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to create assignment" });
   }
 };
-
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /requirements/:id/assignments/:assignmentId
-// Remove an assignment (also removes all child assignments)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const removeAssignment = async (req: Request, res: Response) => {
@@ -963,27 +998,28 @@ export const removeAssignment = async (req: Request, res: Response) => {
     }
 
     const { id: requirementId, assignmentId } = req.params;
-    const { reason } = req.body;
+    // const { reason } = req.body;
+    const reason = "Removed by admin";
     const actorId = req.user!.id;
 
     const assignment = await prisma.requirementAssignment.findFirst({
       where: { id: assignmentId, requirementId, status: "ACTIVE" },
       select: { id: true, assignmentType: true },
     });
+
     if (!assignment) {
       res.status(404).json({ success: false, message: "Assignment not found" });
       return;
     }
 
     await prisma.$transaction(async (tx) => {
-      // Mark this + all children as REMOVED
       const markRemoved = async (parentId: string) => {
         await tx.requirementAssignment.update({
           where: { id: parentId },
           data: {
             status: "REMOVED",
             removedAt: new Date(),
-            removedReason: reason ?? null,
+            // removedReason: reason ?? null,
           },
         });
         const children = await tx.requirementAssignment.findMany({
@@ -1017,7 +1053,6 @@ export const removeAssignment = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /requirements/:id/assignments/:assignmentId
-// Update allocatedOpenings or deadline on an existing assignment
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateAssignment = async (req: Request, res: Response) => {
@@ -1028,6 +1063,7 @@ export const updateAssignment = async (req: Request, res: Response) => {
     const assignment = await prisma.requirementAssignment.findFirst({
       where: { id: assignmentId, requirementId, status: "ACTIVE" },
     });
+
     if (!assignment) {
       res.status(404).json({ success: false, message: "Assignment not found" });
       return;
@@ -1068,15 +1104,11 @@ export const addNote = async (req: Request, res: Response) => {
     const { content } = req.body;
     const actorId = req.user!.id;
 
-    if (!content?.trim()) {
-      res.status(400).json({ success: false, message: "Content is required" });
-      return;
-    }
-
     const existing = await prisma.requirement.findFirst({
-      where: { id, ...reqScopeWhere(req.scopeFilter) },
+      where: { id, deletedAt: null, ...reqScopeWhere(req.scopeFilter) },
       select: { id: true },
     });
+
     if (!existing) {
       res
         .status(404)
@@ -1117,6 +1149,7 @@ export const deleteNote = async (req: Request, res: Response) => {
     const note = await prisma.requirementNote.findFirst({
       where: { id: noteId, requirementId: id, authorId: actorId },
     });
+
     if (!note) {
       res
         .status(404)
@@ -1134,9 +1167,6 @@ export const deleteNote = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /requirements/:id/assignments/:assignmentId/progress
-// Recruiter updates their own submission/interview/fill counts.
-// When filledOpenings reaches allocatedOpenings, checks if all openings
-// across all individual assignments are filled and suggests auto-close.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateProgress = async (req: Request, res: Response) => {
@@ -1151,7 +1181,7 @@ export const updateProgress = async (req: Request, res: Response) => {
         requirementId,
         status: "ACTIVE",
         assignmentType: "INDIVIDUAL",
-        recruiterId: actorId, // only the assigned recruiter
+        recruiterId: actorId,
       },
       select: { id: true, allocatedOpenings: true, filledOpenings: true },
     });
@@ -1185,11 +1215,11 @@ export const updateProgress = async (req: Request, res: Response) => {
         requirementId,
         actorId,
         "STATS_UPDATED",
-        `Progress updated: ${result.submissionsCount} submissions, ${result.interviewsCount} interviews, ${result.filledOpenings} filled`
+        `Progress: ${result.submissionsCount} submissions, ${result.interviewsCount} interviews, ${result.filledOpenings} filled`
       );
 
-      // Sync filledOpenings up to the parent TEAM assignment
-      const parentTeamAssignment = await tx.requirementAssignment.findFirst({
+      // bubble up to parent TEAM assignment
+      const parentTeam = await tx.requirementAssignment.findFirst({
         where: {
           requirementId,
           assignmentType: "TEAM",
@@ -1199,22 +1229,19 @@ export const updateProgress = async (req: Request, res: Response) => {
         select: { id: true },
       });
 
-      if (parentTeamAssignment) {
+      if (parentTeam) {
         const siblingFilled = await tx.requirementAssignment.aggregate({
-          where: {
-            parentAssignmentId: parentTeamAssignment.id,
-            status: "ACTIVE",
-          },
+          where: { parentAssignmentId: parentTeam.id, status: "ACTIVE" },
           _sum: { filledOpenings: true },
         });
         await tx.requirementAssignment.update({
-          where: { id: parentTeamAssignment.id },
+          where: { id: parentTeam.id },
           data: { filledOpenings: siblingFilled._sum.filledOpenings ?? 0 },
         });
       }
 
-      // Sync total filledOpenings up to the requirement itself
-      const allIndividualFilled = await tx.requirementAssignment.aggregate({
+      // bubble up to requirement
+      const allFilled = await tx.requirementAssignment.aggregate({
         where: {
           requirementId,
           assignmentType: "INDIVIDUAL",
@@ -1222,16 +1249,14 @@ export const updateProgress = async (req: Request, res: Response) => {
         },
         _sum: { filledOpenings: true },
       });
-      const totalFilled = allIndividualFilled._sum.filledOpenings ?? 0;
       await tx.requirement.update({
         where: { id: requirementId },
-        data: { filledOpenings: totalFilled },
+        data: { filledOpenings: allFilled._sum.filledOpenings ?? 0 },
       });
 
       return result;
     });
 
-    // Check if fully filled — tell UI to suggest closing
     const req_ = await prisma.requirement.findUnique({
       where: { id: requirementId },
       select: { totalOpenings: true, filledOpenings: true },
@@ -1258,10 +1283,6 @@ export const updateProgress = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/my-queue
-// What the logged-in user sees in their work queue
-// Recruiters see their direct assignments
-// TLs see team assignments for their teams
-// DMs see manager assignments for their node
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getMyQueue = async (req: Request, res: Response) => {
@@ -1314,15 +1335,16 @@ export const getMyQueue = async (req: Request, res: Response) => {
       orderBy: [{ requirement: { priority: "desc" } }, { assignedAt: "asc" }],
     });
 
-    // Summary stats
-    const stats = {
-      total: assignments.length,
-      breached: assignments.filter((a) => a.breachedAt).length,
-      highPri: assignments.filter((a) => a.requirement.priority === "HIGH")
-        .length,
-    };
-
-    res.json({ success: true, data: assignments, stats });
+    res.json({
+      success: true,
+      data: assignments,
+      stats: {
+        total: assignments.length,
+        breached: assignments.filter((a) => a.breachedAt).length,
+        highPri: assignments.filter((a) => a.requirement.priority === "HIGH")
+          .length,
+      },
+    });
   } catch (err) {
     console.error("getMyQueue:", err);
     res.status(500).json({ success: false, message: "Failed to fetch queue" });
@@ -1331,7 +1353,6 @@ export const getMyQueue = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/calendar
-// Returns requirements with respondBy dates for calendar view
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementsCalendar = async (req: Request, res: Response) => {
@@ -1341,6 +1362,7 @@ export const getRequirementsCalendar = async (req: Request, res: Response) => {
 
     const where: any = {
       ...scopeWhere,
+      deletedAt: null,
       status: { in: ["ACTIVE", "PENDING_APPROVAL"] },
       respondBy: {
         not: null,
@@ -1386,7 +1408,6 @@ export const getRequirementsCalendar = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/stats
-// Dashboard stats — scoped to current user
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementStats = async (req: Request, res: Response) => {
@@ -1394,26 +1415,28 @@ export const getRequirementStats = async (req: Request, res: Response) => {
     const scopeWhere = reqScopeWhere(req.scopeFilter);
 
     const [byStatus, byPriority, breached, recentlyActive] = await Promise.all([
-      // Count by status
       prisma.requirement.groupBy({
         by: ["status"],
-        where: scopeWhere,
+        where: { ...scopeWhere, deletedAt: null },
         _count: { _all: true },
       }),
-      // Count by priority (active only)
       prisma.requirement.groupBy({
         by: ["priority"],
-        where: { ...scopeWhere, status: "ACTIVE" },
+        where: { ...scopeWhere, deletedAt: null, status: "ACTIVE" },
         _count: { _all: true },
       }),
-      // Breached count
-      prisma.requirement.count({
-        where: { ...scopeWhere, isRespondByBreached: true, status: "ACTIVE" },
-      }),
-      // Last 7 days created
       prisma.requirement.count({
         where: {
           ...scopeWhere,
+          deletedAt: null,
+          isRespondByBreached: true,
+          status: "ACTIVE",
+        },
+      }),
+      prisma.requirement.count({
+        where: {
+          ...scopeWhere,
+          deletedAt: null,
           createdAt: { gte: new Date(Date.now() - 7 * 86400_000) },
         },
       }),

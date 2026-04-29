@@ -10,7 +10,6 @@ import type { CreateBUInput, UpdateBUInput } from "@/validators/bu.validator";
 
 export const listBusinessUnits = async (req: Request, res: Response) => {
   try {
-    // Fetch all BUs flat with counts
     const all = await prisma.businessUnit.findMany({
       orderBy: { name: "asc" },
       select: {
@@ -55,10 +54,12 @@ export const listBusinessUnits = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────
 // GET BU BY ID
 // GET /business-units/:id
+//
+// Teams are fetched in a separate block grouped by arc.
+// Full team hierarchy/canvas lives in the TeamArc API —
+// this endpoint only surfaces the essential summary per arc
+// filtered to this BU, so the frontend can link out to each arc.
 // ─────────────────────────────────────────
-
-// import { Request, Response } from "express";
-// import { prisma } from "../lib/prisma";
 
 export const getBusinessUnitById = async (req: Request, res: Response) => {
   try {
@@ -91,7 +92,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
             name: true,
             isActive: true,
             _count: { select: { users: true, teams: true, clients: true } },
-            // grandchildren count only — no infinite nesting
             childBUs: {
               select: {
                 id: true,
@@ -105,41 +105,30 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           orderBy: { name: "asc" },
         },
 
-        // ── Teams with members ─────────────────────────────────
-        teams: {
+        // ── Team Arcs in this BU — each arc with its teams (flat, essential only) ──
+        // Full tree/canvas is fetched separately via GET /team-arcs/:arcId
+        teamArcs: {
           where: { isActive: true },
           select: {
             id: true,
             name: true,
-            category: true,
-            nodeType: true,
-            parentTeamId: true, // needed for recursive team tree on the frontend
-            _count: {
-              select: {
-                members: { where: { isActive: true } },
-              },
-            },
-            members: {
+            description: true,
+            isActive: true,
+            _count: { select: { teams: true } },
+            teams: {
               where: { isActive: true },
               select: {
                 id: true,
-                teamRole: true,
-                joinedAt: true,
-                user: {
+                name: true,
+                nodeType: true,
+                category: true,
+                _count: {
                   select: {
-                    id: true,
-                    firstName: true,
-                    lastName: true,
-                    email: true,
-                    employeeId: true,
+                    members: { where: { isActive: true } },
                   },
                 },
               },
-              orderBy: [
-                // LEAD first, then CO_LEAD, then MEMBER
-                { teamRole: "asc" },
-                { joinedAt: "asc" },
-              ],
+              orderBy: { name: "asc" },
             },
           },
           orderBy: { name: "asc" },
@@ -202,7 +191,7 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           take: 25,
         },
 
-        // ── Requirements breakdown ─────────────────────────────
+        // ── Requirements (top 20, hottest first) ──────────────
         requirements: {
           where: { deletedAt: null },
           select: {
@@ -220,11 +209,7 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
             isRespondByBreached: true,
             client: { select: { id: true, name: true } },
           },
-          orderBy: [
-            // active/hot first
-            { isRespondByBreached: "desc" },
-            { updatedAt: "desc" },
-          ],
+          orderBy: [{ isRespondByBreached: "desc" }, { updatedAt: "desc" }],
           take: 20,
         },
 
@@ -262,7 +247,7 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
       success: true,
       data: {
         ...bu,
-        reqBreakdown, // { ACTIVE: 18, DRAFT: 7, ON_HOLD: 4, CLOSED: 9, ... }
+        reqBreakdown,
       },
     });
   } catch (err) {
@@ -293,7 +278,6 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
       return;
     }
 
-    // Validate parent exists if provided
     if (body.parentBUId) {
       const parent = await prisma.businessUnit.findUnique({
         where: { id: body.parentBUId },
@@ -363,7 +347,6 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
       return;
     }
 
-    // Name uniqueness if changing
     if (body.name && body.name !== existing.name) {
       const clash = await prisma.businessUnit.findUnique({
         where: { name: body.name },
@@ -377,7 +360,6 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
       }
     }
 
-    // Prevent circular parent — can't set parent to self or own child
     if (body.parentBUId && body.parentBUId === id) {
       res
         .status(400)
@@ -462,7 +444,7 @@ export const deleteBusinessUnit = async (req: Request, res: Response) => {
       return;
     }
 
-    const blockers = [];
+    const blockers: string[] = [];
     if (bu._count.users > 0) blockers.push(`${bu._count.users} user(s)`);
     if (bu._count.teams > 0) blockers.push(`${bu._count.teams} team(s)`);
     if (bu._count.clients > 0) blockers.push(`${bu._count.clients} client(s)`);
