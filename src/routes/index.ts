@@ -9,13 +9,20 @@ import requirementRoutes from "./requirements.routes";
 // import orgFlowRoutes from "./orgFlow.routes";
 import { getDashboardSummary } from "@/controller/dashboard.Controller";
 import { authenticateUser } from "@/middleware/auth";
+import { scopeFilter } from "@/middleware/scopeFilter.middleware";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
 
 // // In your routes file
-router.get("/dashboard/summary", authenticateUser, getDashboardSummary);
+// router.get("/dashboard/summary", authenticateUser, getDashboardSummary);
+router.get(
+  "/dashboard/summary",
+  authenticateUser,
+  scopeFilter("requirements"),
+  getDashboardSummary
+);
 
 router.use("/users", userRoutes);
 

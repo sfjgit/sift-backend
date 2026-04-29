@@ -1,219 +1,239 @@
-// controllers/dashboardController.ts
-import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
+import prisma from "@/utils/prisma/client";
+import { reqScopeWhere } from "@/middleware/scopeFilter.middleware";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /dashboard/summary
+// Returns everything the dashboard needs in one call.
+// Fully scoped — every query respects req.scopeFilter.
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const getDashboardSummary = async (req: Request, res: Response) => {
   try {
-    const { buId } = req.query;
-    const buFilter = buId ? { businessUnitId: buId as string } : {};
-    const buUserFilter = buId ? { businessUnitId: buId as string } : {};
+    const userId = req.user!.id;
+    const scopeWhere = reqScopeWhere(req.scopeFilter);
+    const baseWhere = { ...scopeWhere, deletedAt: null };
 
     const [
-      totalRequirements,
-      requirementsByStatus,
-      requirementsByPriority,
-      requirementsByType,
-      requirementsByRemoteType,
-      totalClients,
-      clientsByStatus,
-      totalUsers,
-      usersByRole,
-      totalTeams,
-      teamsByCategory,
-      teamHeadcounts,
-      openingsPipeline,
+      // Requirement counts by status
+      reqByStatus,
+      // Requirement counts by priority (ACTIVE only)
+      reqByPriority,
+      // Breached requirements
+      breachedCount,
+      // Requirements created this week
+      thisWeekCount,
+      // Recent requirements
       recentRequirements,
+      // My assignments (if recruiter/TL)
+      myAssignments,
+      // Upcoming deadlines (next 7 days)
+      upcomingDeadlines,
+      // Top clients by active requirements
+      topClients,
+      // Activity feed
+      recentActivity,
     ] = await Promise.all([
-      // 1. total requirements
-      prisma.requirement.count({ where: buFilter }),
-
-      // 2. requirements by status
+      // 1. req by status
       prisma.requirement.groupBy({
         by: ["status"],
-        where: buFilter,
+        where: baseWhere,
         _count: { _all: true },
-        orderBy: { _count: { status: "desc" } },
       }),
 
-      // 3. requirements by priority
+      // 2. req by priority (ACTIVE only)
       prisma.requirement.groupBy({
         by: ["priority"],
-        where: buFilter,
+        where: { ...baseWhere, status: "ACTIVE" },
         _count: { _all: true },
       }),
 
-      // 4. requirements by jobType
-      prisma.requirement.groupBy({
-        by: ["jobType"],
-        where: buFilter,
-        _count: { _all: true },
+      // 3. breached
+      prisma.requirement.count({
+        where: { ...baseWhere, isRespondByBreached: true, status: "ACTIVE" },
       }),
 
-      // 5. requirements by remoteType
-      prisma.requirement.groupBy({
-        by: ["remoteType"],
-        where: buFilter,
-        _count: { _all: true },
-      }),
-
-      // 6. total clients
-      prisma.clientClient.count({ where: buFilter }),
-
-      // 7. clients by status
-      prisma.clientClient.groupBy({
-        by: ["status"],
-        where: buFilter,
-        _count: { _all: true },
-      }),
-
-      // 8. total active users
-      prisma.user.count({
-        where: { ...buUserFilter, isActive: true },
-      }),
-
-      // 9. users grouped by role name — shows team composition
-      prisma.user.groupBy({
-        by: ["roleId"],
-        where: { ...buUserFilter, isActive: true },
-        _count: { _all: true },
-      }),
-
-      // 10. total active teams
-      prisma.team.count({
-        where: { ...buUserFilter, isActive: true },
-      }),
-
-      // 11. teams by category
-      prisma.team.groupBy({
-        by: ["category"],
-        where: { ...buUserFilter, isActive: true },
-        _count: { _all: true },
-      }),
-
-      // 12. team headcounts — each team with member count
-      prisma.team.findMany({
-        where: { ...buUserFilter, isActive: true },
-        select: {
-          id: true,
-          name: true,
-          category: true,
-          businessUnit: { select: { name: true } },
-          _count: { select: { members: { where: { isActive: true } } } },
-        },
-        orderBy: { createdAt: "asc" },
-      }),
-
-      // 13. openings pipeline aggregate
-      prisma.requirement.aggregate({
-        where: buFilter,
-        _sum: {
-          totalOpenings: true,
-          filledOpenings: true,
-          activeApplications: true,
-          interviewsScheduled: true,
-          offersRolledOut: true,
+      // 4. this week
+      prisma.requirement.count({
+        where: {
+          ...baseWhere,
+          createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
         },
       }),
 
-      // 14. recent 5 requirements
+      // 5. recent requirements
       prisma.requirement.findMany({
-        where: buFilter,
+        where: baseWhere,
         orderBy: { createdAt: "desc" },
-        take: 5,
+        take: 8,
         select: {
           id: true,
           reqCode: true,
           title: true,
           status: true,
           priority: true,
-          jobType: true,
-          remoteType: true,
           totalOpenings: true,
           filledOpenings: true,
+          respondBy: true,
+          isRespondByBreached: true,
           createdAt: true,
-          client: { select: { name: true } },
-          createdBy: { select: { firstName: true, lastName: true } },
-          businessUnit: { select: { name: true } },
+          client: { select: { id: true, name: true } },
+          businessUnit: { select: { id: true, name: true } },
+        },
+      }),
+
+      // 6. my active assignments
+      prisma.requirementAssignment.findMany({
+        where: {
+          status: "ACTIVE",
+          OR: [
+            { recruiterId: userId },
+            ...(req.scopeFilter?.teamIds?.length
+              ? [{ teamId: { in: req.scopeFilter.teamIds } }]
+              : []),
+          ],
+        },
+        orderBy: { assignedAt: "desc" },
+        take: 5,
+        select: {
+          id: true,
+          assignmentType: true,
+          allocatedOpenings: true,
+          filledOpenings: true,
+          submissionsCount: true,
+          deadline: true,
+          breachedAt: true,
+          team: { select: { id: true, name: true } },
+          requirement: {
+            select: {
+              id: true,
+              reqCode: true,
+              title: true,
+              status: true,
+              priority: true,
+              client: { select: { id: true, name: true } },
+            },
+          },
+        },
+      }),
+
+      // 7. upcoming deadlines (next 7 days, ACTIVE reqs)
+      prisma.requirement.findMany({
+        where: {
+          ...baseWhere,
+          status: "ACTIVE",
+          respondBy: {
+            gte: new Date(),
+            lte: new Date(Date.now() + 7 * 86_400_000),
+          },
+        },
+        orderBy: { respondBy: "asc" },
+        take: 5,
+        select: {
+          id: true,
+          reqCode: true,
+          title: true,
+          priority: true,
+          respondBy: true,
+          isRespondByBreached: true,
+          totalOpenings: true,
+          filledOpenings: true,
+          client: { select: { id: true, name: true } },
+        },
+      }),
+
+      // 8. top clients
+      prisma.client.findMany({
+        where: {
+          deletedAt: null,
+          ...(req.scopeFilter?.type === "BU" || req.scopeFilter?.type === "ALL"
+            ? req.scopeFilter.businessUnitId
+              ? { businessUnitId: req.scopeFilter.businessUnitId }
+              : {}
+            : { handlers: { some: { userId, status: "ACTIVE" } } }),
+        },
+        orderBy: { requirements: { _count: "desc" } },
+        take: 5,
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          industry: true,
+          _count: {
+            select: {
+              requirements: { where: { status: "ACTIVE", deletedAt: null } },
+            },
+          },
+        },
+      }),
+
+      // 9. activity feed
+      prisma.requirementActivity.findMany({
+        where: {
+          requirement: baseWhere,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+        select: {
+          id: true,
+          type: true,
+          summary: true,
+          createdAt: true,
+          actor: { select: { id: true, firstName: true, lastName: true } },
+          requirement: {
+            select: { id: true, reqCode: true, title: true },
+          },
         },
       }),
     ]);
 
-    // Resolve role names for the usersByRole breakdown
-    const roleIds = [...new Set(usersByRole.map((r) => r.roleId))];
-    const roles = await prisma.role.findMany({
-      where: { id: { in: roleIds } },
-      select: { id: true, name: true },
-    });
-    const roleMap = Object.fromEntries(roles.map((r) => [r.id, r.name]));
+    // Shape status map
+    const statusMap: Record<string, number> = {};
+    for (const row of reqByStatus) statusMap[row.status] = row._count._all;
 
-    return res.status(200).json({
+    const priorityMap: Record<string, number> = {};
+    for (const row of reqByPriority)
+      priorityMap[row.priority] = row._count._all;
+
+    const totalActive = statusMap["ACTIVE"] ?? 0;
+    const totalPending = statusMap["PENDING_APPROVAL"] ?? 0;
+    const totalDraft = statusMap["DRAFT"] ?? 0;
+    const totalOnHold = statusMap["ON_HOLD"] ?? 0;
+    const totalClosed = statusMap["CLOSED"] ?? 0;
+    const totalCancelled = statusMap["CANCELLED"] ?? 0;
+    const totalRequirements = Object.values(statusMap).reduce(
+      (a, b) => a + b,
+      0
+    );
+
+    res.json({
       success: true,
       data: {
-        totals: {
-          requirements: totalRequirements,
-          clients: totalClients,
-          users: totalUsers,
-          teams: totalTeams,
-        },
-        requirements: {
-          byStatus: requirementsByStatus.map((r) => ({
-            status: r.status,
-            count: r._count._all,
-          })),
-          byPriority: requirementsByPriority.map((r) => ({
-            priority: r.priority,
-            count: r._count._all,
-          })),
-          byJobType: requirementsByType.map((r) => ({
-            jobType: r.jobType,
-            count: r._count._all,
-          })),
-          byRemoteType: requirementsByRemoteType.map((r) => ({
-            remoteType: r.remoteType,
-            count: r._count._all,
-          })),
-        },
-        clients: {
-          byStatus: clientsByStatus.map((r) => ({
-            status: r.status,
-            count: r._count._all,
-          })),
-        },
-        users: {
-          byRole: usersByRole.map((r) => ({
-            roleId: r.roleId,
-            roleName: roleMap[r.roleId] ?? "Unknown",
-            count: r._count._all,
-          })),
-        },
-        teams: {
-          byCategory: teamsByCategory.map((r) => ({
-            category: r.category,
-            count: r._count._all,
-          })),
-          headcounts: teamHeadcounts.map((t) => ({
-            id: t.id,
-            name: t.name,
-            category: t.category,
-            businessUnit: t.businessUnit?.name ?? null,
-            memberCount: t._count.members,
-          })),
-        },
-        pipeline: {
-          totalOpenings: openingsPipeline._sum.totalOpenings ?? 0,
-          filledOpenings: openingsPipeline._sum.filledOpenings ?? 0,
-          activeApplications: openingsPipeline._sum.activeApplications ?? 0,
-          interviewsScheduled: openingsPipeline._sum.interviewsScheduled ?? 0,
-          offersRolledOut: openingsPipeline._sum.offersRolledOut ?? 0,
+        stats: {
+          totalRequirements,
+          active: totalActive,
+          pendingApproval: totalPending,
+          draft: totalDraft,
+          onHold: totalOnHold,
+          closed: totalClosed,
+          cancelled: totalCancelled,
+          breached: breachedCount,
+          thisWeek: thisWeekCount,
+          highPriority: priorityMap["HIGH"] ?? 0,
+          mediumPriority: priorityMap["MEDIUM"] ?? 0,
+          lowPriority: priorityMap["LOW"] ?? 0,
         },
         recentRequirements,
+        myAssignments,
+        upcomingDeadlines,
+        topClients,
+        recentActivity,
       },
     });
-  } catch (error) {
-    console.error("Dashboard summary error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching dashboard summary",
-    });
+  } catch (err) {
+    console.error("getDashboardSummary:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch dashboard summary" });
   }
 };
