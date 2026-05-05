@@ -1,3 +1,4 @@
+// types/express.d.ts
 declare global {
   namespace Express {
     interface Request {
@@ -6,16 +7,21 @@ declare global {
       validatedParams: any;
       file: any;
       permissionScope: any;
+      scopeFilter: any;
+      modulePermission: {
+        canView: boolean;
+        canAdd: boolean;
+        canEdit: boolean;
+        canDelete: boolean;
+        canViewScope: string;
+        canAddScope: string;
+        canEditScope: string;
+        canDeleteScope: string;
+      };
       user: {
         id: string;
-        isActive: boolean;
-        createdById: string | null;
-        createdAt: Date;
-        updatedAt: Date;
-        roleId: string;
         email: string;
         passwordHash: string;
-        passwordPlain: string | null;
         firstName: string;
         lastName: string;
         middleName: string | null;
@@ -28,8 +34,29 @@ declare global {
         dateOfBirth: Date | null;
         dateOfJoin: Date | null;
         isSuperAdmin: boolean;
+        isActive: boolean;
+        roleId: string;
         reportingToId: string | null;
-        businessUnitId: string | null;
+        teamLeadId: string | null;
+        departmentId: string | null;
+        createdById: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        role: {
+          id: string;
+          name: string;
+          permissions: {
+            module: string;
+            canView: boolean;
+            canAdd: boolean;
+            canEdit: boolean;
+            canDelete: boolean;
+            canViewScope: string;
+            canAddScope: string;
+            canEditScope: string;
+            canDeleteScope: string;
+          }[];
+        };
       };
     }
   }

@@ -20,43 +20,26 @@ import { Request, Response, NextFunction } from "express";
 //     }
 // }
 
+// middleware/auth.ts
+
 export const authenticateUser = async (
   req: Request,
   res: Response,
   next: NextFunction
 ) => {
   try {
-    // Get access token from cookies or Authorization header
-    let accessToken = req.cookies?.accessToken;
-    console.log("Authorization header:", req.cookies);
+    const accessToken = req.cookies?.accessToken;
 
     if (!accessToken) {
-      console.log("Authorization header:", req.cookies);
       res.status(401).json({
         success: false,
         message: "Access token not provided",
         code: "NO_TOKEN",
       });
       return;
-      // const authHeader = req.headers.authorization;
-      // if (authHeader && authHeader.startsWith("Bearer ")) {
-      //   accessToken = authHeader.substring(7);
-      // }
     }
 
-    // if (!accessToken) {
-    //   console.log("Access token not provided");
-    //   res.status(401).json({
-    //     success: false,
-    //     message: "Access token not provided",
-    //     code: "NO_TOKEN",
-    //   });
-    //   return;
-    // }
-
-    // Verify access token
     const decoded = verifyAccessToken(accessToken);
-    console.log("decoded: ", decoded);
 
     if (!decoded) {
       res.status(401).json({
@@ -67,19 +50,15 @@ export const authenticateUser = async (
       return;
     }
 
-    // Check if user exists and is active
     const user = await prisma.user.findUnique({
       where: { id: decoded.id },
       include: {
         role: {
-          include: {
-            permissions: true,
-          },
+          include: { permissions: true },
         },
-        teamMemberships: true,
       },
     });
-    console.log("Authenticated user: ", user);
+
     if (!user) {
       res.status(401).json({
         success: false,
@@ -98,8 +77,7 @@ export const authenticateUser = async (
       return;
     }
 
-    // Attach user to request
-    req.user = user;
+    req.user = user as any;
     next();
   } catch (error) {
     console.error("Authentication error:", error);
@@ -107,7 +85,6 @@ export const authenticateUser = async (
       success: false,
       message: "Internal server error during authentication",
     });
-    return;
   }
 };
 

@@ -1,3 +1,4 @@
+// routes/client.routes.ts
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
@@ -9,13 +10,9 @@ import {
   createClientSchema,
   updateClientSchema,
   updateClientStatusSchema,
-  addHandlerSchema,
-  updateHandlerRoleSchema,
-  removeHandlerSchema,
-  addContactSchema,
-  updateContactSchema,
   addClientNoteSchema,
-  assignTeamSchema,
+  addSpocSchema,
+  updateSpocSchema,
 } from "@/validators/client.validators";
 import {
   getClients,
@@ -25,34 +22,19 @@ import {
   updateClient,
   updateClientStatus,
   deleteClient,
-  addHandler,
-  removeHandler,
-  updateHandlerRole,
-  getContacts,
-  addContact,
-  updateContact,
-  removeContact,
   addClientNote,
   deleteClientNote,
-  assignTeam,
-  removeTeamAssignment,
+  addSpoc,
+  updateSpoc,
+  removeSpoc,
 } from "@/controller/client.controller";
 
 const router = Router();
 const scope = scopeFilter("clients");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Aggregates — BEFORE /:id
-// ─────────────────────────────────────────────────────────────────────────────
-
+// collection
 router.get("/mine", authenticateUser, getMyClients);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Collection
-// ─────────────────────────────────────────────────────────────────────────────
-
 router.get("/", authenticateUser, scope, getClients);
-
 router.post(
   "/",
   authenticateUser,
@@ -62,12 +44,8 @@ router.post(
   createClient
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Single client
-// ─────────────────────────────────────────────────────────────────────────────
-
+// single
 router.get("/:id", authenticateUser, scope, getClientById);
-
 router.put(
   "/:id",
   authenticateUser,
@@ -76,7 +54,6 @@ router.put(
   validate.body(updateClientSchema),
   updateClient
 );
-
 router.patch(
   "/:id/status",
   authenticateUser,
@@ -85,7 +62,6 @@ router.patch(
   validate.body(updateClientStatusSchema),
   updateClientStatus
 );
-
 router.delete(
   "/:id",
   authenticateUser,
@@ -94,73 +70,7 @@ router.delete(
   deleteClient
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Handlers
-// ─────────────────────────────────────────────────────────────────────────────
-
-router.post(
-  "/:id/handlers",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(addHandlerSchema),
-  addHandler
-);
-
-router.patch(
-  "/:id/handlers/:handlerId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(updateHandlerRoleSchema),
-  updateHandlerRole
-);
-
-router.delete(
-  "/:id/handlers/:handlerId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(removeHandlerSchema),
-  removeHandler
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Contacts
-// ─────────────────────────────────────────────────────────────────────────────
-
-router.get("/:id/contacts", authenticateUser, scope, getContacts);
-
-router.post(
-  "/:id/contacts",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(addContactSchema),
-  addContact
-);
-
-router.put(
-  "/:id/contacts/:contactId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(updateContactSchema),
-  updateContact
-);
-
-router.delete(
-  "/:id/contacts/:contactId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  removeContact
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Notes
-// ─────────────────────────────────────────────────────────────────────────────
-
+// notes
 router.post(
   "/:id/notes",
   authenticateUser,
@@ -168,28 +78,31 @@ router.post(
   validate.body(addClientNoteSchema),
   addClientNote
 );
-
 router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteClientNote);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Team assignments
-// ─────────────────────────────────────────────────────────────────────────────
-
+// spocs
 router.post(
-  "/:id/teams",
+  "/:id/spocs",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.body(assignTeamSchema),
-  assignTeam
+  validate.body(addSpocSchema),
+  addSpoc
 );
-
-router.delete(
-  "/:id/teams/:assignmentId",
+router.patch(
+  "/:id/spocs/:spocId",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  removeTeamAssignment
+  validate.body(updateSpocSchema),
+  updateSpoc
+);
+router.delete(
+  "/:id/spocs/:spocId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  removeSpoc
 );
 
 export default router;
