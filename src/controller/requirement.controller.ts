@@ -6,7 +6,61 @@ import {
   getRequirementScopeWhere,
 } from "@/services/requirementService";
 import { getSubordinateIds } from "@/services/orgService";
+// controller/requirement.controller.ts — add this
 
+// GET /requirements/stats
+export const getRequirementStats = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+    const [byStatusRaw, byPriorityRaw, breached, recentlyCreated] =
+      await Promise.all([
+        prisma.requirement.groupBy({
+          by: ["status"],
+          where: { ...scopeWhere, deletedAt: null },
+          _count: { _all: true },
+        }),
+        prisma.requirement.groupBy({
+          by: ["priority"],
+          where: { ...scopeWhere, deletedAt: null, status: "ACTIVE" },
+          _count: { _all: true },
+        }),
+        prisma.requirement.count({
+          where: {
+            ...scopeWhere,
+            deletedAt: null,
+            status: { in: ["ACTIVE", "PENDING_APPROVAL"] },
+            OR: [{ isRespondByBreached: true }, { isTurnaroundBreached: true }],
+          },
+        }),
+        prisma.requirement.count({
+          where: {
+            ...scopeWhere,
+            deletedAt: null,
+            createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+        }),
+      ]);
+
+    const byStatus = Object.fromEntries(
+      byStatusRaw.map((r) => [r.status, r._count._all])
+    );
+    const byPriority = Object.fromEntries(
+      byPriorityRaw.map((r) => [r.priority, r._count._all])
+    );
+
+    res.json({
+      success: true,
+      data: { byStatus, byPriority, breached, recentlyCreated },
+    });
+  } catch (err) {
+    console.error("getRequirementStats:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch stats" });
+  }
+};
 // ── GET /requirements
 export const getRequirements = async (req: Request, res: Response) => {
   try {
@@ -449,13 +503,11 @@ export const createRequirement = async (req: Request, res: Response) => {
       },
     });
 
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Requirement created",
-        data: requirement,
-      });
+    res.status(201).json({
+      success: true,
+      message: "Requirement created",
+      data: requirement,
+    });
   } catch (err) {
     console.error("createRequirement:", err);
     res
@@ -484,12 +536,10 @@ export const updateRequirement = async (req: Request, res: Response) => {
     }
 
     if (["CLOSED", "CANCELLED"].includes(existing.status)) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Cannot edit a closed or cancelled requirement",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Cannot edit a closed or cancelled requirement",
+      });
       return;
     }
 
@@ -653,12 +703,10 @@ export const deleteRequirement = async (req: Request, res: Response) => {
     }
 
     if (existing.status === "ACTIVE") {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Cannot delete an active requirement. Close it first.",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Cannot delete an active requirement. Close it first.",
+      });
       return;
     }
 
@@ -702,12 +750,10 @@ export const createAssignment = async (req: Request, res: Response) => {
     }
 
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Can only assign on active requirements",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Can only assign on active requirements",
+      });
       return;
     }
 
@@ -727,12 +773,10 @@ export const createAssignment = async (req: Request, res: Response) => {
     });
 
     if (duplicate) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "Already actively assigned to this person",
-        });
+      res.status(409).json({
+        success: false,
+        message: "Already actively assigned to this person",
+      });
       return;
     }
 
@@ -880,12 +924,10 @@ export const pushCandidate = async (req: Request, res: Response) => {
     });
 
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "Candidate already tagged to this requirement",
-        });
+      res.status(409).json({
+        success: false,
+        message: "Candidate already tagged to this requirement",
+      });
       return;
     }
 
@@ -936,12 +978,10 @@ export const updateCandidateStage = async (req: Request, res: Response) => {
     });
 
     if (!existing) {
-      res
-        .status(404)
-        .json({
-          success: false,
-          message: "Candidate not found on this requirement",
-        });
+      res.status(404).json({
+        success: false,
+        message: "Candidate not found on this requirement",
+      });
       return;
     }
 

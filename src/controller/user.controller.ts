@@ -522,12 +522,10 @@ export const assignReporting = async (req: Request, res: Response) => {
     if (reportingToId) {
       const subtree = await getSubordinateIds(id);
       if (subtree.includes(reportingToId)) {
-        res
-          .status(400)
-          .json({
-            success: false,
-            message: "Circular reporting chain detected",
-          });
+        res.status(400).json({
+          success: false,
+          message: "Circular reporting chain detected",
+        });
         return;
       }
     }
@@ -580,12 +578,10 @@ export const assignTeamLead = async (req: Request, res: Response) => {
     const { teamLeadId } = req.body;
 
     if (teamLeadId === id) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "User cannot be their own team lead",
-        });
+      res.status(400).json({
+        success: false,
+        message: "User cannot be their own team lead",
+      });
       return;
     }
 
@@ -716,10 +712,20 @@ export const assignRole = async (req: Request, res: Response) => {
 // full org tree rooted at this user
 // ─────────────────────────────────────────
 
+// import prisma from "@/utils/prisma/client";
+// import { Request, Response } from "express";
+
+// ── GET /users/:id/tree — enhanced with role, dept, location, join date
+
+// ── GET /users/:id/tree
+// Each node includes inline stats for canvas display:
+// activeReqs, totalSubmissions, totalInterviews, totalFilled,
+// requirementsCreated, clientSpocs
 export const getUserTree = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
+    // Step 1 — recursive CTE to pull full subtree
     const rows = await prisma.$queryRaw<
       {
         id: string;
@@ -728,37 +734,471 @@ export const getUserTree = async (req: Request, res: Response) => {
         employeeId: string | null;
         reportingToId: string | null;
         teamLeadId: string | null;
+        phone: string | null;
+        workingLocation: string | null;
+        dateOfJoin: Date | null;
+        isActive: boolean;
         depth: number;
+        roleId: string;
+        roleName: string;
+        departmentId: string | null;
+        departmentName: string | null;
       }[]
     >`
       WITH RECURSIVE org_tree AS (
-        SELECT id, "firstName", "lastName", "employeeId", "reportingToId", "teamLeadId", 0 as depth
-        FROM "User"
-        WHERE id = ${id}
+        SELECT
+          u.id, u."firstName", u."lastName", u."employeeId",
+          u."reportingToId", u."teamLeadId",
+          u.phone, u."workingLocation", u."dateOfJoin", u."isActive",
+          u."roleId", u."departmentId",
+          0 AS depth
+        FROM "User" u
+        WHERE u.id = ${id}
+
         UNION ALL
-        SELECT u.id, u."firstName", u."lastName", u."employeeId", u."reportingToId", u."teamLeadId", ot.depth + 1
+
+        SELECT
+          u.id, u."firstName", u."lastName", u."employeeId",
+          u."reportingToId", u."teamLeadId",
+          u.phone, u."workingLocation", u."dateOfJoin", u."isActive",
+          u."roleId", u."departmentId",
+          ot.depth + 1
         FROM "User" u
         INNER JOIN org_tree ot ON u."reportingToId" = ot.id
       )
-      SELECT * FROM org_tree ORDER BY depth
+      SELECT
+        ot.*,
+        r.name  AS "roleName",
+        d.name  AS "departmentName"
+      FROM org_tree ot
+      LEFT JOIN "Role"       r ON r.id = ot."roleId"
+      LEFT JOIN "Department" d ON d.id = ot."departmentId"
+      ORDER BY ot.depth
     `;
 
-    // build tree from flat rows
-    const map = new Map<string, any>();
-    rows.forEach((r) => map.set(r.id, { ...r, children: [] }));
+    if (rows.length === 0) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
 
-    const root = map.get(id);
+    const userIds = rows.map((r) => r.id);
+
+    // Step 2 — batch: assignment stats for all nodes (one query)
+    const assignmentStats = await prisma.requirementAssignment.groupBy({
+      by: ["assignedToId"],
+      where: { assignedToId: { in: userIds }, status: "ACTIVE" },
+      _count: { id: true },
+      _sum: {
+        submissionsCount: true,
+        interviewsCount: true,
+        filledOpenings: true,
+        allocatedOpenings: true,
+      },
+    });
+
+    // Step 3 — batch: requirements created count per user
+    const reqsCreated = await prisma.requirement.groupBy({
+      by: ["createdById"],
+      where: { createdById: { in: userIds }, deletedAt: null },
+      _count: { id: true },
+    });
+
+    // Step 4 — batch: active client SPOCs per user
+    const spocs = await prisma.clientSpoc.findMany({
+      where: { userId: { in: userIds }, isActive: true },
+      select: {
+        userId: true,
+        isPrimary: true,
+        client: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
+      },
+    });
+
+    // Build lookup maps
+    const statsMap = new Map(
+      assignmentStats.map((s) => [
+        s.assignedToId,
+        {
+          activeReqs: s._count.id,
+          totalSubmissions: s._sum.submissionsCount ?? 0,
+          totalInterviews: s._sum.interviewsCount ?? 0,
+          totalFilled: s._sum.filledOpenings ?? 0,
+          totalAllocated: s._sum.allocatedOpenings ?? 0,
+        },
+      ])
+    );
+
+    const reqsMap = new Map(
+      reqsCreated.map((r) => [r.createdById, r._count.id])
+    );
+
+    const spocsMap = new Map<string, typeof spocs>();
+    spocs.forEach((s) => {
+      if (!spocsMap.has(s.userId)) spocsMap.set(s.userId, []);
+      spocsMap.get(s.userId)!.push(s);
+    });
+
+    // Step 5 — build tree with stats on each node
+    const map = new Map<string, any>();
+    rows.forEach((r) => {
+      const s = statsMap.get(r.id);
+      map.set(r.id, {
+        id: r.id,
+        firstName: r.firstName,
+        lastName: r.lastName,
+        employeeId: r.employeeId,
+        reportingToId: r.reportingToId,
+        teamLeadId: r.teamLeadId,
+        phone: r.phone,
+        workingLocation: r.workingLocation,
+        dateOfJoin: r.dateOfJoin,
+        isActive: r.isActive,
+        role: { id: r.roleId, name: r.roleName },
+        department: r.departmentId
+          ? { id: r.departmentId, name: r.departmentName }
+          : null,
+        depth: r.depth,
+        stats: {
+          activeReqs: s?.activeReqs ?? 0,
+          totalSubmissions: s?.totalSubmissions ?? 0,
+          totalInterviews: s?.totalInterviews ?? 0,
+          totalFilled: s?.totalFilled ?? 0,
+          totalAllocated: s?.totalAllocated ?? 0,
+          requirementsCreated: reqsMap.get(r.id) ?? 0,
+          clientSpocs: spocsMap.get(r.id) ?? [],
+        },
+        children: [],
+      });
+    });
+
     rows.forEach((r) => {
       if (r.reportingToId && map.has(r.reportingToId) && r.id !== id) {
         map.get(r.reportingToId).children.push(map.get(r.id));
       }
     });
 
-    res.json({ success: true, data: root });
+    res.json({ success: true, data: map.get(id) });
   } catch (err) {
     console.error("getUserTree:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch org tree" });
+  }
+};
+
+// ── GET /users/:id/card
+// Full detail — all assignments + history, who assigned what,
+// assignments they gave to others, requirements created,
+// candidates sourced by stage, full chain context
+export const getUserCard = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        displayName: true,
+        employeeId: true,
+        email: true,
+        phone: true,
+        workingLocation: true,
+        timezone: true,
+        dateOfJoin: true,
+        dateOfBirth: true,
+        isActive: true,
+        isSuperAdmin: true,
+        createdAt: true,
+
+        role: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true } },
+
+        reportingTo: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            employeeId: true,
+            role: { select: { id: true, name: true } },
+          },
+        },
+        teamLead: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            employeeId: true,
+            role: { select: { id: true, name: true } },
+          },
+        },
+
+        // direct subordinates
+        subordinates: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            employeeId: true,
+            role: { select: { id: true, name: true } },
+          },
+          orderBy: { firstName: "asc" },
+        },
+
+        // team members under this TL
+        teamMembers: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            employeeId: true,
+            role: { select: { id: true, name: true } },
+          },
+          orderBy: { firstName: "asc" },
+        },
+
+        // ALL assignments received — active + history
+        assignmentsReceived: {
+          orderBy: { assignedAt: "desc" },
+          take: 30,
+          select: {
+            id: true,
+            depth: true,
+            status: true,
+            allocatedOpenings: true,
+            filledOpenings: true,
+            submissionsCount: true,
+            interviewsCount: true,
+            assignedAt: true,
+            removedAt: true,
+            removedReason: true,
+            deadline: true,
+            deadlineMet: true,
+            // who assigned this to them
+            assignedBy: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+            // parent assignment context (e.g. DM assignment above this recruiter)
+            parentAssignment: {
+              select: {
+                id: true,
+                depth: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    role: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+            // who they assigned down to (if they're a DM/TL)
+            childAssignments: {
+              where: { status: "ACTIVE" },
+              select: {
+                id: true,
+                depth: true,
+                submissionsCount: true,
+                interviewsCount: true,
+                filledOpenings: true,
+                allocatedOpenings: true,
+                assignedTo: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    employeeId: true,
+                    role: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+            requirement: {
+              select: {
+                id: true,
+                reqCode: true,
+                title: true,
+                status: true,
+                priority: true,
+                totalOpenings: true,
+                filledOpenings: true,
+                activeApplications: true,
+                interviewsScheduled: true,
+                offersRolledOut: true,
+                location: true,
+                jobType: true,
+                remoteType: true,
+                skills: true,
+                respondBy: true,
+                client: { select: { id: true, name: true, industry: true } },
+                businessUnit: { select: { id: true, name: true } },
+                serviceLine: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+
+        // assignments they GAVE to others (DM/TL perspective)
+        assignmentsGiven: {
+          where: { status: "ACTIVE" },
+          orderBy: { assignedAt: "desc" },
+          take: 20,
+          select: {
+            id: true,
+            depth: true,
+            submissionsCount: true,
+            interviewsCount: true,
+            filledOpenings: true,
+            allocatedOpenings: true,
+            assignedAt: true,
+            deadline: true,
+            assignedTo: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+            requirement: {
+              select: {
+                id: true,
+                reqCode: true,
+                title: true,
+                status: true,
+                priority: true,
+                client: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+
+        // requirements they created
+        requirementsCreated: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+          select: {
+            id: true,
+            reqCode: true,
+            title: true,
+            status: true,
+            priority: true,
+            totalOpenings: true,
+            filledOpenings: true,
+            activeApplications: true,
+            interviewsScheduled: true,
+            createdAt: true,
+            client: { select: { id: true, name: true } },
+            businessUnit: { select: { id: true, name: true } },
+          },
+        },
+
+        // active client SPOCs with full client detail
+        clientSpocs: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            isPrimary: true,
+            notes: true,
+            assignedAt: true,
+            client: {
+              select: {
+                id: true,
+                name: true,
+                industry: true,
+                city: true,
+                country: true,
+                _count: { select: { requirements: true } },
+              },
+            },
+            serviceLine: { select: { id: true, name: true } },
+            businessUnit: { select: { id: true, name: true } },
+            assignedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+
+        _count: {
+          select: {
+            subordinates: true,
+            teamMembers: true,
+            assignmentsReceived: { where: { status: "ACTIVE" } },
+            assignmentsGiven: { where: { status: "ACTIVE" } },
+            requirementsCreated: { where: { deletedAt: null } },
+            clientSpocs: { where: { isActive: true } },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+
+    // Candidates sourced via their assignments — grouped by stage
+    const candidateStats = await prisma.requirementCandidate.groupBy({
+      by: ["currentStage"],
+      where: { assignment: { assignedToId: id } },
+      _count: { id: true },
+    });
+
+    const totalCandidatesSourced = candidateStats.reduce(
+      (sum, s) => sum + s._count.id,
+      0
+    );
+    const candidatesByStage = Object.fromEntries(
+      candidateStats.map((s) => [s.currentStage, s._count.id])
+    );
+
+    // Pre-compute aggregate stats across all active assignments
+    const activeAssignments = user.assignmentsReceived.filter(
+      (a) => a.status === "ACTIVE"
+    );
+
+    const aggregateStats = {
+      activeReqs: user._count.assignmentsReceived,
+      totalSubmissions: activeAssignments.reduce(
+        (s, a) => s + a.submissionsCount,
+        0
+      ),
+      totalInterviews: activeAssignments.reduce(
+        (s, a) => s + a.interviewsCount,
+        0
+      ),
+      totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
+      totalAllocated: activeAssignments.reduce(
+        (s, a) => s + (a.allocatedOpenings ?? 0),
+        0
+      ),
+      totalAssignmentsGiven: user._count.assignmentsGiven,
+      requirementsCreated: user._count.requirementsCreated,
+      clientSpocsCount: user._count.clientSpocs,
+      candidatesSourced: totalCandidatesSourced,
+      candidatesByStage,
+    };
+
+    res.json({
+      success: true,
+      data: { ...user, aggregateStats },
+    });
+  } catch (err) {
+    console.error("getUserCard:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch user card" });
   }
 };

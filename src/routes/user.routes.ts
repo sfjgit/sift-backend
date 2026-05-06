@@ -27,6 +27,7 @@ import {
   assignDepartment,
   assignRole,
   getUserTree,
+  getUserCard,
 } from "@/controller/user.controller";
 
 const router = Router();
@@ -37,6 +38,7 @@ router.use(scopeFilter("users"));
 router.get("/", validate.query(listUsersQuery), listUsers);
 router.get("/:id", validate.params(userIdParams), getUserById);
 router.get("/:id/tree", validate.params(userIdParams), getUserTree);
+router.get("/:id/card", authenticateUser, getUserCard);
 
 router.post(
   "/",

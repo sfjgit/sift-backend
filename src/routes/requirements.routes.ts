@@ -28,11 +28,13 @@ import {
   pushCandidate,
   updateCandidateStage,
   getCandidates,
+  getRequirementStats,
 } from "@/controller/requirement.controller";
 
 const router = Router();
 const scope = scopeFilter("requirements");
 
+router.get("/stats", authenticateUser, scope, getRequirementStats);
 // collection
 router.get("/", authenticateUser, scope, getRequirements);
 router.post(
