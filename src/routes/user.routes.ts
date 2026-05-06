@@ -1,74 +1,85 @@
+// routes/user.routes.ts
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
   scopeFilter,
   checkPermission,
 } from "@/middleware/scopeFilter.middleware";
+import { validate } from "@/validators/validator";
 import {
   createUserBody,
   updateUserBody,
-  deactivateUserBody,
   userIdParams,
   listUsersQuery,
+  assignReportingBody,
+  assignTeamLeadBody,
+  assignDepartmentBody,
+  assignRoleBody,
 } from "@/validators/user.validators";
 import {
   listUsers,
   getUserById,
   createUser,
   updateUser,
-  deactivateUser,
-  reactivateUser,
-  getUserFormData,
-  searchUsers,
+  toggleUser,
+  assignReporting,
+  assignTeamLead,
+  assignDepartment,
+  assignRole,
+  getUserTree,
 } from "@/controller/user.controller";
-import { validate } from "@/validators/validator";
 
 const router = Router();
 
-// All routes: auth → scope → permission check → validate → controller
 router.use(authenticateUser);
 router.use(scopeFilter("users"));
 
-// ── Utility — before /:id ────────────────────────────────────────────────────
-router.get("/form-data", getUserFormData);
-router.get("/search", searchUsers);
-
-// ── List ─────────────────────────────────────────────────────────────────────
 router.get("/", validate.query(listUsersQuery), listUsers);
+router.get("/:id", validate.params(userIdParams), getUserById);
+router.get("/:id/tree", validate.params(userIdParams), getUserTree);
 
-// ── Create ───────────────────────────────────────────────────────────────────
 router.post(
   "/",
   checkPermission("canAdd"),
   validate.body(createUserBody),
   createUser
 );
-
-// ── Get by ID ────────────────────────────────────────────────────────────────
-router.get("/:id", validate.params(userIdParams), getUserById);
-
-// ── Update ───────────────────────────────────────────────────────────────────
 router.put(
   "/:id",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: updateUserBody }),
   updateUser
 );
-
-// ── Deactivate ───────────────────────────────────────────────────────────────
-router.put(
-  "/:id/deactivate",
-  checkPermission("canDelete"),
-  validate.request({ params: userIdParams, body: deactivateUserBody }),
-  deactivateUser
+router.patch(
+  "/:id/toggle",
+  checkPermission("canEdit"),
+  validate.params(userIdParams),
+  toggleUser
 );
 
-// ── Reactivate ───────────────────────────────────────────────────────────────
-router.put(
-  "/:id/reactivate",
-  checkPermission("canDelete"),
-  validate.params(userIdParams),
-  reactivateUser
+router.patch(
+  "/:id/reporting",
+  checkPermission("canEdit"),
+  validate.request({ params: userIdParams, body: assignReportingBody }),
+  assignReporting
+);
+router.patch(
+  "/:id/teamlead",
+  checkPermission("canEdit"),
+  validate.request({ params: userIdParams, body: assignTeamLeadBody }),
+  assignTeamLead
+);
+router.patch(
+  "/:id/department",
+  checkPermission("canEdit"),
+  validate.request({ params: userIdParams, body: assignDepartmentBody }),
+  assignDepartment
+);
+router.patch(
+  "/:id/role",
+  checkPermission("canEdit"),
+  validate.request({ params: userIdParams, body: assignRoleBody }),
+  assignRole
 );
 
 export default router;

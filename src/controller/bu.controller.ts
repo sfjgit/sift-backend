@@ -1,11 +1,32 @@
+// controller/bu.controller.ts
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import type { CreateBUInput, UpdateBUInput } from "@/validators/bu.validator";
 
 // ─────────────────────────────────────────
-// LIST BUSINESS UNITS
+// ancestorIds maintenance
+// call this on create/update whenever parentBUId changes
+// ─────────────────────────────────────────
+
+async function resolveAncestorIds(
+  parentBUId: string | null | undefined
+): Promise<string[]> {
+  if (!parentBUId) return [];
+
+  const parent = await prisma.businessUnit.findUnique({
+    where: { id: parentBUId },
+    select: { id: true, ancestorIds: true },
+  });
+
+  if (!parent) return [];
+
+  // parent's ancestors + parent itself
+  return [...parent.ancestorIds, parent.id];
+}
+
+// ─────────────────────────────────────────
 // GET /business-units
-// Returns full tree — each BU with its children nested
+// returns flat list + nested tree both
 // ─────────────────────────────────────────
 
 export const listBusinessUnits = async (req: Request, res: Response) => {
@@ -15,21 +36,21 @@ export const listBusinessUnits = async (req: Request, res: Response) => {
       select: {
         id: true,
         name: true,
+        code: true,
         isActive: true,
         parentBUId: true,
+        ancestorIds: true,
         createdAt: true,
         _count: {
           select: {
-            users: true,
-            teams: true,
             clients: true,
-            requirements: true,
+            // requirements: true,
           },
         },
       },
     });
 
-    // Build tree client-side — group children under parents
+    // build tree in memory
     const map = new Map<string, any>();
     all.forEach((bu) => map.set(bu.id, { ...bu, children: [] }));
 
@@ -44,7 +65,7 @@ export const listBusinessUnits = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: roots, flat: all });
   } catch (err) {
-    console.error("listBusinessUnits error:", err);
+    console.error("listBusinessUnits:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch business units" });
@@ -52,13 +73,7 @@ export const listBusinessUnits = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────
-// GET BU BY ID
 // GET /business-units/:id
-//
-// Teams are fetched in a separate block grouped by arc.
-// Full team hierarchy/canvas lives in the TeamArc API —
-// this endpoint only surfaces the essential summary per arc
-// filtered to this BU, so the frontend can link out to each arc.
 // ─────────────────────────────────────────
 
 export const getBusinessUnitById = async (req: Request, res: Response) => {
@@ -70,120 +85,57 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
       select: {
         id: true,
         name: true,
+        code: true,
         isActive: true,
+        ancestorIds: true,
         createdAt: true,
 
-        // ── Parent chain (for breadcrumb) ──────────────────────
+        // parent chain for breadcrumb
         parentBU: {
           select: {
             id: true,
             name: true,
             isActive: true,
-            parentBU: {
-              select: { id: true, name: true, isActive: true },
-            },
+            parentBU: { select: { id: true, name: true } },
           },
         },
 
-        // ── Child BUs ──────────────────────────────────────────
+        // child BUs
         childBUs: {
           select: {
             id: true,
             name: true,
+            code: true,
             isActive: true,
-            _count: { select: { users: true, teams: true, clients: true } },
+            _count: { select: { clients: true } },
             childBUs: {
-              select: {
-                id: true,
-                name: true,
-                isActive: true,
-                _count: { select: { users: true } },
-              },
+              select: { id: true, name: true, isActive: true },
               orderBy: { name: "asc" },
             },
           },
           orderBy: { name: "asc" },
         },
 
-        // ── Team Arcs in this BU — each arc with its teams (flat, essential only) ──
-        // Full tree/canvas is fetched separately via GET /team-arcs/:arcId
-        teamArcs: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            name: true,
-            description: true,
-            isActive: true,
-            _count: { select: { teams: true } },
-            teams: {
-              where: { isActive: true },
-              select: {
-                id: true,
-                name: true,
-                nodeType: true,
-                category: true,
-                _count: {
-                  select: {
-                    members: { where: { isActive: true } },
-                  },
-                },
-              },
-              orderBy: { name: "asc" },
-            },
-          },
-          orderBy: { name: "asc" },
-        },
-
-        // ── Users with their team memberships ─────────────────
-        users: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            employeeId: true,
-            role: { select: { id: true, name: true } },
-            teamMemberships: {
-              where: { isActive: true },
-              select: {
-                teamRole: true,
-                team: { select: { id: true, name: true, category: true } },
-              },
-            },
-          },
-          orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-          take: 50,
-        },
-
-        // ── Clients with handler + open requirement count ──────
+        // clients under this BU
         clients: {
           where: { deletedAt: null },
           select: {
             id: true,
             name: true,
-            category: true,
             industry: true,
             status: true,
-            handlers: {
-              where: { status: "ACTIVE" },
+            spocs: {
+              where: { isActive: true },
               select: {
-                role: true,
-                user: {
-                  select: {
-                    id: true,
-                    firstName: true,
-                    lastName: true,
-                  },
-                },
+                isPrimary: true,
+                user: { select: { id: true, firstName: true, lastName: true } },
+                serviceLine: { select: { id: true, name: true } },
               },
-              take: 3,
+              take: 2,
             },
             _count: {
               select: {
-                requirements: {
-                  where: { status: "ACTIVE", deletedAt: null },
-                },
+                requirements: { where: { status: "ACTIVE", deletedAt: null } },
               },
             },
           },
@@ -191,8 +143,8 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           take: 25,
         },
 
-        // ── Requirements (top 20, hottest first) ──────────────
-        requirements: {
+        // top requirements
+        requirementsBU: {
           where: { deletedAt: null },
           select: {
             id: true,
@@ -202,24 +154,20 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
             priority: true,
             totalOpenings: true,
             filledOpenings: true,
-            salaryMin: true,
-            salaryMax: true,
-            salaryType: true,
             respondBy: true,
             isRespondByBreached: true,
             client: { select: { id: true, name: true } },
+            serviceLine: { select: { id: true, name: true } },
           },
           orderBy: [{ isRespondByBreached: "desc" }, { updatedAt: "desc" }],
           take: 20,
         },
 
-        // ── Counts ────────────────────────────────────────────
         _count: {
           select: {
-            users: true,
-            teams: true,
             clients: { where: { deletedAt: null } },
-            requirements: { where: { deletedAt: null } },
+            requirementsBU: { where: { deletedAt: null } },
+            clientSpocs: { where: { isActive: true } },
           },
         },
       },
@@ -232,10 +180,18 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Requirements breakdown by status ──────────────────────
+    // requirement breakdown by status for this BU
+    // uses ancestorIds — catches sub-BU requirements too
+    const allBUIds = [id];
+    const children = await prisma.businessUnit.findMany({
+      where: { ancestorIds: { has: id } },
+      select: { id: true },
+    });
+    children.forEach((c) => allBUIds.push(c.id));
+
     const reqStatusCounts = await prisma.requirement.groupBy({
       by: ["status"],
-      where: { businessUnitId: id, deletedAt: null },
+      where: { businessUnitId: { in: allBUIds }, deletedAt: null },
       _count: { _all: true },
     });
 
@@ -245,13 +201,10 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      data: {
-        ...bu,
-        reqBreakdown,
-      },
+      data: { ...bu, reqBreakdown },
     });
   } catch (err) {
-    console.error("getBusinessUnitById error:", err);
+    console.error("getBusinessUnitById:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch business unit" });
@@ -259,7 +212,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────
-// CREATE BU
 // POST /business-units
 // ─────────────────────────────────────────
 
@@ -271,57 +223,80 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
     const existing = await prisma.businessUnit.findUnique({
       where: { name: body.name },
     });
+
     if (existing) {
       res
         .status(409)
-        .json({ success: false, message: "Business Unit name already exists" });
+        .json({ success: false, message: "BU name already exists" });
       return;
+    }
+
+    if (body.code) {
+      const codeConflict = await prisma.businessUnit.findUnique({
+        where: { code: body.code },
+      });
+      if (codeConflict) {
+        res
+          .status(409)
+          .json({ success: false, message: "BU code already exists" });
+        return;
+      }
     }
 
     if (body.parentBUId) {
       const parent = await prisma.businessUnit.findUnique({
         where: { id: body.parentBUId },
+        select: { id: true },
       });
       if (!parent) {
         res
           .status(404)
-          .json({ success: false, message: "Parent Business Unit not found" });
+          .json({ success: false, message: "Parent BU not found" });
         return;
       }
     }
 
-    const bu = await prisma.businessUnit.create({
-      data: {
-        name: body.name,
-        parentBUId: body.parentBUId ?? null,
-        isActive: true,
-      },
-      select: {
-        id: true,
-        name: true,
-        isActive: true,
-        createdAt: true,
-        parentBU: { select: { id: true, name: true } },
-      },
+    // resolve ancestorIds before creating
+    const ancestorIds = await resolveAncestorIds(body.parentBUId);
+
+    const bu = await prisma.$transaction(async (tx) => {
+      const created = await tx.businessUnit.create({
+        data: {
+          name: body.name,
+          code: body.code ?? null,
+          parentBUId: body.parentBUId ?? null,
+          ancestorIds,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          isActive: true,
+          ancestorIds: true,
+          createdAt: true,
+          parentBU: { select: { id: true, name: true } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: "CREATE",
+          module: "business_units",
+          recordId: created.id,
+          newData: { name: created.name, code: created.code },
+          ip: req.ip,
+          userAgent: req.headers["user-agent"] ?? null,
+        },
+      });
+
+      return created;
     });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "CREATE",
-        module: "business_units",
-        recordId: bu.id,
-        newData: { name: bu.name },
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
-    });
-
-    res
-      .status(201)
-      .json({ success: true, data: bu, message: "Business Unit created" });
+    res.status(201).json({ success: true, message: "BU created", data: bu });
   } catch (err) {
-    console.error("createBusinessUnit error:", err);
+    console.error("createBusinessUnit:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to create business unit" });
@@ -329,7 +304,6 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────
-// UPDATE BU
 // PUT /business-units/:id
 // ─────────────────────────────────────────
 
@@ -339,11 +313,19 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
     const body = req.body as UpdateBUInput;
     const actorId = req.user!.id;
 
-    const existing = await prisma.businessUnit.findUnique({ where: { id } });
+    const existing = await prisma.businessUnit.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        isActive: true,
+        parentBUId: true,
+      },
+    });
+
     if (!existing) {
-      res
-        .status(404)
-        .json({ success: false, message: "Business Unit not found" });
+      res.status(404).json({ success: false, message: "BU not found" });
       return;
     }
 
@@ -352,58 +334,100 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
         where: { name: body.name },
       });
       if (clash) {
-        res.status(409).json({
-          success: false,
-          message: "Business Unit name already exists",
-        });
+        res
+          .status(409)
+          .json({ success: false, message: "BU name already exists" });
         return;
       }
     }
 
-    if (body.parentBUId && body.parentBUId === id) {
+    if (body.code && body.code !== existing.code) {
+      const codeClash = await prisma.businessUnit.findUnique({
+        where: { code: body.code },
+      });
+      if (codeClash) {
+        res
+          .status(409)
+          .json({ success: false, message: "BU code already exists" });
+        return;
+      }
+    }
+
+    if (body.parentBUId === id) {
       res
         .status(400)
         .json({ success: false, message: "A BU cannot be its own parent" });
       return;
     }
 
-    const updated = await prisma.businessUnit.update({
-      where: { id },
-      data: {
-        ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
-        ...(body.parentBUId !== undefined
-          ? { parentBUId: body.parentBUId }
-          : {}),
-      },
-      select: {
-        id: true,
-        name: true,
-        isActive: true,
-        parentBU: { select: { id: true, name: true } },
-      },
+    // if parentBUId changed — recalculate ancestorIds
+    // and cascade update to all children
+    const parentChanged =
+      body.parentBUId !== undefined && body.parentBUId !== existing.parentBUId;
+    const newAncestorIds = parentChanged
+      ? await resolveAncestorIds(body.parentBUId)
+      : undefined;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.businessUnit.update({
+        where: { id },
+        data: {
+          ...(body.name !== undefined && { name: body.name }),
+          ...(body.code !== undefined && { code: body.code }),
+          ...(body.isActive !== undefined && { isActive: body.isActive }),
+          ...(body.parentBUId !== undefined && { parentBUId: body.parentBUId }),
+          ...(newAncestorIds !== undefined && { ancestorIds: newAncestorIds }),
+        },
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          isActive: true,
+          ancestorIds: true,
+          parentBU: { select: { id: true, name: true } },
+        },
+      });
+
+      // cascade ancestorIds update to all children
+      if (parentChanged) {
+        const children = await tx.businessUnit.findMany({
+          where: { ancestorIds: { has: id } },
+          select: { id: true, ancestorIds: true },
+        });
+
+        for (const child of children) {
+          // rebuild child's ancestorIds:
+          // everything before this BU in its chain + new chain for this BU + this BU
+          const idxInChild = child.ancestorIds.indexOf(id);
+          const suffix = child.ancestorIds.slice(idxInChild); // keeps id + anything below
+          const newChildAncestors = [...newAncestorIds, ...suffix];
+
+          await tx.businessUnit.update({
+            where: { id: child.id },
+            data: { ancestorIds: newChildAncestors },
+          });
+        }
+      }
+
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: "UPDATE",
+          module: "business_units",
+          recordId: id,
+          oldData: { name: existing.name, isActive: existing.isActive },
+          newData: body,
+          ip: req.ip,
+          userAgent: req.headers["user-agent"] ?? null,
+        },
+      });
+
+      return u;
     });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "UPDATE",
-        module: "business_units",
-        recordId: id,
-        oldData: { name: existing.name, isActive: existing.isActive },
-        newData: body,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
-    });
-
-    res.json({
-      success: true,
-      data: updated,
-      message: "Business Unit updated",
-    });
+    res.json({ success: true, message: "BU updated", data: updated });
   } catch (err) {
-    console.error("updateBusinessUnit error:", err);
+    console.error("updateBusinessUnit:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to update business unit" });
@@ -411,9 +435,8 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────
-// DELETE BU
 // DELETE /business-units/:id
-// Blocked if has users, teams, clients, or child BUs
+// blocked if has clients, child BUs, requirements
 // ─────────────────────────────────────────
 
 export const deleteBusinessUnit = async (req: Request, res: Response) => {
@@ -428,28 +451,25 @@ export const deleteBusinessUnit = async (req: Request, res: Response) => {
         name: true,
         _count: {
           select: {
-            users: true,
-            teams: true,
             clients: true,
             childBUs: true,
+            requirementsBU: true,
           },
         },
       },
     });
 
     if (!bu) {
-      res
-        .status(404)
-        .json({ success: false, message: "Business Unit not found" });
+      res.status(404).json({ success: false, message: "BU not found" });
       return;
     }
 
     const blockers: string[] = [];
-    if (bu._count.users > 0) blockers.push(`${bu._count.users} user(s)`);
-    if (bu._count.teams > 0) blockers.push(`${bu._count.teams} team(s)`);
-    if (bu._count.clients > 0) blockers.push(`${bu._count.clients} client(s)`);
     if (bu._count.childBUs > 0)
       blockers.push(`${bu._count.childBUs} child BU(s)`);
+    if (bu._count.clients > 0) blockers.push(`${bu._count.clients} client(s)`);
+    if (bu._count.requirementsBU > 0)
+      blockers.push(`${bu._count.requirementsBU} requirement(s)`);
 
     if (blockers.length > 0) {
       res.status(409).json({
@@ -461,23 +481,25 @@ export const deleteBusinessUnit = async (req: Request, res: Response) => {
       return;
     }
 
-    await prisma.businessUnit.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.businessUnit.delete({ where: { id } });
 
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "DELETE",
-        module: "business_units",
-        recordId: id,
-        oldData: { name: bu.name },
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: "DELETE",
+          module: "business_units",
+          recordId: id,
+          oldData: { name: bu.name },
+          ip: req.ip,
+          userAgent: req.headers["user-agent"] ?? null,
+        },
+      });
     });
 
-    res.json({ success: true, message: "Business Unit deleted" });
+    res.json({ success: true, message: "BU deleted" });
   } catch (err) {
-    console.error("deleteBusinessUnit error:", err);
+    console.error("deleteBusinessUnit:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to delete business unit" });

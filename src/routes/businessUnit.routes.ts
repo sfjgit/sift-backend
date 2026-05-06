@@ -1,10 +1,11 @@
+// routes/bu.routes.ts
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
   scopeFilter,
   checkPermission,
 } from "@/middleware/scopeFilter.middleware";
-// import { validate } from "@/middleware/validate";
+import { validate } from "@/validators/validator";
 import {
   createBUBody,
   updateBUBody,
@@ -17,7 +18,6 @@ import {
   updateBusinessUnit,
   deleteBusinessUnit,
 } from "@/controller/bu.controller";
-import { validate } from "@/validators/validator";
 
 const router = Router();
 
@@ -25,23 +25,19 @@ router.use(authenticateUser);
 router.use(scopeFilter("business_units"));
 
 router.get("/", listBusinessUnits);
-
+router.get("/:id", validate.params(buIdParams), getBusinessUnitById);
 router.post(
   "/",
   checkPermission("canAdd"),
   validate.body(createBUBody),
   createBusinessUnit
 );
-
-router.get("/:id", validate.params(buIdParams), getBusinessUnitById);
-
 router.put(
   "/:id",
   checkPermission("canEdit"),
   validate.request({ params: buIdParams, body: updateBUBody }),
   updateBusinessUnit
 );
-
 router.delete(
   "/:id",
   checkPermission("canDelete"),

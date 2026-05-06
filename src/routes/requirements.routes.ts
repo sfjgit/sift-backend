@@ -1,77 +1,40 @@
+// routes/requirement.routes.ts
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-// import { scopeFilter, checkPermission } from "@/middleware/scope";
+import {
+  scopeFilter,
+  checkPermission,
+} from "@/middleware/scopeFilter.middleware";
 import { validate } from "@/validators/validator";
 import {
-  getRequirementsSchema,
-  getReqByIdSchema,
   createRequirementSchema,
   updateRequirementSchema,
-  updateStatusSchema,
+  updateRequirementStatusSchema,
   createAssignmentSchema,
-  updateAssignmentSchema,
-  updateProgressSchema,
+  pushCandidateSchema,
+  updateCandidateStageSchema,
   addNoteSchema,
-  calendarSchema,
 } from "@/validators/requirement.validators";
 import {
   getRequirements,
   getRequirementById,
+  getRequirementTree,
   createRequirement,
   updateRequirement,
   updateRequirementStatus,
+  deleteRequirement,
   createAssignment,
   removeAssignment,
-  updateAssignment,
-  updateProgress,
-  addNote,
-  deleteNote,
-  getMyQueue,
-  getRequirementsCalendar,
-  getRequirementStats,
+  pushCandidate,
+  updateCandidateStage,
+  getCandidates,
 } from "@/controller/requirement.controller";
-import {
-  checkPermission,
-  scopeFilter,
-} from "@/middleware/scopeFilter.middleware";
-import { getAssignableTargets } from "@/controller/workspace.controller";
 
 const router = Router();
 const scope = scopeFilter("requirements");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Aggregates — must be BEFORE /:id to avoid param clash
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET /requirements/stats        — dashboard counts scoped to caller
-router.get("/stats", authenticateUser, scope, getRequirementStats);
-
-// // GET /requirements/my-queue     — caller's personal work queue
-router.get("/my-queue", authenticateUser, scope, getMyQueue);
-
-// // GET /requirements/calendar     — respondBy calendar view
-router.get(
-  "/calendar",
-  authenticateUser,
-  scope,
-  validate.query(calendarSchema),
-  getRequirementsCalendar
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Collection
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET  /requirements
-router.get(
-  "/",
-  authenticateUser,
-  scope,
-  validate.query(getRequirementsSchema),
-  getRequirements
-);
-
-// POST /requirements
+// collection
+router.get("/", authenticateUser, scope, getRequirements);
 router.post(
   "/",
   authenticateUser,
@@ -80,118 +43,112 @@ router.post(
   validate.body(createRequirementSchema),
   createRequirement
 );
-// GET /requirements/:id/assignable-targets
-// Returns DM teams (for sales) or child teams+members (for DM)
-// based on who is calling and what's already assigned
-router.get(
-  "/:id/assignable-targets",
-  authenticateUser,
-  scope,
-  getAssignableTargets
-);
-// ─────────────────────────────────────────────────────────────────────────────
-// Single requirement
-// ─────────────────────────────────────────────────────────────────────────────
 
-// GET  /requirements/:id
-router.get(
-  "/:id",
-  authenticateUser,
-  scope,
-  validate.params(getReqByIdSchema),
-  getRequirementById
-);
-
-// PUT  /requirements/:id
+// single
+router.get("/:id", authenticateUser, scope, getRequirementById);
 router.put(
   "/:id",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.params(getReqByIdSchema),
   validate.body(updateRequirementSchema),
   updateRequirement
 );
-
-// PATCH /requirements/:id/status
 router.patch(
   "/:id/status",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.params(getReqByIdSchema),
-  validate.body(updateStatusSchema),
+  validate.body(updateRequirementStatusSchema),
   updateRequirementStatus
 );
+router.delete(
+  "/:id",
+  authenticateUser,
+  scope,
+  checkPermission("canDelete"),
+  deleteRequirement
+);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Assignments
-// ─────────────────────────────────────────────────────────────────────────────
+// tree view
+router.get("/:id/tree", authenticateUser, scope, getRequirementTree);
 
-// POST   /requirements/:id/assign
+// assignments
 router.post(
-  "/:id/assign",
+  "/:id/assignments",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.params(getReqByIdSchema),
   validate.body(createAssignmentSchema),
   createAssignment
 );
-
-// PATCH  /requirements/:id/assignments/:assignmentId
-router.patch(
-  "/:id/assignments/:assignmentId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.params(getReqByIdSchema),
-  validate.body(updateAssignmentSchema),
-  updateAssignment
-);
-
-// DELETE /requirements/:id/assignments/:assignmentId
 router.delete(
   "/:id/assignments/:assignmentId",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.params(getReqByIdSchema),
   removeAssignment
 );
 
-// PATCH  /requirements/:id/assignments/:assignmentId/progress
-// Only the assigned recruiter calls this — no canEdit check, controller guards by recruiterId
-router.patch(
-  "/:id/assignments/:assignmentId/progress",
+// candidates
+router.get("/:id/candidates", authenticateUser, scope, getCandidates);
+router.post(
+  "/:id/candidates",
   authenticateUser,
   scope,
-  validate.params(getReqByIdSchema),
-  validate.body(updateProgressSchema),
-  updateProgress
+  validate.body(pushCandidateSchema),
+  pushCandidate
+);
+router.patch(
+  "/:id/candidates/:candidateId/stage",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(updateCandidateStageSchema),
+  updateCandidateStage
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Notes
-// ─────────────────────────────────────────────────────────────────────────────
+// add to requirement.routes.ts
 
-// POST   /requirements/:id/notes
+// import { upload } from "@/utils/s3";
+import {
+  addNote,
+  deleteNote,
+  addDocument,
+  getDocuments,
+  resolveDocument,
+  getActivities,
+} from "@/controller/requirementExtras.controller";
+import { upload } from "@/services/s3.service";
+
+// notes
 router.post(
   "/:id/notes",
   authenticateUser,
   scope,
-  validate.params(getReqByIdSchema),
   validate.body(addNoteSchema),
   addNote
 );
+router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteNote);
 
-// DELETE /requirements/:id/notes/:noteId
-router.delete(
-  "/:id/notes/:noteId",
+// documents — multer on the upload route only
+router.get("/:id/documents", authenticateUser, scope, getDocuments);
+router.post(
+  "/:id/documents",
   authenticateUser,
   scope,
-  validate.params(getReqByIdSchema),
-  deleteNote
+  upload.single("file"),
+  addDocument
 );
+router.patch(
+  "/:id/documents/:docId/resolve",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  resolveDocument
+);
+
+// activities
+router.get("/:id/activities", authenticateUser, scope, getActivities);
 
 export default router;

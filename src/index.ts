@@ -1,18 +1,22 @@
-
 import dotenv from "dotenv";
 import app from "./server";
 import prisma from "./utils/prisma/client";
+import { startBreachChecker } from "./cron/breachChecker";
+import { startAssignmentDeadlineChecker } from "./cron/assignmentDeadlineChecker";
 
 dotenv.config();
 
 const PORT = process.env.PORT || 3001;
-
 
 // Health check before starting server
 async function startServer() {
   try {
     await prisma.$connect();
     console.log("✅ Connected to PostgreSQL via Prisma==============");
+
+    // start crons
+    startBreachChecker();
+    startAssignmentDeadlineChecker();
 
     app.listen(PORT, () => {
       console.log(`🚀 Auth service running on http://localhost:${PORT}`);
