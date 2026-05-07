@@ -28,6 +28,7 @@ import {
   assignRole,
   getUserTree,
   getUserCard,
+  getMySubordinates,
 } from "@/controller/user.controller";
 
 const router = Router();
@@ -36,6 +37,7 @@ router.use(authenticateUser);
 router.use(scopeFilter("users"));
 
 router.get("/", validate.query(listUsersQuery), listUsers);
+router.get("/subordinates", authenticateUser, getMySubordinates);
 router.get("/:id", validate.params(userIdParams), getUserById);
 router.get("/:id/tree", validate.params(userIdParams), getUserTree);
 router.get("/:id/card", authenticateUser, getUserCard);

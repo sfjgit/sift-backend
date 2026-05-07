@@ -857,7 +857,13 @@ export const createAssignment = async (req: Request, res: Response) => {
 export const removeAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId, assignmentId } = req.params;
-    const { reason } = req.body;
+    const reason =
+      req.body?.reason ??
+      `Removed by ${req.user!.firstName} ${req.user!.lastName}`;
+    // const { reason } = req.body;
+
+    // reason =
+
     const actorId = req.user!.id;
 
     const assignment = await prisma.requirementAssignment.findFirst({

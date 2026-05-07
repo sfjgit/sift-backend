@@ -12,16 +12,17 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const SYSTEM_MODULES = [
-  "dashboard",
   "requirements",
   "clients",
   "candidates",
   "users",
-  "teams",
   "roles",
-  "settings",
-  "reports",
   "business-units",
+  "departments",
+  "service-lines",
+  "audit-logs",
+  "reports",
+  "settings",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +58,10 @@ export const listRoles = async (req: Request, res: Response) => {
             canAdd: true,
             canEdit: true,
             canDelete: true,
-            scope: true,
+            canViewScope: true,
+            canAddScope: true,
+            canEditScope: true,
+            canDeleteScope: true,
           },
         },
       },
@@ -96,7 +100,10 @@ export const getRoleById = async (req: Request, res: Response) => {
             canAdd: true,
             canEdit: true,
             canDelete: true,
-            scope: true,
+            canViewScope: true,
+            canAddScope: true,
+            canEditScope: true,
+            canDeleteScope: true,
           },
           orderBy: { module: "asc" },
         },
@@ -108,7 +115,6 @@ export const getRoleById = async (req: Request, res: Response) => {
             lastName: true,
             email: true,
             employeeId: true,
-            businessUnit: { select: { id: true, name: true } },
           },
           take: 50,
           orderBy: { firstName: "asc" },
@@ -121,8 +127,8 @@ export const getRoleById = async (req: Request, res: Response) => {
       return;
     }
 
-    // Merge DB permissions with full module list so frontend always gets all modules
-    // Modules with no saved permission get default "no access" values
+    // Merge DB permissions with full module list so frontend always gets all modules.
+    // Modules with no saved permission get default "no access" values.
     const permissionsByModule = Object.fromEntries(
       role.permissions.map((p) => [p.module, p])
     );
@@ -133,7 +139,10 @@ export const getRoleById = async (req: Request, res: Response) => {
       canAdd: false,
       canEdit: false,
       canDelete: false,
-      scope: "OWN" as const,
+      canViewScope: "OWN" as const,
+      canAddScope: "OWN" as const,
+      canEditScope: "OWN" as const,
+      canDeleteScope: "OWN" as const,
       ...(permissionsByModule[module] ?? {}),
     }));
 
@@ -142,7 +151,7 @@ export const getRoleById = async (req: Request, res: Response) => {
       data: {
         ...role,
         permissions: fullPermissions,
-        modules: SYSTEM_MODULES, // convenience — frontend can use this directly
+        modules: SYSTEM_MODULES,
       },
     });
   } catch (err) {
@@ -187,7 +196,10 @@ export const createRole = async (req: Request, res: Response) => {
             canAdd: p.canAdd,
             canEdit: p.canEdit,
             canDelete: p.canDelete,
-            scope: p.scope,
+            canViewScope: p.canViewScope,
+            canAddScope: p.canAddScope,
+            canEditScope: p.canEditScope,
+            canDeleteScope: p.canDeleteScope,
           })),
         },
       },
@@ -287,7 +299,10 @@ export const updateRole = async (req: Request, res: Response) => {
               canAdd: p.canAdd,
               canEdit: p.canEdit,
               canDelete: p.canDelete,
-              scope: p.scope,
+              canViewScope: p.canViewScope,
+              canAddScope: p.canAddScope,
+              canEditScope: p.canEditScope,
+              canDeleteScope: p.canDeleteScope,
             })),
           });
         }

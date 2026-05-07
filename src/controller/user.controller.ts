@@ -1198,3 +1198,43 @@ export const getUserCard = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch user card" });
   }
 };
+
+export const getMySubordinates = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    const users = await prisma.user.findMany({
+      where: {
+        isActive: true,
+        OR: [{ reportingToId: userId }, { teamLeadId: userId }],
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        employeeId: true,
+        reportingToId: true,
+        teamLeadId: true,
+        department: { select: { id: true, name: true } },
+        role: { select: { id: true, name: true } },
+      },
+      orderBy: { firstName: "asc" },
+    });
+
+    // dedupe by id (a user could match both conditions)
+    const seen = new Set<string>();
+    const deduped = users.filter((u) => {
+      if (seen.has(u.id)) return false;
+      seen.add(u.id);
+      return true;
+    });
+
+    res.json({ success: true, data: deduped });
+  } catch (err) {
+    console.error("getMySubordinates:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch subordinates" });
+  }
+};

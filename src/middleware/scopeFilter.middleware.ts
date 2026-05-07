@@ -1,4 +1,3 @@
-// middleware/scopeFilter.middleware.ts
 import { Request, Response, NextFunction } from "express";
 import { getSubordinateIds } from "@/services/orgService";
 
@@ -22,7 +21,6 @@ export const scopeFilter =
         return;
       }
 
-      // super admin bypasses everything
       if (user.isSuperAdmin) {
         req.scopeFilter = { type: "ALL" };
         req.modulePermission = {
@@ -61,7 +59,6 @@ export const scopeFilter =
         canDeleteScope: permission.canDeleteScope,
       };
 
-      // use canViewScope to determine what data this user sees
       const scope = permission.canViewScope as ScopeType;
       const userId = user.id;
 
@@ -72,9 +69,6 @@ export const scopeFilter =
       }
 
       if (scope === "BU") {
-        // BU is now on requirement/client directly
-        // user doesn't have BU anymore — resolve via subordinates
-        // senior person with BU scope sees all requirements under their subtree
         const subordinateIds = await getSubordinateIds(userId);
         req.scopeFilter = {
           type: "BU",
@@ -96,7 +90,7 @@ export const scopeFilter =
       }
 
       if (scope === "OWN") {
-        req.scopeFilter = { type: "OWN", userId };
+        req.scopeFilter = { type: "OWN", userId }; // ← always userId, never handlerId
         next();
         return;
       }
@@ -127,13 +121,13 @@ export const checkPermission =
     next();
   };
 
-// scope → prisma where for requirements
+// ── Requirements scope where ──────────────────────────────────────────────────
+
 export function reqScopeWhere(scope: ScopeFilter): any {
   switch (scope.type) {
     case "ALL":
       return { deletedAt: null };
     case "BU":
-      // sees requirements created by anyone in their subtree
       return {
         deletedAt: null,
         createdById: { in: scope.subordinateIds ?? [scope.userId] },
@@ -150,7 +144,9 @@ export function reqScopeWhere(scope: ScopeFilter): any {
   }
 }
 
-// scope → prisma where for clients
+// ── Clients scope where ───────────────────────────────────────────────────────
+// OWN = clients I created OR clients where I am an active SPOC handler
+
 export function clientScopeWhere(scope: ScopeFilter): any {
   switch (scope.type) {
     case "ALL":
@@ -170,7 +166,7 @@ export function clientScopeWhere(scope: ScopeFilter): any {
         deletedAt: null,
         OR: [
           { createdById: scope.userId },
-          { spocs: { some: { userId: scope.userId, isActive: true } } },
+          { spocs: { some: { handlerId: scope.userId, isActive: true } } },
         ],
       };
     default:

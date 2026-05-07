@@ -43,6 +43,9 @@ export const getServiceLines = async (req: Request, res: Response) => {
 };
 
 // ── GET /service-lines/:id
+// controller/serviceLine.controller.ts
+
+// ── GET /service-lines/:id
 export const getServiceLineById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -55,8 +58,60 @@ export const getServiceLineById = async (req: Request, res: Response) => {
         code: true,
         isActive: true,
         createdAt: true,
+
+        // all active spocs using this service line
+        clientSpocs: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
+            email: true,
+            isPrimary: true,
+            client: {
+              select: {
+                id: true,
+                name: true,
+                industry: true,
+                status: true,
+                businessUnit: { select: { id: true, name: true } },
+              },
+            },
+            handler: { select: { id: true, firstName: true, lastName: true } },
+            businessUnit: { select: { id: true, name: true } },
+          },
+          orderBy: { client: { name: "asc" } },
+        },
+
+        // recent requirements under this service line
+        requirements: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 30,
+          select: {
+            id: true,
+            reqCode: true,
+            title: true,
+            status: true,
+            priority: true,
+            totalOpenings: true,
+            filledOpenings: true,
+            activeApplications: true,
+            createdAt: true,
+            client: { select: { id: true, name: true } },
+            businessUnit: { select: { id: true, name: true } },
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+
         _count: {
-          select: { requirements: true, clientSpocs: true },
+          select: {
+            requirements: { where: { deletedAt: null } },
+            clientSpocs: { where: { isActive: true } },
+          },
         },
       },
     });
@@ -68,7 +123,36 @@ export const getServiceLineById = async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data: serviceLine });
+    // req breakdown by status
+    const reqsByStatus = await prisma.requirement.groupBy({
+      by: ["status"],
+      where: { serviceLineId: id, deletedAt: null },
+      _count: { id: true },
+    });
+
+    const statusBreakdown = Object.fromEntries(
+      reqsByStatus.map((r) => [r.status, r._count.id])
+    );
+
+    // unique clients count
+    const uniqueClients = await prisma.clientSpoc.findMany({
+      where: { serviceLineId: id, isActive: true },
+      select: { clientId: true },
+      distinct: ["clientId"],
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...serviceLine,
+        stats: {
+          totalRequirements: serviceLine._count.requirements,
+          activeSpocs: serviceLine._count.clientSpocs,
+          uniqueClients: uniqueClients.length,
+          requirementsByStatus: statusBreakdown,
+        },
+      },
+    });
   } catch (err) {
     console.error("getServiceLineById:", err);
     res
@@ -88,12 +172,10 @@ export const createServiceLine = async (req: Request, res: Response) => {
     });
 
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "Service line with this name already exists",
-        });
+      res.status(409).json({
+        success: false,
+        message: "Service line with this name already exists",
+      });
       return;
     }
 
@@ -104,12 +186,10 @@ export const createServiceLine = async (req: Request, res: Response) => {
       });
 
       if (codeConflict) {
-        res
-          .status(409)
-          .json({
-            success: false,
-            message: "Service line with this code already exists",
-          });
+        res.status(409).json({
+          success: false,
+          message: "Service line with this code already exists",
+        });
         return;
       }
     }
@@ -129,13 +209,11 @@ export const createServiceLine = async (req: Request, res: Response) => {
       },
     });
 
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Service line created",
-        data: serviceLine,
-      });
+    res.status(201).json({
+      success: true,
+      message: "Service line created",
+      data: serviceLine,
+    });
   } catch (err) {
     console.error("createServiceLine:", err);
     res
@@ -168,12 +246,10 @@ export const updateServiceLine = async (req: Request, res: Response) => {
         select: { id: true },
       });
       if (conflict) {
-        res
-          .status(409)
-          .json({
-            success: false,
-            message: "Service line with this name already exists",
-          });
+        res.status(409).json({
+          success: false,
+          message: "Service line with this name already exists",
+        });
         return;
       }
     }
@@ -184,12 +260,10 @@ export const updateServiceLine = async (req: Request, res: Response) => {
         select: { id: true },
       });
       if (codeConflict) {
-        res
-          .status(409)
-          .json({
-            success: false,
-            message: "Service line with this code already exists",
-          });
+        res.status(409).json({
+          success: false,
+          message: "Service line with this code already exists",
+        });
         return;
       }
     }

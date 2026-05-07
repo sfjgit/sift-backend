@@ -1,7 +1,14 @@
 import { z } from "zod";
 
 // ─────────────────────────────────────────
+// SCOPE ENUM — matches PermissionScope in schema
+// ─────────────────────────────────────────
+
+const permissionScope = z.enum(["OWN", "DEPARTMENT", "BU", "ALL"]);
+
+// ─────────────────────────────────────────
 // PERMISSION ROW — one per module
+// Each action has its own scope field
 // ─────────────────────────────────────────
 
 export const permissionRowSchema = z.object({
@@ -10,7 +17,10 @@ export const permissionRowSchema = z.object({
   canAdd: z.boolean().default(false),
   canEdit: z.boolean().default(false),
   canDelete: z.boolean().default(false),
-  scope: z.enum(["OWN", "TEAM", "MANAGER", "BU", "ALL"]).default("OWN"),
+  canViewScope: permissionScope.default("OWN"),
+  canAddScope: permissionScope.default("OWN"),
+  canEditScope: permissionScope.default("OWN"),
+  canDeleteScope: permissionScope.default("OWN"),
 });
 
 // ─────────────────────────────────────────

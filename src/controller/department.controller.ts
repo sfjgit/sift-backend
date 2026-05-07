@@ -43,6 +43,9 @@ export const getDepartments = async (req: Request, res: Response) => {
 };
 
 // ── GET /departments/:id
+// controller/department.controller.ts — replace getDepartmentById
+
+// ── GET /departments/:id
 export const getDepartmentById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -55,6 +58,7 @@ export const getDepartmentById = async (req: Request, res: Response) => {
         code: true,
         isActive: true,
         createdAt: true,
+
         users: {
           where: { isActive: true },
           select: {
@@ -62,10 +66,24 @@ export const getDepartmentById = async (req: Request, res: Response) => {
             firstName: true,
             lastName: true,
             employeeId: true,
+            email: true,
+            phone: true,
+            workingLocation: true,
             role: { select: { id: true, name: true } },
+            reportingTo: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            _count: {
+              select: {
+                assignmentsReceived: { where: { status: "ACTIVE" } },
+                assignmentsGiven: { where: { status: "ACTIVE" } },
+                subordinates: { where: { isActive: true } },
+              },
+            },
           },
           orderBy: { firstName: "asc" },
         },
+
         _count: { select: { users: true } },
       },
     });
@@ -75,7 +93,99 @@ export const getDepartmentById = async (req: Request, res: Response) => {
       return;
     }
 
-    res.json({ success: true, data: department });
+    // ── aggregate stats ──────────────────────────────────────────────────────
+
+    const userIds = department.users.map((u) => u.id);
+
+    // active assignments across all users in this dept
+    const [
+      activeAssignments,
+      requirementsCreated,
+      requirementsActive,
+      candidateStats,
+    ] = await Promise.all([
+      prisma.requirementAssignment.findMany({
+        where: {
+          assignedToId: { in: userIds },
+          status: "ACTIVE",
+        },
+        select: {
+          id: true,
+          submissionsCount: true,
+          interviewsCount: true,
+          filledOpenings: true,
+          allocatedOpenings: true,
+          assignedAt: true,
+          deadline: true,
+          assignedToId: true,
+          assignedById: true,
+          assignedBy: { select: { id: true, firstName: true, lastName: true } },
+          assignedTo: { select: { id: true, firstName: true, lastName: true } },
+          requirement: {
+            select: {
+              id: true,
+              reqCode: true,
+              title: true,
+              status: true,
+              priority: true,
+              totalOpenings: true,
+              filledOpenings: true,
+              activeApplications: true,
+              client: { select: { id: true, name: true } },
+              businessUnit: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: { assignedAt: "desc" },
+        take: 50,
+      }),
+
+      prisma.requirement.count({
+        where: { createdById: { in: userIds }, deletedAt: null },
+      }),
+
+      prisma.requirement.count({
+        where: {
+          createdById: { in: userIds },
+          deletedAt: null,
+          status: "ACTIVE",
+        },
+      }),
+
+      prisma.requirementCandidate.groupBy({
+        by: ["currentStage"],
+        where: { assignment: { assignedToId: { in: userIds } } },
+        _count: { id: true },
+      }),
+    ]);
+
+    const totalCandidates = candidateStats.reduce((s, c) => s + c._count.id, 0);
+    const candidatesByStage = Object.fromEntries(
+      candidateStats.map((c) => [c.currentStage, c._count.id])
+    );
+
+    const stats = {
+      totalUsers: department._count.users,
+      activeAssignments: activeAssignments.length,
+      totalSubmissions: activeAssignments.reduce(
+        (s, a) => s + a.submissionsCount,
+        0
+      ),
+      totalInterviews: activeAssignments.reduce(
+        (s, a) => s + a.interviewsCount,
+        0
+      ),
+      totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
+      requirementsCreated,
+      requirementsActive,
+      candidatesSourced: totalCandidates,
+      candidatesByStage,
+    };
+
+    res.json({
+      success: true,
+      data: { ...department, activeAssignments, stats },
+    });
   } catch (err) {
     console.error("getDepartmentById:", err);
     res
@@ -95,12 +205,10 @@ export const createDepartment = async (req: Request, res: Response) => {
     });
 
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "Department with this name already exists",
-        });
+      res.status(409).json({
+        success: false,
+        message: "Department with this name already exists",
+      });
       return;
     }
 
@@ -154,12 +262,10 @@ export const updateDepartment = async (req: Request, res: Response) => {
       });
 
       if (conflict) {
-        res
-          .status(409)
-          .json({
-            success: false,
-            message: "Department with this name already exists",
-          });
+        res.status(409).json({
+          success: false,
+          message: "Department with this name already exists",
+        });
         return;
       }
     }
