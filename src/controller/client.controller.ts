@@ -20,7 +20,10 @@ export const getClients = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    const where: any = { ...clientScopeWhere(req.scopeFilter) };
+    const where: any = {
+      ...clientScopeWhere(req.scopeFilter),
+      deletedAt: null,
+    };
 
     if (status) where.status = status;
     if (buId) where.businessUnitId = buId;
@@ -57,8 +60,13 @@ export const getClients = async (req: Request, res: Response) => {
             where: { isActive: true },
             select: {
               id: true,
+              firstName: true,
+              lastName: true,
+              designation: true,
               isPrimary: true,
-              user: { select: { id: true, firstName: true, lastName: true } },
+              handler: {
+                select: { id: true, firstName: true, lastName: true },
+              },
               serviceLine: { select: { id: true, name: true } },
             },
           },
@@ -93,7 +101,7 @@ export const getClients = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /clients/mine — spoc assigned clients only
+// ── GET /clients/mine — clients where I handle at least one active spoc
 export const getMyClients = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -102,7 +110,7 @@ export const getMyClients = async (req: Request, res: Response) => {
     const where: any = {
       deletedAt: null,
       status: "ACTIVE",
-      spocs: { some: { userId, isActive: true } },
+      spocs: { some: { handlerId: userId, isActive: true } },
     };
 
     if (search) {
@@ -119,12 +127,14 @@ export const getMyClients = async (req: Request, res: Response) => {
         name: true,
         vmsName: true,
         industry: true,
-        status: true,
         businessUnit: { select: { id: true, name: true } },
         spocs: {
-          where: { userId, isActive: true },
+          where: { handlerId: userId, isActive: true },
           select: {
             id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
             isPrimary: true,
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
@@ -150,7 +160,7 @@ export const getClientById = async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const client = await prisma.client.findFirst({
-      where: { id, ...clientScopeWhere(req.scopeFilter) },
+      where: { id, deletedAt: null, ...clientScopeWhere(req.scopeFilter) },
       select: {
         id: true,
         name: true,
@@ -171,27 +181,23 @@ export const getClientById = async (req: Request, res: Response) => {
         createdBy: { select: { id: true, firstName: true, lastName: true } },
         approvedBy: { select: { id: true, firstName: true, lastName: true } },
         spocs: {
-          orderBy: { assignedAt: "desc" },
+          orderBy: { createdAt: "desc" },
           select: {
             id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            designation: true,
+            department: true,
             isPrimary: true,
             isActive: true,
             notes: true,
-            assignedAt: true,
-            removedAt: true,
-            user: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                employeeId: true,
-              },
-            },
+            createdAt: true,
+            handler: { select: { id: true, firstName: true, lastName: true } },
+            addedBy: { select: { id: true, firstName: true, lastName: true } },
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
-            assignedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
           },
         },
         notes: {
@@ -241,13 +247,63 @@ export const getClientById = async (req: Request, res: Response) => {
   }
 };
 
+// ── GET /clients/:id/spocs
+export const getClientSpocs = async (req: Request, res: Response) => {
+  try {
+    const { id: clientId } = req.params;
+    const { mine } = req.query as Record<string, string>;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    const client = await prisma.client.findFirst({
+      where: { id: clientId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!client) {
+      res.status(404).json({ success: false, message: "Client not found" });
+      return;
+    }
+
+    const where: any = { clientId, isActive: true };
+
+    // mine=true OR not superadmin → only spocs I handle
+    if (mine === "true" || !isSuperAdmin) {
+      where.handlerId = userId;
+    }
+
+    const spocs = await prisma.clientSpoc.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        designation: true,
+        department: true,
+        isPrimary: true,
+        notes: true,
+        handler: { select: { id: true, firstName: true, lastName: true } },
+        serviceLine: { select: { id: true, name: true } },
+        businessUnit: { select: { id: true, name: true } },
+      },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+    });
+
+    res.json({ success: true, data: spocs });
+  } catch (err) {
+    console.error("getClientSpocs:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch spocs" });
+  }
+};
+
 // ── POST /clients
 export const createClient = async (req: Request, res: Response) => {
   try {
     const {
       name,
       vmsName,
-      categoryId,
       industry,
       website,
       country,
@@ -263,7 +319,6 @@ export const createClient = async (req: Request, res: Response) => {
       data: {
         name,
         vmsName: vmsName ?? null,
-        categoryId: categoryId ?? null,
         industry: industry ?? null,
         website: website ?? null,
         country: country ?? null,
@@ -296,7 +351,6 @@ export const updateClient = async (req: Request, res: Response) => {
     const {
       name,
       vmsName,
-      categoryId,
       industry,
       website,
       country,
@@ -322,7 +376,6 @@ export const updateClient = async (req: Request, res: Response) => {
       data: {
         ...(name !== undefined && { name }),
         ...(vmsName !== undefined && { vmsName }),
-        ...(categoryId !== undefined && { categoryId }),
         ...(industry !== undefined && { industry }),
         ...(website !== undefined && { website }),
         ...(country !== undefined && { country }),
@@ -458,8 +511,19 @@ export const deleteClientNote = async (req: Request, res: Response) => {
 export const addSpoc = async (req: Request, res: Response) => {
   try {
     const { id: clientId } = req.params;
-    const { userId, serviceLineId, businessUnitId, isPrimary, notes } =
-      req.body;
+    const {
+      firstName,
+      lastName,
+      email,
+      phone,
+      designation,
+      department,
+      handlerId,
+      serviceLineId,
+      businessUnitId,
+      isPrimary,
+      notes,
+    } = req.body;
     const actorId = req.user!.id;
 
     const client = await prisma.client.findFirst({
@@ -472,40 +536,53 @@ export const addSpoc = async (req: Request, res: Response) => {
       return;
     }
 
-    const existing = await prisma.clientSpoc.findUnique({
-      where: {
-        clientId_userId_serviceLineId: { clientId, userId, serviceLineId },
-      },
-    });
-
-    if (existing) {
-      res
-        .status(409)
-        .json({
+    // duplicate check — same client + email + service line
+    if (email) {
+      const existing = await prisma.clientSpoc.findUnique({
+        where: {
+          clientId_email_serviceLineId: { clientId, email, serviceLineId },
+        },
+      });
+      if (existing) {
+        res.status(409).json({
           success: false,
-          message: "SPOC already exists for this client + service line",
+          message:
+            "SPOC with this email already exists for this client + service line",
         });
-      return;
+        return;
+      }
     }
 
     const spoc = await prisma.clientSpoc.create({
       data: {
         clientId,
-        userId,
+        firstName,
+        lastName,
+        email: email ?? null,
+        phone: phone ?? null,
+        designation: designation ?? null,
+        department: department ?? null,
+        handlerId,
         serviceLineId,
         businessUnitId,
-        isPrimary: isPrimary ?? true,
+        isPrimary: isPrimary ?? false,
         isActive: true,
         notes: notes ?? null,
-        assignedById: actorId,
+        addedById: actorId,
       },
       select: {
         id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        designation: true,
+        department: true,
         isPrimary: true,
         isActive: true,
         notes: true,
-        assignedAt: true,
-        user: { select: { id: true, firstName: true, lastName: true } },
+        createdAt: true,
+        handler: { select: { id: true, firstName: true, lastName: true } },
         serviceLine: { select: { id: true, name: true } },
         businessUnit: { select: { id: true, name: true } },
       },
@@ -522,7 +599,17 @@ export const addSpoc = async (req: Request, res: Response) => {
 export const updateSpoc = async (req: Request, res: Response) => {
   try {
     const { id: clientId, spocId } = req.params;
-    const { isPrimary, notes } = req.body;
+    const {
+      firstName,
+      lastName,
+      email,
+      phone,
+      designation,
+      department,
+      handlerId,
+      isPrimary,
+      notes,
+    } = req.body;
 
     const existing = await prisma.clientSpoc.findFirst({
       where: { id: spocId, clientId },
@@ -536,16 +623,28 @@ export const updateSpoc = async (req: Request, res: Response) => {
     const updated = await prisma.clientSpoc.update({
       where: { id: spocId },
       data: {
+        ...(firstName !== undefined && { firstName }),
+        ...(lastName !== undefined && { lastName }),
+        ...(email !== undefined && { email }),
+        ...(phone !== undefined && { phone }),
+        ...(designation !== undefined && { designation }),
+        ...(department !== undefined && { department }),
+        ...(handlerId !== undefined && { handlerId }),
         ...(isPrimary !== undefined && { isPrimary }),
         ...(notes !== undefined && { notes }),
       },
       select: {
         id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        designation: true,
         isPrimary: true,
         isActive: true,
-        notes: true,
-        user: { select: { id: true, firstName: true, lastName: true } },
+        handler: { select: { id: true, firstName: true, lastName: true } },
         serviceLine: { select: { id: true, name: true } },
+        businessUnit: { select: { id: true, name: true } },
       },
     });
 
@@ -572,7 +671,7 @@ export const removeSpoc = async (req: Request, res: Response) => {
 
     await prisma.clientSpoc.update({
       where: { id: spocId },
-      data: { isActive: false, removedAt: new Date() },
+      data: { isActive: false },
     });
 
     res.json({ success: true, message: "SPOC removed" });

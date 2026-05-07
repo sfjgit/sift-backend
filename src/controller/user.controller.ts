@@ -805,9 +805,9 @@ export const getUserTree = async (req: Request, res: Response) => {
 
     // Step 4 — batch: active client SPOCs per user
     const spocs = await prisma.clientSpoc.findMany({
-      where: { userId: { in: userIds }, isActive: true },
+      where: { handlerId: { in: userIds }, isActive: true },
       select: {
-        userId: true,
+        handlerId: true,
         isPrimary: true,
         client: { select: { id: true, name: true } },
         serviceLine: { select: { id: true, name: true } },
@@ -834,8 +834,8 @@ export const getUserTree = async (req: Request, res: Response) => {
 
     const spocsMap = new Map<string, typeof spocs>();
     spocs.forEach((s) => {
-      if (!spocsMap.has(s.userId)) spocsMap.set(s.userId, []);
-      spocsMap.get(s.userId)!.push(s);
+      if (!spocsMap.has(s.handlerId)) spocsMap.set(s.handlerId, []);
+      spocsMap.get(s.handlerId)!.push(s);
     });
 
     // Step 5 — build tree with stats on each node
@@ -934,7 +934,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
         },
 
-        // direct subordinates
         subordinates: {
           where: { isActive: true },
           select: {
@@ -947,7 +946,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           orderBy: { firstName: "asc" },
         },
 
-        // team members under this TL
         teamMembers: {
           where: { isActive: true },
           select: {
@@ -960,7 +958,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           orderBy: { firstName: "asc" },
         },
 
-        // ALL assignments received — active + history
         assignmentsReceived: {
           orderBy: { assignedAt: "desc" },
           take: 30,
@@ -977,7 +974,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             removedReason: true,
             deadline: true,
             deadlineMet: true,
-            // who assigned this to them
             assignedBy: {
               select: {
                 id: true,
@@ -987,7 +983,6 @@ export const getUserCard = async (req: Request, res: Response) => {
                 role: { select: { id: true, name: true } },
               },
             },
-            // parent assignment context (e.g. DM assignment above this recruiter)
             parentAssignment: {
               select: {
                 id: true,
@@ -1002,7 +997,6 @@ export const getUserCard = async (req: Request, res: Response) => {
                 },
               },
             },
-            // who they assigned down to (if they're a DM/TL)
             childAssignments: {
               where: { status: "ACTIVE" },
               select: {
@@ -1048,7 +1042,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
         },
 
-        // assignments they GAVE to others (DM/TL perspective)
         assignmentsGiven: {
           where: { status: "ACTIVE" },
           orderBy: { assignedAt: "desc" },
@@ -1084,7 +1077,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
         },
 
-        // requirements they created
         requirementsCreated: {
           where: { deletedAt: null },
           orderBy: { createdAt: "desc" },
@@ -1105,14 +1097,20 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
         },
 
-        // active client SPOCs with full client detail
-        clientSpocs: {
+        // ── updated: spocsHandled replaces clientSpocs ──
+        spocsHandled: {
           where: { isActive: true },
           select: {
             id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
+            department: true,
+            email: true,
+            phone: true,
             isPrimary: true,
             notes: true,
-            assignedAt: true,
+            createdAt: true,
             client: {
               select: {
                 id: true,
@@ -1125,9 +1123,7 @@ export const getUserCard = async (req: Request, res: Response) => {
             },
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
-            assignedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
+            addedBy: { select: { id: true, firstName: true, lastName: true } },
           },
         },
 
@@ -1138,7 +1134,8 @@ export const getUserCard = async (req: Request, res: Response) => {
             assignmentsReceived: { where: { status: "ACTIVE" } },
             assignmentsGiven: { where: { status: "ACTIVE" } },
             requirementsCreated: { where: { deletedAt: null } },
-            clientSpocs: { where: { isActive: true } },
+            spocsHandled: { where: { isActive: true } },
+            spocsAdded: true,
           },
         },
       },
@@ -1149,7 +1146,6 @@ export const getUserCard = async (req: Request, res: Response) => {
       return;
     }
 
-    // Candidates sourced via their assignments — grouped by stage
     const candidateStats = await prisma.requirementCandidate.groupBy({
       by: ["currentStage"],
       where: { assignment: { assignedToId: id } },
@@ -1164,7 +1160,6 @@ export const getUserCard = async (req: Request, res: Response) => {
       candidateStats.map((s) => [s.currentStage, s._count.id])
     );
 
-    // Pre-compute aggregate stats across all active assignments
     const activeAssignments = user.assignmentsReceived.filter(
       (a) => a.status === "ACTIVE"
     );
@@ -1186,7 +1181,8 @@ export const getUserCard = async (req: Request, res: Response) => {
       ),
       totalAssignmentsGiven: user._count.assignmentsGiven,
       requirementsCreated: user._count.requirementsCreated,
-      clientSpocsCount: user._count.clientSpocs,
+      spocsHandledCount: user._count.spocsHandled, // ← fixed, was clientSpocsCount
+      spocsAddedCount: user._count.spocsAdded,
       candidatesSourced: totalCandidatesSourced,
       candidatesByStage,
     };

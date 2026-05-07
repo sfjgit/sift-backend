@@ -132,8 +132,8 @@ model BusinessUnit {
   clients     Client[]
   clientSpocs ClientSpoc[]
 
-  requirementsBU     Requirement[]           @relation("RequirementBU")
-  assignmentsBU      RequirementAssignment[] @relation("AssignmentBU")
+  requirementsBU Requirement[]           @relation("RequirementBU")
+  assignmentsBU  RequirementAssignment[] @relation("AssignmentBU")
 
   createdAt DateTime @default(now())
 
@@ -224,8 +224,8 @@ model User {
 
   refreshTokens RefreshToken[]
 
-  clientSpocs         ClientSpoc[] @relation("SpocUser")
-  clientSpocsAssigned ClientSpoc[] @relation("SpocAssignedBy")
+  spocsHandled ClientSpoc[] @relation("SpocHandler")
+  spocsAdded   ClientSpoc[] @relation("SpocAddedBy")
 
   clientsCreated      Client[]     @relation("ClientCreatedBy")
   clientsApproved     Client[]     @relation("ClientApprovedBy")
@@ -355,8 +355,17 @@ model ClientSpoc {
   clientId String
   client   Client @relation(fields: [clientId], references: [id])
 
-  userId String
-  user   User   @relation("SpocUser", fields: [userId], references: [id])
+  // client-side person
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  designation String?
+  department  String?
+
+  // our internal user who handles this spoc
+  handlerId String
+  handler   User   @relation("SpocHandler", fields: [handlerId], references: [id])
 
   serviceLineId String
   serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id])
@@ -364,20 +373,21 @@ model ClientSpoc {
   businessUnitId String
   businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id])
 
-  isPrimary Boolean @default(true)
+  isPrimary Boolean @default(false)
   isActive  Boolean @default(true)
   notes     String?
 
-  assignedById String
-  assignedBy   User     @relation("SpocAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
-  removedAt    DateTime?
+  addedById String
+  addedBy   User   @relation("SpocAddedBy", fields: [addedById], references: [id])
 
   requirements Requirement[]
 
-  @@unique([clientId, userId, serviceLineId])
-  @@index([userId, isActive])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clientId, email, serviceLineId])
   @@index([clientId, isActive])
+  @@index([handlerId, isActive])
   @@index([businessUnitId])
   @@index([serviceLineId])
 }
@@ -427,7 +437,7 @@ model Requirement {
   jdUploadedAt DateTime?
 
   clientSpocId String?
-  clientSpoc   ClientSpoc?   @relation(fields: [clientSpocId], references: [id])
+  clientSpoc   ClientSpoc? @relation(fields: [clientSpocId], references: [id])
 
   clientId String
   client   Client @relation(fields: [clientId], references: [id])
@@ -436,7 +446,7 @@ model Requirement {
   businessUnit   BusinessUnit? @relation("RequirementBU", fields: [businessUnitId], references: [id])
 
   serviceLineId String?
-  serviceLine   ServiceLine?  @relation(fields: [serviceLineId], references: [id])
+  serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
 
   totalOpenings       Int @default(1)
   filledOpenings      Int @default(0)
@@ -538,13 +548,13 @@ model RequirementAssignment {
   assignedBy   User   @relation("AssignedByUser", fields: [assignedById], references: [id])
 
   assigneeDepartmentId String?
-  assigneeDepartment   Department?   @relation(fields: [assigneeDepartmentId], references: [id])
+  assigneeDepartment   Department? @relation(fields: [assigneeDepartmentId], references: [id])
 
   assigneeBUId String?
   assigneeBU   BusinessUnit? @relation("AssignmentBU", fields: [assigneeBUId], references: [id])
 
   clientId String?
-  client   Client?  @relation(fields: [clientId], references: [id])
+  client   Client? @relation(fields: [clientId], references: [id])
 
   depth              Int                     @default(0)
   parentAssignmentId String?
@@ -579,9 +589,9 @@ model RequirementAssignment {
 }
 
 model RequirementStatusHistory {
-  id            String            @id @default(uuid())
+  id            String      @id @default(uuid())
   requirementId String
-  requirement   Requirement       @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
 
   fromStatus RequirementStatus
   toStatus   RequirementStatus
@@ -646,7 +656,7 @@ model RequirementDocument {
   resolvedAt    DateTime?
 
   raisedById String
-  raisedBy   User     @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
+  raisedBy   User   @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
 
   createdAt DateTime @default(now())
 

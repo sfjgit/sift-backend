@@ -4,7 +4,6 @@ import { z } from "zod";
 export const createClientSchema = z.object({
   name: z.string().min(1, "Name is required").max(200).trim(),
   vmsName: z.string().max(200).optional().nullable(),
-  categoryId: z.string().optional().nullable(), // dynamic now, just an id
   industry: z.string().max(100).optional().nullable(),
   website: z.string().url("Invalid URL").optional().nullable(),
   country: z.string().max(100).optional().nullable(),
@@ -25,16 +24,30 @@ export const addClientNoteSchema = z.object({
   content: z.string().min(1, "Content is required").max(2000).trim(),
 });
 
-// spoc validators
 export const addSpocSchema = z.object({
-  userId: z.string().min(1, "User is required"),
+  // client-side person
+  firstName: z.string().min(1, "First name is required").max(100).trim(),
+  lastName: z.string().min(1, "Last name is required").max(100).trim(),
+  email: z.string().email("Invalid email").optional().nullable(),
+  phone: z.string().max(20).optional().nullable(),
+  designation: z.string().max(100).optional().nullable(),
+  department: z.string().max(100).optional().nullable(),
+  // our side
+  handlerId: z.string().min(1, "Handler is required"),
   serviceLineId: z.string().min(1, "Service line is required"),
   businessUnitId: z.string().min(1, "Business unit is required"),
-  isPrimary: z.boolean().default(true),
+  isPrimary: z.boolean().default(false),
   notes: z.string().max(500).optional().nullable(),
 });
 
 export const updateSpocSchema = z.object({
+  firstName: z.string().min(1).max(100).trim().optional(),
+  lastName: z.string().min(1).max(100).trim().optional(),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().max(20).optional().nullable(),
+  designation: z.string().max(100).optional().nullable(),
+  department: z.string().max(100).optional().nullable(),
+  handlerId: z.string().optional(),
   isPrimary: z.boolean().optional(),
   notes: z.string().max(500).optional().nullable(),
 });

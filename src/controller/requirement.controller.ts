@@ -150,7 +150,9 @@ export const getRequirements = async (req: Request, res: Response) => {
           serviceLine: { select: { id: true, name: true } },
           clientSpoc: {
             select: {
-              user: { select: { id: true, firstName: true, lastName: true } },
+              handler: {
+                select: { id: true, firstName: true, lastName: true },
+              },
             },
           },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
@@ -250,7 +252,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
           select: {
             id: true,
             isPrimary: true,
-            user: { select: { id: true, firstName: true, lastName: true } },
+            handler: { select: { id: true, firstName: true, lastName: true } },
             serviceLine: { select: { id: true, name: true } },
           },
         },

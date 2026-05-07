@@ -27,6 +27,7 @@ import {
   addSpoc,
   updateSpoc,
   removeSpoc,
+  getClientSpocs,
 } from "@/controller/client.controller";
 
 const router = Router();
@@ -80,6 +81,7 @@ router.post(
 );
 router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteClientNote);
 
+router.get("/:id/spocs", authenticateUser, getClientSpocs);
 // spocs
 router.post(
   "/:id/spocs",
