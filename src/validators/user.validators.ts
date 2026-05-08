@@ -48,10 +48,31 @@ export const userIdParams = z.object({
 
 export const listUsersQuery = z.object({
   search: z.string().optional(),
+
+  // direct field filters
   roleId: z.string().optional(),
   departmentId: z.string().optional(),
   reportingToId: z.string().optional(),
   isActive: z.enum(["true", "false"]).optional(),
+
+  // BU filter — users who have active assignments in this BU
+  // OR whose spocsHandled belong to this BU
+  buId: z.string().optional(),
+
+  // team filters — teamLeadId = "team", teamRole = role within that team
+  // teamId is treated as the teamLeadId (teams don't have a separate model)
+  teamId: z.string().optional(),
+
+  // LEAD   = this user IS a team lead (has teamMembers)
+  // CO_LEAD = not applicable in schema — treated same as LEAD
+  // MEMBER = this user has a teamLeadId set
+  teamRole: z.enum(["LEAD", "CO_LEAD", "MEMBER"]).optional(),
+
+  // spoc / client handler filter
+  // true = only users who have at least one active spocsHandled record
+  isClientHandler: z.enum(["true", "false"]).optional(),
+
+  // pagination + sort
   page: z.string().default("1"),
   limit: z.string().default("25"),
   sortBy: z

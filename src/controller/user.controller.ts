@@ -16,6 +16,10 @@ export const listUsers = async (req: Request, res: Response) => {
       departmentId,
       reportingToId,
       isActive,
+      buId,
+      teamId,
+      teamRole,
+      isClientHandler,
       page = "1",
       limit = "25",
       sortBy = "firstName",
@@ -28,17 +32,63 @@ export const listUsers = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    // scope — user sees themselves + their subtree
+    // ── Scope: non-superadmins see only themselves + subtree ──────────────
     let visibleUserIds: string[] | null = null;
     if (!isSuperAdmin) {
       const subordinates = await getSubordinateIds(userId);
       visibleUserIds = [userId, ...subordinates];
     }
 
+    // ── buId: resolve to a list of matching userIds via assignments + spocs ─
+    // We do this upfront because Prisma can't do cross-relation OR in a where
+    // cleanly without raw SQL or subqueries.
+    let buUserIds: string[] | null = null;
+    if (buId) {
+      const [assignmentUsers, spocUsers] = await Promise.all([
+        // users who have ACTIVE assignments in this BU (or any descendant BU)
+        prisma.requirementAssignment.findMany({
+          where: {
+            status: "ACTIVE",
+            assigneeBU: { ancestorIds: { has: buId } },
+          },
+          select: { assignedToId: true },
+          distinct: ["assignedToId"],
+        }),
+        // users who handle spocs in this BU (or any descendant BU)
+        prisma.clientSpoc.findMany({
+          where: {
+            isActive: true,
+            businessUnit: { ancestorIds: { has: buId } },
+          },
+          select: { handlerId: true },
+          distinct: ["handlerId"],
+        }),
+      ]);
+
+      const ids = new Set<string>([
+        ...assignmentUsers.map((a) => a.assignedToId),
+        ...spocUsers.map((s) => s.handlerId),
+      ]);
+      buUserIds = [...ids];
+    }
+
+    // ── Build where ────────────────────────────────────────────────────────
     const where: any = {};
 
+    // scope constraint
     if (visibleUserIds) {
       where.id = { in: visibleUserIds };
+    }
+
+    // BU constraint — intersect with scope if both present
+    if (buUserIds !== null) {
+      if (where.id) {
+        // intersect
+        const scopeSet = new Set(where.id.in as string[]);
+        where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
+      } else {
+        where.id = { in: buUserIds };
+      }
     }
 
     if (isActive !== undefined) where.isActive = isActive === "true";
@@ -46,6 +96,28 @@ export const listUsers = async (req: Request, res: Response) => {
     if (departmentId) where.departmentId = departmentId;
     if (reportingToId) where.reportingToId = reportingToId;
 
+    // teamId = filter by teamLeadId
+    if (teamId) where.teamLeadId = teamId;
+
+    // teamRole
+    if (teamRole) {
+      if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
+        // user is a team lead — has at least one active team member
+        where.teamMembers = { some: { isActive: true } };
+      } else if (teamRole === "MEMBER") {
+        // user belongs to a team
+        where.teamLeadId = { not: null };
+      }
+    }
+
+    // isClientHandler — has at least one active spoc they handle
+    if (isClientHandler === "true") {
+      where.spocsHandled = { some: { isActive: true } };
+    } else if (isClientHandler === "false") {
+      where.spocsHandled = { none: { isActive: true } };
+    }
+
+    // search
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: "insensitive" } },
@@ -84,7 +156,14 @@ export const listUsers = async (req: Request, res: Response) => {
             select: { id: true, firstName: true, lastName: true },
           },
           teamLead: { select: { id: true, firstName: true, lastName: true } },
-          _count: { select: { subordinates: true, teamMembers: true } },
+          _count: {
+            select: {
+              subordinates: true,
+              teamMembers: true,
+              spocsHandled: { where: { isActive: true } },
+              assignmentsReceived: { where: { status: "ACTIVE" } },
+            },
+          },
         },
         orderBy,
         skip,
@@ -112,7 +191,6 @@ export const listUsers = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to fetch users" });
   }
 };
-
 // ─────────────────────────────────────────
 // GET /users/:id
 // ─────────────────────────────────────────
