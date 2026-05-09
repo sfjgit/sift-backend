@@ -135,10 +135,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     ]);
 
     const buMap = new Map(
-      (busData as { id: string; name: string }[]).map((b) => [b.id, b.name])
+      (busData as { id: string; name: string }[]).map((b) => [b.id, b.name]),
     );
     const slMap = new Map(
-      (slsData as { id: string; name: string }[]).map((s) => [s.id, s.name])
+      (slsData as { id: string; name: string }[]).map((s) => [s.id, s.name]),
     );
 
     const stageCount = (stage: string) =>
@@ -214,6 +214,10 @@ export const getMyAssignments = async (req: Request, res: Response) => {
             priority: true,
             totalOpenings: true,
             filledOpenings: true,
+            description: true,
+            location: true,
+            jobType: true,
+            remoteType: true,
             client: { select: { id: true, name: true } },
           },
         },
@@ -536,7 +540,7 @@ export const getDashboardSummary = async (req: Request, res: Response) => {
     const totalCancelled = statusMap["CANCELLED"] ?? 0;
     const totalRequirements = Object.values(statusMap).reduce(
       (a, b) => a + b,
-      0
+      0,
     );
 
     res.json({
