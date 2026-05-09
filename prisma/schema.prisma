@@ -97,17 +97,12 @@ enum ClientStatus {
   INACTIVE
 }
 
-enum CandidateStageStatus {
-  SOURCED
-  SCREENING
-  SUBMITTED
-  INTERVIEW_SCHEDULED
-  INTERVIEW_DONE
-  OFFER_ROLLED
-  OFFER_ACCEPTED
-  JOINED
-  REJECTED
-  WITHDRAWN
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,8 +147,9 @@ model ServiceLine {
   code     String? @unique
   isActive Boolean @default(true)
 
-  clientSpocs  ClientSpoc[]
-  requirements Requirement[]
+  clientSpocs    ClientSpoc[]
+  requirements   Requirement[]
+  pipelineStages PipelineStage[]
 
   createdAt DateTime @default(now())
 
@@ -180,9 +176,6 @@ model Department {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // USER
-// reportingToId — direct manager, drives org tree
-// teamLeadId    — optional operational layer (DM → TeamLead → Recruiter)
-// org tree traversal → orgService.ts using recursive CTE
 // ─────────────────────────────────────────────────────────────────────────────
 
 model User {
@@ -242,6 +235,16 @@ model User {
 
   assignmentsGiven    RequirementAssignment[] @relation("AssignedByUser")
   assignmentsReceived RequirementAssignment[] @relation("AssignedToUser")
+
+  // pipeline relations
+  pipelinesHandling    RequirementCandidatePipeline[] @relation("PipelineRecruiter")
+  pipelinesStageUpdate RequirementCandidatePipeline[] @relation("PipelineStageUpdatedBy")
+  pipelinesSubmitted   RequirementCandidatePipeline[] @relation("PipelineSubmittedBy")
+  pipelinesOffered     RequirementCandidatePipeline[] @relation("PipelineOfferedBy")
+  pipelinesRejected    RequirementCandidatePipeline[] @relation("PipelineRejectedBy")
+  pipelineStageChanges CandidatePipelineStageLog[]    @relation("StageLogChangedBy")
+
+  candidateSnapshotsCreated CandidateSnapshot[] @relation("SnapshotCreatedBy")
 
   notifications Notification[] @relation("UserNotifications")
   auditLogs     AuditLog[]     @relation("AuditLogActor")
@@ -355,7 +358,6 @@ model ClientSpoc {
   clientId String
   client   Client @relation(fields: [clientId], references: [id])
 
-  // client-side person
   firstName   String
   lastName    String
   email       String?
@@ -363,7 +365,6 @@ model ClientSpoc {
   designation String?
   department  String?
 
-  // our internal user who handles this spoc
   handlerId String
   handler   User   @relation("SpocHandler", fields: [handlerId], references: [id])
 
@@ -408,9 +409,6 @@ model ClientNote {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENT
-// One table — job details, JD file ref, counters, lifecycle
-// skills → String[] no join table
-// JD → inline file ref, no separate table
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Requirement {
@@ -448,6 +446,7 @@ model Requirement {
   serviceLineId String?
   serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
 
+  // counters — bumped by pipeline stage transition service
   totalOpenings       Int @default(1)
   filledOpenings      Int @default(0)
   activeApplications  Int @default(0)
@@ -475,12 +474,13 @@ model Requirement {
 
   deletedAt DateTime?
 
-  assignments   RequirementAssignment[]
-  candidates    RequirementCandidate[]
-  statusHistory RequirementStatusHistory[]
-  activities    RequirementActivity[]
-  notes         RequirementNote[]
-  documents     RequirementDocument[]
+  assignments        RequirementAssignment[]
+  candidateSnapshots CandidateSnapshot[]
+  pipelines          RequirementCandidatePipeline[]
+  statusHistory      RequirementStatusHistory[]
+  activities         RequirementActivity[]
+  notes              RequirementNote[]
+  documents          RequirementDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -497,43 +497,10 @@ model Requirement {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT CANDIDATE SNAPSHOT
-// pushed from Candidate Service — no cross-service FK
-// just enough to show stage + status per requirement
-// ─────────────────────────────────────────────────────────────────────────────
-
-model RequirementCandidate {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  candidateId    String
-  candidateName  String
-  candidateEmail String?
-  currentStage   CandidateStageStatus @default(SOURCED)
-
-  assignmentId String?
-  assignment   RequirementAssignment? @relation(fields: [assignmentId], references: [id])
-
-  rejectionReason String?
-  notes           String?
-
-  stageUpdatedAt DateTime @default(now())
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  @@unique([requirementId, candidateId])
-  @@index([requirementId, currentStage])
-  @@index([assignmentId])
-  @@index([candidateId])
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENT ASSIGNMENT
 // depth 0 → sales assigns to DM
 // depth 1 → DM assigns to TeamLead or Recruiter
 // depth 2 → TeamLead assigns to Recruiter
-// context baked in at assignment time — no joins needed for reporting
 // ─────────────────────────────────────────────────────────────────────────────
 
 model RequirementAssignment {
@@ -576,7 +543,7 @@ model RequirementAssignment {
   removedAt     DateTime?
   removedReason String?
 
-  candidates RequirementCandidate[]
+  pipelines RequirementCandidatePipeline[]
 
   @@index([requirementId, depth])
   @@index([requirementId, status])
@@ -661,6 +628,179 @@ model RequirementDocument {
   createdAt DateTime @default(now())
 
   @@index([requirementId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPELINE STAGES
+// Seeded once. Admin never creates these.
+// serviceLineId null = applies to all service lines
+// Only 07A / 07B have serviceLineId set
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PipelineStage {
+  id            String  @id @default(uuid())
+  code          String  @unique  // "01", "02", "07A", "07B", "10"
+  label         String           // "Sourced", "KaaS Review", "Joined"
+  order         Int              // 1,2,...10 — 07A and 07B both have order 7
+  serviceLineId String?          // null = all service lines, set only for 07A / 07B
+  isMandatory   Boolean @default(true)
+  isTerminal    Boolean @default(false) // true only for Joined
+  isActive      Boolean @default(true)
+
+  serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
+
+  candidatePipelines  RequirementCandidatePipeline[]
+  stageHistoriesFrom  CandidatePipelineStageLog[] @relation("StageLogFrom")
+  stageHistoriesTo    CandidatePipelineStageLog[] @relation("StageLogTo")
+
+  @@index([order])
+  @@index([serviceLineId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE SNAPSHOT
+// Written once when recruiter links a candidate to a requirement.
+// candidateServiceId = Candidate Service UUID — stored as plain string, no FK.
+// One row per candidate per requirement — frozen at link time, never mutated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CandidateSnapshot {
+  id                 String   @id @default(uuid())
+  candidateServiceId String   // Candidate Service UUID — no cross-service FK
+
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+  snapshotAt DateTime @default(now())
+
+  // display fields — point-in-time copy, never updated
+  fullName       String
+  email          String
+  phone          String?
+  currentTitle   String?
+  currentCompany String?
+  totalExpYears  Float?
+  topSkills      String[]
+  resumeUrl      String?
+
+  // full response blob from Candidate Service GET /candidates/:id
+  rawSnapshot Json
+
+  createdById String
+  createdBy   User   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])
+
+  pipeline RequirementCandidatePipeline?
+
+  createdAt DateTime @default(now())
+
+  @@unique([candidateServiceId, requirementId])
+  @@index([requirementId])
+  @@index([candidateServiceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUIREMENT CANDIDATE PIPELINE
+// One row per candidate per requirement.
+// Live funnel row — current stage, who's handling, submission / offer state.
+// Stage pointer updates in place. History written to CandidatePipelineStageLog.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RequirementCandidatePipeline {
+  id String @id @default(uuid())
+
+  snapshotId String            @unique
+  snapshot   CandidateSnapshot @relation(fields: [snapshotId], references: [id])
+
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+  assignmentId String?
+  assignment   RequirementAssignment? @relation(fields: [assignmentId], references: [id])
+
+  recruiterId String
+  recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
+
+  currentStageId   String
+  currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
+  stageUpdatedAt   DateTime      @default(now())
+  stageUpdatedById String
+  stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
+
+  // submission to client
+  submissionNote String?
+  submittedAt    DateTime?
+  submittedById  String?
+  submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
+
+  // offer
+  offeredCtc          Float?
+  salaryCurrency      String?     @default("INR")
+  salaryType          SalaryType?
+  offeredAt           DateTime?
+  offeredById         String?
+  offeredBy           User?       @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
+  offerStatus         OfferStatus?
+  expectedJoiningDate DateTime?
+  actualJoiningDate   DateTime?
+
+  // terminal states — can happen from any stage
+  isRejected      Boolean   @default(false)
+  rejectedAt      DateTime?
+  rejectedById    String?
+  rejectedBy      User?     @relation("PipelineRejectedBy", fields: [rejectedById], references: [id])
+  rejectionReason String?
+
+  isWithdrawn     Boolean   @default(false)
+  withdrawnAt     DateTime?
+  withdrawnReason String?
+
+  isOnHold     Boolean   @default(false)
+  onHoldAt     DateTime?
+  onHoldReason String?
+
+  stageHistory CandidatePipelineStageLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requirementId, currentStageId])
+  @@index([recruiterId])
+  @@index([assignmentId])
+  @@index([stageUpdatedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE LOG
+// Append-only. One row per transition.
+// timeInPrevStageMins computed before write — source of all TAT / aging reports.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CandidatePipelineStageLog {
+  id String @id @default(uuid())
+
+  pipelineId String
+  pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  fromStageId String?
+  fromStage   PipelineStage? @relation("StageLogFrom", fields: [fromStageId], references: [id])
+
+  toStageId String
+  toStage   PipelineStage @relation("StageLogTo", fields: [toStageId], references: [id])
+
+  changedById String
+  changedBy   User   @relation("StageLogChangedBy", fields: [changedById], references: [id])
+
+  wasSkipped  Boolean @default(false)
+  skipReason  String?
+
+  // how long candidate sat in the previous stage before this transition
+  timeInPrevStageMins Int?
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([pipelineId, createdAt])
+  @@index([toStageId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
