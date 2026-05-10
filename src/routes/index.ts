@@ -8,6 +8,7 @@ import requirementRoutes from "./requirements.routes";
 import dashboardRoutes from "./dashboard.routes";
 import departmentRoutes from "./department.routes";
 import serviceLineRoutes from "./serviceLine.routes";
+import pipelineStages from "./pipelineStage.routes";
 
 const router = Router();
 import notificationRoutes from "./notification.routes";
@@ -21,5 +22,6 @@ router.use("/business-units", businessUnitRoutes);
 router.use("/departments", departmentRoutes);
 router.use("/service-lines", serviceLineRoutes);
 router.use("/requirements", requirementRoutes);
+router.use("/pipeline-stages", pipelineStages);
 
 export default router;

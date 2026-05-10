@@ -6,9 +6,8 @@ import {
   getRequirementScopeWhere,
 } from "@/services/requirementService";
 import { getSubordinateIds } from "@/services/orgService";
-// controller/requirement.controller.ts — add this
 
-// GET /requirements/stats
+// ── GET /requirements/stats
 export const getRequirementStats = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -61,6 +60,7 @@ export const getRequirementStats = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to fetch stats" });
   }
 };
+
 // ── GET /requirements
 export const getRequirements = async (req: Request, res: Response) => {
   try {
@@ -84,18 +84,15 @@ export const getRequirements = async (req: Request, res: Response) => {
     const take = Math.min(parseInt(limit), 100);
 
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-    const where: any = { ...scopeWhere };
+    const where: any = { ...scopeWhere, deletedAt: null };
 
     if (status) where.status = status;
     if (priority) where.priority = priority;
     if (clientId) where.clientId = clientId;
     if (serviceLineId) where.serviceLineId = serviceLineId;
 
-    // BU filter — uses ancestorIds pattern
     if (buId) {
-      where.businessUnit = {
-        ancestorIds: { has: buId },
-      };
+      where.businessUnit = { ancestorIds: { has: buId } };
     }
 
     if (search) {
@@ -156,7 +153,6 @@ export const getRequirements = async (req: Request, res: Response) => {
             },
           },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
-          // top level assignment only for list view
           assignments: {
             where: { status: "ACTIVE", depth: 0 },
             select: {
@@ -167,7 +163,8 @@ export const getRequirements = async (req: Request, res: Response) => {
               },
             },
           },
-          _count: { select: { candidates: true, assignments: true } },
+          // pipelines count replaces old candidates count
+          _count: { select: { pipelines: true, assignments: true } },
         },
         orderBy,
         skip,
@@ -198,7 +195,7 @@ export const getRequirements = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /requirements/:id  — full detail
+// ── GET /requirements/:id — full detail
 export const getRequirementById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -208,7 +205,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const requirement = await prisma.requirement.findFirst({
-      where: { id, ...scopeWhere },
+      where: { id, ...scopeWhere, deletedAt: null },
       select: {
         id: true,
         reqCode: true,
@@ -307,17 +304,16 @@ export const getRequirementById = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /requirements/:id/tree  — full assignment tree with candidates
+// ── GET /requirements/:id/tree — full assignment tree with pipeline candidates
 export const getRequirementTree = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    // verify access first
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const requirement = await prisma.requirement.findFirst({
-      where: { id: requirementId, ...scopeWhere },
+      where: { id: requirementId, ...scopeWhere, deletedAt: null },
       select: {
         id: true,
         reqCode: true,
@@ -338,20 +334,15 @@ export const getRequirementTree = async (req: Request, res: Response) => {
       return;
     }
 
-    // get subordinate ids to filter what this user can see in the tree
     const subordinateIds = isSuperAdmin
       ? null
       : [userId, ...(await getSubordinateIds(userId))];
 
-    // fetch full assignment tree ordered by depth
     const assignments = await prisma.requirementAssignment.findMany({
       where: {
         requirementId,
         status: "ACTIVE",
-        // if not superadmin — only show assignments visible to this user
-        ...(subordinateIds && {
-          assignedToId: { in: subordinateIds },
-        }),
+        ...(subordinateIds && { assignedToId: { in: subordinateIds } }),
       },
       orderBy: { depth: "asc" },
       select: {
@@ -378,16 +369,30 @@ export const getRequirementTree = async (req: Request, res: Response) => {
         },
         assignedBy: { select: { id: true, firstName: true, lastName: true } },
         assigneeBU: { select: { id: true, name: true } },
-        candidates: {
+        // pipelines scoped to this assignment — replaces old candidates[]
+        pipelines: {
           select: {
             id: true,
-            candidateId: true,
-            candidateName: true,
-            candidateEmail: true,
-            currentStage: true,
+            recruiterId: true,
             stageUpdatedAt: true,
+            isRejected: true,
+            isWithdrawn: true,
+            isOnHold: true,
             rejectionReason: true,
-            notes: true,
+            currentStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            snapshot: {
+              select: {
+                id: true,
+                candidateServiceId: true,
+                fullName: true,
+                email: true,
+                currentTitle: true,
+                currentCompany: true,
+                topSkills: true,
+              },
+            },
           },
           orderBy: { stageUpdatedAt: "desc" },
         },
@@ -398,10 +403,7 @@ export const getRequirementTree = async (req: Request, res: Response) => {
     const assignmentMap = new Map<string, any>();
     const roots: any[] = [];
 
-    assignments.forEach((a) => {
-      assignmentMap.set(a.id, { ...a, children: [] });
-    });
-
+    assignments.forEach((a) => assignmentMap.set(a.id, { ...a, children: [] }));
     assignments.forEach((a) => {
       if (a.parentAssignmentId && assignmentMap.has(a.parentAssignmentId)) {
         assignmentMap
@@ -412,13 +414,7 @@ export const getRequirementTree = async (req: Request, res: Response) => {
       }
     });
 
-    res.json({
-      success: true,
-      data: {
-        requirement,
-        assignmentTree: roots,
-      },
-    });
+    res.json({ success: true, data: { requirement, assignmentTree: roots } });
   } catch (err) {
     console.error("getRequirementTree:", err);
     res
@@ -433,7 +429,6 @@ export const createRequirement = async (req: Request, res: Response) => {
     const actorId = req.user!.id;
     const body = req.body;
 
-    // fetch spoc to auto-populate clientId, buId, serviceLineId
     const spoc = await prisma.clientSpoc.findUnique({
       where: { id: body.clientSpocId },
       select: {
@@ -478,7 +473,6 @@ export const createRequirement = async (req: Request, res: Response) => {
         jdFileName: body.jdFileName ?? null,
         jdFileType: body.jdFileType ?? null,
         jdUploadedAt: body.jdFileKey ? new Date() : null,
-        // auto-populated from spoc
         clientSpocId: body.clientSpocId,
         clientId: spoc.clientId,
         businessUnitId: spoc.businessUnitId,
@@ -495,7 +489,6 @@ export const createRequirement = async (req: Request, res: Response) => {
       },
     });
 
-    // log activity
     await prisma.requirementActivity.create({
       data: {
         requirementId: requirement.id,
@@ -505,11 +498,13 @@ export const createRequirement = async (req: Request, res: Response) => {
       },
     });
 
-    res.status(201).json({
-      success: true,
-      message: "Requirement created",
-      data: requirement,
-    });
+    res
+      .status(201)
+      .json({
+        success: true,
+        message: "Requirement created",
+        data: requirement,
+      });
   } catch (err) {
     console.error("createRequirement:", err);
     res
@@ -731,7 +726,6 @@ export const deleteRequirement = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── POST /requirements/:id/assignments
-// assignedBy must have the assignedTo user in their reporting subtree
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
@@ -759,7 +753,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
 
-    // verify assignedTo is in actor's subtree
     const subordinateIds = await getSubordinateIds(actorId);
     if (!subordinateIds.includes(assignedToId) && !req.user!.isSuperAdmin) {
       res.status(403).json({
@@ -769,7 +762,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
 
-    // check duplicate active assignment
     const duplicate = await prisma.requirementAssignment.findFirst({
       where: { requirementId, assignedToId, status: "ACTIVE" },
     });
@@ -782,7 +774,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
 
-    // resolve depth
     let depth = 0;
     if (parentAssignmentId) {
       const parent = await prisma.requirementAssignment.findUnique({
@@ -798,7 +789,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       depth = parent.depth + 1;
     }
 
-    // fetch assignee context to snapshot
     const assignee = await prisma.user.findUnique({
       where: { id: assignedToId },
       select: { departmentId: true },
@@ -857,14 +847,10 @@ export const createAssignment = async (req: Request, res: Response) => {
 export const removeAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId, assignmentId } = req.params;
+    const actorId = req.user!.id;
     const reason =
       req.body?.reason ??
       `Removed by ${req.user!.firstName} ${req.user!.lastName}`;
-    // const { reason } = req.body;
-
-    // reason =
-
-    const actorId = req.user!.id;
 
     const assignment = await prisma.requirementAssignment.findFirst({
       where: { id: assignmentId, requirementId, status: "ACTIVE" },
@@ -878,11 +864,7 @@ export const removeAssignment = async (req: Request, res: Response) => {
 
     await prisma.requirementAssignment.update({
       where: { id: assignmentId },
-      data: {
-        status: "REMOVED",
-        removedAt: new Date(),
-        removedReason: reason ?? null,
-      },
+      data: { status: "REMOVED", removedAt: new Date(), removedReason: reason },
     });
 
     await prisma.requirementActivity.create({
@@ -905,159 +887,65 @@ export const removeAssignment = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CANDIDATES
+// PIPELINE CANDIDATES
+// All candidate pipeline operations are handled by pipeline.controller.ts
+// These are thin pass-through endpoints for the requirement context.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── POST /requirements/:id/candidates — push snapshot from candidate service
-export const pushCandidate = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId } = req.params;
-    const { candidateId, candidateName, candidateEmail, assignmentId } =
-      req.body;
-
-    const requirement = await prisma.requirement.findFirst({
-      where: { id: requirementId, deletedAt: null },
-      select: { id: true },
-    });
-
-    if (!requirement) {
-      res
-        .status(404)
-        .json({ success: false, message: "Requirement not found" });
-      return;
-    }
-
-    const existing = await prisma.requirementCandidate.findUnique({
-      where: { requirementId_candidateId: { requirementId, candidateId } },
-    });
-
-    if (existing) {
-      res.status(409).json({
-        success: false,
-        message: "Candidate already tagged to this requirement",
-      });
-      return;
-    }
-
-    const candidate = await prisma.requirementCandidate.create({
-      data: {
-        requirementId,
-        candidateId,
-        candidateName,
-        candidateEmail: candidateEmail ?? null,
-        assignmentId: assignmentId ?? null,
-        currentStage: "SOURCED",
-      },
-      select: {
-        id: true,
-        candidateId: true,
-        candidateName: true,
-        currentStage: true,
-        createdAt: true,
-      },
-    });
-
-    // bump counter
-    await prisma.requirement.update({
-      where: { id: requirementId },
-      data: { activeApplications: { increment: 1 } },
-    });
-
-    res
-      .status(201)
-      .json({ success: true, message: "Candidate tagged", data: candidate });
-  } catch (err) {
-    console.error("pushCandidate:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to tag candidate" });
-  }
-};
-
-// ── PATCH /requirements/:id/candidates/:candidateId/stage
-export const updateCandidateStage = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId, candidateId } = req.params;
-    const { currentStage, rejectionReason, notes } = req.body;
-
-    const existing = await prisma.requirementCandidate.findUnique({
-      where: { requirementId_candidateId: { requirementId, candidateId } },
-      select: { id: true, currentStage: true },
-    });
-
-    if (!existing) {
-      res.status(404).json({
-        success: false,
-        message: "Candidate not found on this requirement",
-      });
-      return;
-    }
-
-    const updated = await prisma.requirementCandidate.update({
-      where: { requirementId_candidateId: { requirementId, candidateId } },
-      data: {
-        currentStage,
-        rejectionReason: rejectionReason ?? null,
-        notes: notes ?? null,
-        stageUpdatedAt: new Date(),
-      },
-      select: {
-        id: true,
-        candidateId: true,
-        candidateName: true,
-        currentStage: true,
-        stageUpdatedAt: true,
-      },
-    });
-
-    // update counters based on stage
-    const counterUpdate: any = {};
-    if (currentStage === "INTERVIEW_SCHEDULED")
-      counterUpdate.interviewsScheduled = { increment: 1 };
-    if (currentStage === "OFFER_ROLLED")
-      counterUpdate.offersRolledOut = { increment: 1 };
-    if (currentStage === "JOINED")
-      counterUpdate.filledOpenings = { increment: 1 };
-    if (["REJECTED", "WITHDRAWN"].includes(currentStage)) {
-      counterUpdate.activeApplications = { decrement: 1 };
-    }
-
-    if (Object.keys(counterUpdate).length > 0) {
-      await prisma.requirement.update({
-        where: { id: requirementId },
-        data: counterUpdate,
-      });
-    }
-
-    res.json({ success: true, message: "Stage updated", data: updated });
-  } catch (err) {
-    console.error("updateCandidateStage:", err);
-    res.status(500).json({ success: false, message: "Failed to update stage" });
-  }
-};
-
 // ── GET /requirements/:id/candidates
+// Returns all pipeline rows for this requirement — current stage + snapshot display fields
 export const getCandidates = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
-    const { stage, assignmentId } = req.query as Record<string, string>;
+    const { stageCode, assignmentId, isRejected, isWithdrawn, isOnHold } =
+      req.query as Record<string, string>;
 
     const where: any = { requirementId };
-    if (stage) where.currentStage = stage;
     if (assignmentId) where.assignmentId = assignmentId;
+    if (isRejected !== undefined) where.isRejected = isRejected === "true";
+    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
+    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
 
-    const candidates = await prisma.requirementCandidate.findMany({
+    // filter by stage code if provided — join through currentStage
+    if (stageCode) {
+      where.currentStage = { code: stageCode };
+    }
+
+    const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where,
       select: {
         id: true,
-        candidateId: true,
-        candidateName: true,
-        candidateEmail: true,
-        currentStage: true,
-        rejectionReason: true,
-        notes: true,
+        recruiterId: true,
         stageUpdatedAt: true,
+        isRejected: true,
+        isWithdrawn: true,
+        isOnHold: true,
+        rejectionReason: true,
+        withdrawnReason: true,
+        onHoldReason: true,
+        submittedAt: true,
+        offeredCtc: true,
+        offerStatus: true,
+        expectedJoiningDate: true,
+        actualJoiningDate: true,
         createdAt: true,
+        currentStage: {
+          select: { id: true, code: true, label: true, order: true },
+        },
+        snapshot: {
+          select: {
+            id: true,
+            candidateServiceId: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+            resumeUrl: true,
+          },
+        },
         assignment: {
           select: {
             id: true,
@@ -1066,11 +954,12 @@ export const getCandidates = async (req: Request, res: Response) => {
             },
           },
         },
+        recruiter: { select: { id: true, firstName: true, lastName: true } },
       },
       orderBy: { stageUpdatedAt: "desc" },
     });
 
-    res.json({ success: true, data: candidates });
+    res.json({ success: true, data: pipelines });
   } catch (err) {
     console.error("getCandidates:", err);
     res

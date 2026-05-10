@@ -12,7 +12,13 @@ import {
   updateRequirementStatusSchema,
   createAssignmentSchema,
   pushCandidateSchema,
-  updateCandidateStageSchema,
+  updatePipelineStageSchema,
+  submitCandidateSchema,
+  rollOfferSchema,
+  updateOfferStatusSchema,
+  rejectCandidateSchema,
+  withdrawCandidateSchema,
+  holdCandidateSchema,
   addNoteSchema,
 } from "@/validators/requirement.validators";
 import {
@@ -25,17 +31,37 @@ import {
   deleteRequirement,
   createAssignment,
   removeAssignment,
-  pushCandidate,
-  updateCandidateStage,
   getCandidates,
   getRequirementStats,
 } from "@/controller/requirement.controller";
+import {
+  pushCandidate,
+  updatePipelineStage,
+  submitCandidate,
+  rollOffer,
+  updateOfferStatus,
+  rejectCandidate,
+  withdrawCandidate,
+  holdCandidate,
+  getPipelineTimeline,
+} from "@/controller/pipeline.controller";
+import {
+  addNote,
+  deleteNote,
+  addDocument,
+  getDocuments,
+  resolveDocument,
+  getActivities,
+} from "@/controller/requirementExtras.controller";
+import { upload } from "@/services/s3.service";
 
 const router = Router();
 const scope = scopeFilter("requirements");
 
+// ── stats
 router.get("/stats", authenticateUser, scope, getRequirementStats);
-// collection
+
+// ── collection
 router.get("/", authenticateUser, scope, getRequirements);
 router.post(
   "/",
@@ -46,7 +72,7 @@ router.post(
   createRequirement
 );
 
-// single
+// ── single
 router.get("/:id", authenticateUser, scope, getRequirementById);
 router.put(
   "/:id",
@@ -72,10 +98,10 @@ router.delete(
   deleteRequirement
 );
 
-// tree view
+// ── tree view
 router.get("/:id/tree", authenticateUser, scope, getRequirementTree);
 
-// assignments
+// ── assignments
 router.post(
   "/:id/assignments",
   authenticateUser,
@@ -92,38 +118,94 @@ router.delete(
   removeAssignment
 );
 
-// candidates
+// ── pipeline candidates
+// list — all candidates in pipeline for this requirement
 router.get("/:id/candidates", authenticateUser, scope, getCandidates);
+
+// push — called internally by Candidate Service after ingest (service-to-service, auth via shared secret)
+// creates CandidateSnapshot + RequirementCandidatePipeline row
 router.post(
   "/:id/candidates",
   authenticateUser,
-  scope,
   validate.body(pushCandidateSchema),
   pushCandidate
 );
+
+// stage transition — recruiter moves candidate forward in pipeline
 router.patch(
-  "/:id/candidates/:candidateId/stage",
+  "/:id/candidates/:pipelineId/stage",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.body(updateCandidateStageSchema),
-  updateCandidateStage
+  validate.body(updatePipelineStageSchema),
+  updatePipelineStage
 );
 
-// add to requirement.routes.ts
+// submit to client
+router.patch(
+  "/:id/candidates/:pipelineId/submit",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(submitCandidateSchema),
+  submitCandidate
+);
 
-// import { upload } from "@/utils/s3";
-import {
-  addNote,
-  deleteNote,
-  addDocument,
-  getDocuments,
-  resolveDocument,
-  getActivities,
-} from "@/controller/requirementExtras.controller";
-import { upload } from "@/services/s3.service";
+// roll offer
+router.patch(
+  "/:id/candidates/:pipelineId/offer",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(rollOfferSchema),
+  rollOffer
+);
 
-// notes
+// offer response — accepted / declined / revoked
+router.patch(
+  "/:id/candidates/:pipelineId/offer/status",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(updateOfferStatusSchema),
+  updateOfferStatus
+);
+
+// terminal states — reject / withdraw / hold
+router.patch(
+  "/:id/candidates/:pipelineId/reject",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(rejectCandidateSchema),
+  rejectCandidate
+);
+router.patch(
+  "/:id/candidates/:pipelineId/withdraw",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(withdrawCandidateSchema),
+  withdrawCandidate
+);
+router.patch(
+  "/:id/candidates/:pipelineId/hold",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(holdCandidateSchema),
+  holdCandidate
+);
+
+// timeline — full stage log for one candidate in this requirement
+router.get(
+  "/:id/candidates/:pipelineId/timeline",
+  authenticateUser,
+  scope,
+  getPipelineTimeline
+);
+
+// ── notes
 router.post(
   "/:id/notes",
   authenticateUser,
@@ -133,7 +215,7 @@ router.post(
 );
 router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteNote);
 
-// documents — multer on the upload route only
+// ── documents
 router.get("/:id/documents", authenticateUser, scope, getDocuments);
 router.post(
   "/:id/documents",
@@ -150,7 +232,7 @@ router.patch(
   resolveDocument
 );
 
-// activities
+// ── activities
 router.get("/:id/activities", authenticateUser, scope, getActivities);
 
 export default router;

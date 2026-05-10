@@ -1,13 +1,9 @@
 // validators/requirement.validators.ts
 import { z } from "zod";
 
-// add to requirement.validators.ts
-
 export const addNoteSchema = z.object({
   content: z.string().min(1, "Content is required").max(2000).trim(),
 });
-
-export type AddNoteInput = z.infer<typeof addNoteSchema>;
 
 export const createRequirementSchema = z.object({
   title: z.string().min(1).max(300).trim(),
@@ -60,30 +56,75 @@ export const createAssignmentSchema = z.object({
   parentAssignmentId: z.string().optional().nullable(),
 });
 
-export const updateCandidateStageSchema = z.object({
-  currentStage: z.enum([
-    "SOURCED",
-    "SCREENING",
-    "SUBMITTED",
-    "INTERVIEW_SCHEDULED",
-    "INTERVIEW_DONE",
-    "OFFER_ROLLED",
-    "OFFER_ACCEPTED",
-    "JOINED",
-    "REJECTED",
-    "WITHDRAWN",
-  ]),
-  rejectionReason: z.string().max(500).optional().nullable(),
-  notes: z.string().max(1000).optional().nullable(),
-});
-
+// ── Candidate snapshot push — called by Candidate Service after ingest
+// Core receives this and creates CandidateSnapshot + RequirementCandidatePipeline
 export const pushCandidateSchema = z.object({
-  candidateId: z.string().min(1),
-  candidateName: z.string().min(1),
-  candidateEmail: z.string().email().optional().nullable(),
+  candidateServiceId: z.string().min(1, "candidateServiceId is required"),
   assignmentId: z.string().optional().nullable(),
+  recruiterId: z.string().min(1, "recruiterId is required"),
+  // snapshot display fields — point-in-time copy
+  fullName: z.string().min(1),
+  email: z.string().email(),
+  phone: z.string().optional().nullable(),
+  currentTitle: z.string().optional().nullable(),
+  currentCompany: z.string().optional().nullable(),
+  totalExpYears: z.number().optional().nullable(),
+  topSkills: z.array(z.string()).default([]),
+  resumeUrl: z.string().url().optional().nullable(),
+  // full candidate profile blob from Candidate Service
+  rawSnapshot: z.record(z.unknown()),
 });
 
+// ── Stage transition — stageId is the PipelineStage UUID from Core DB
+// Validator only checks shape. Sequence enforcement is in pipelineService.ts.
+export const updatePipelineStageSchema = z.object({
+  stageId: z.string().min(1, "stageId is required"),
+  skipReason: z.string().max(500).optional().nullable(),
+  note: z.string().max(1000).optional().nullable(),
+});
+
+// ── Submission to client
+export const submitCandidateSchema = z.object({
+  submissionNote: z.string().min(1, "Submission note is required").max(2000),
+});
+
+// ── Offer
+export const rollOfferSchema = z.object({
+  offeredCtc: z.number().min(0),
+  salaryCurrency: z.string().default("INR"),
+  salaryType: z.enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"]),
+  expectedJoiningDate: z.string().datetime().optional().nullable(),
+});
+
+// ── Offer response
+export const updateOfferStatusSchema = z.object({
+  offerStatus: z.enum(["ACCEPTED", "DECLINED", "REVOKED"]),
+  actualJoiningDate: z.string().datetime().optional().nullable(),
+  declineReason: z.string().max(500).optional().nullable(),
+  revocationReason: z.string().max(500).optional().nullable(),
+});
+
+// ── Reject candidate
+export const rejectCandidateSchema = z.object({
+  rejectionReason: z.string().min(1, "Rejection reason is required").max(500),
+});
+
+// ── Withdraw candidate
+export const withdrawCandidateSchema = z.object({
+  withdrawnReason: z.string().min(1, "Withdrawal reason is required").max(500),
+});
+
+// ── On hold
+export const holdCandidateSchema = z.object({
+  onHoldReason: z.string().min(1, "On-hold reason is required").max(500),
+});
+
+export type AddNoteInput = z.infer<typeof addNoteSchema>;
 export type CreateRequirementInput = z.infer<typeof createRequirementSchema>;
 export type UpdateRequirementInput = z.infer<typeof updateRequirementSchema>;
 export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
+export type PushCandidateInput = z.infer<typeof pushCandidateSchema>;
+export type UpdatePipelineStageInput = z.infer<
+  typeof updatePipelineStageSchema
+>;
+export type RollOfferInput = z.infer<typeof rollOfferSchema>;
