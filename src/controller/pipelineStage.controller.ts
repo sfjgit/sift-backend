@@ -137,7 +137,15 @@ export const createPipelineStage = async (req: Request, res: Response) => {
 export const updatePipelineStage = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { label, isMandatory, isActive } = req.body;
+    const {
+      code,
+      label,
+      order,
+      serviceLineId,
+      isMandatory,
+      isTerminal,
+      isActive,
+    } = req.body;
 
     const existing = await prisma.pipelineStage.findUnique({
       where: { id },
@@ -149,11 +157,53 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
       return;
     }
 
+    // code uniqueness check if changing
+    if (code && code.trim().toUpperCase() !== existing.code) {
+      const codeTaken = await prisma.pipelineStage.findFirst({
+        where: { code: code.trim().toUpperCase(), id: { not: id } },
+        select: { id: true },
+      });
+      if (codeTaken) {
+        res.status(409).json({
+          success: false,
+          message: `Stage code "${code.toUpperCase()}" is already used by another stage`,
+        });
+        return;
+      }
+    }
+
+    // verify serviceLineId if provided
+    if (serviceLineId) {
+      const sl = await prisma.serviceLine.findUnique({
+        where: { id: serviceLineId },
+        select: { id: true },
+      });
+      if (!sl) {
+        res
+          .status(404)
+          .json({ success: false, message: "Service line not found" });
+        return;
+      }
+    }
+
+    // count active pipelines at this stage — warn but don't block
+    const activePipelineCount = await prisma.requirementCandidatePipeline.count(
+      {
+        where: { currentStageId: id },
+      }
+    );
+
     const updated = await prisma.pipelineStage.update({
       where: { id },
       data: {
+        ...(code !== undefined && { code: code.trim().toUpperCase() }),
         ...(label !== undefined && { label: label.trim() }),
+        ...(order !== undefined && { order: Number(order) }),
+        ...(serviceLineId !== undefined && {
+          serviceLineId: serviceLineId || null,
+        }),
         ...(isMandatory !== undefined && { isMandatory }),
+        ...(isTerminal !== undefined && { isTerminal }),
         ...(isActive !== undefined && { isActive }),
       },
       select: {
@@ -173,6 +223,9 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
       success: true,
       message: "Pipeline stage updated",
       data: updated,
+      ...(activePipelineCount > 0 && {
+        warning: `${activePipelineCount} active pipeline row(s) are currently at this stage.`,
+      }),
     });
   } catch (err) {
     console.error("updatePipelineStage:", err);
@@ -213,28 +266,6 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
       res.status(409).json({
         success: false,
         message: `Cannot delete stage "${existing.label}" — ${activePipelineCount} active pipeline(s) are currently at this stage`,
-      });
-      return;
-    }
-
-    // block delete if this is a seeded core stage (codes 01–10, 07A, 07B)
-    const SEEDED_CODES = [
-      "01",
-      "02",
-      "03",
-      "04",
-      "05",
-      "06",
-      "07A",
-      "07B",
-      "08",
-      "09",
-      "10",
-    ];
-    if (SEEDED_CODES.includes(existing.code)) {
-      res.status(403).json({
-        success: false,
-        message: `Stage "${existing.code}" is a core seeded stage and cannot be deleted. Use isActive = false to deactivate it instead.`,
       });
       return;
     }

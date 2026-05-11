@@ -1,13 +1,12 @@
 // controller/pipeline.controller.ts
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
+import { getRequirementScopeWhere } from "@/services/requirementService";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Resolve the correct stage sequence for a requirement based on its service line.
-// Filters out the variant stage that doesn't apply (07A vs 07B).
 async function getStageSequence(requirementId: string) {
   const requirement = await prisma.requirement.findUnique({
     where: { id: requirementId },
@@ -35,10 +34,14 @@ async function getStageSequence(requirementId: string) {
   });
 }
 
-// Find the pipeline row and verify it belongs to the requirement
-async function findPipeline(pipelineId: string, requirementId: string) {
+// Works from both /pipeline/:pipelineId and /requirements/:id/candidates/:pipelineId
+// requirementId param is optional — used only for extra scope check when coming from requirement route
+async function findPipeline(pipelineId: string, requirementId?: string) {
   return prisma.requirementCandidatePipeline.findFirst({
-    where: { id: pipelineId, requirementId },
+    where: {
+      id: pipelineId,
+      ...(requirementId ? { requirementId } : {}),
+    },
     select: {
       id: true,
       requirementId: true,
@@ -56,15 +59,284 @@ async function findPipeline(pipelineId: string, requirementId: string) {
   });
 }
 
-// Compute minutes spent in current stage before transitioning
 function computeTimeInStage(stageUpdatedAt: Date): number {
   return Math.floor((Date.now() - stageUpdatedAt.getTime()) / 60_000);
 }
 
+// shared pipeline select — used in list and detail
+const PIPELINE_SELECT = {
+  id: true,
+  recruiterId: true,
+  isRejected: true,
+  isWithdrawn: true,
+  isOnHold: true,
+  rejectionReason: true,
+  withdrawnReason: true,
+  onHoldReason: true,
+  submittedAt: true,
+  submissionNote: true,
+  offeredCtc: true,
+  salaryCurrency: true,
+  salaryType: true,
+  offerStatus: true,
+  offeredAt: true,
+  expectedJoiningDate: true,
+  actualJoiningDate: true,
+  stageUpdatedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  currentStage: {
+    select: { id: true, code: true, label: true, order: true },
+  },
+  snapshot: {
+    select: {
+      id: true,
+      candidateServiceId: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      currentTitle: true,
+      currentCompany: true,
+      totalExpYears: true,
+      topSkills: true,
+      resumeUrl: true,
+    },
+  },
+  requirement: {
+    select: {
+      id: true,
+      reqCode: true,
+      title: true,
+      status: true,
+      priority: true,
+      totalOpenings: true,
+      filledOpenings: true,
+      client: { select: { id: true, name: true } },
+      serviceLine: { select: { id: true, name: true } },
+      businessUnit: { select: { id: true, name: true } },
+    },
+  },
+  recruiter: { select: { id: true, firstName: true, lastName: true } },
+  assignment: {
+    select: {
+      id: true,
+      assignedTo: { select: { id: true, firstName: true, lastName: true } },
+    },
+  },
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /pipeline
+// All pipeline rows scoped to the current user.
+// Filters: stageCode, recruiterId, requirementId, clientId, isRejected,
+//          isWithdrawn, isOnHold, search (candidate name/email)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getPipelines = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    const {
+      stageCode,
+      recruiterId,
+      requirementId,
+      clientId,
+      isRejected,
+      isWithdrawn,
+      isOnHold,
+      search,
+      page = "1",
+      limit = "25",
+      sortBy = "stageUpdatedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    // scope: non-superadmin sees only pipelines on requirements they can access
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+    const where: any = {
+      requirement: { ...scopeWhere, deletedAt: null },
+    };
+
+    if (stageCode) where.currentStage = { code: stageCode };
+    if (requirementId) where.requirementId = requirementId;
+    if (clientId) where.requirement = { ...where.requirement, clientId };
+    if (recruiterId) where.recruiterId = recruiterId;
+    if (isRejected !== undefined) where.isRejected = isRejected === "true";
+    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
+    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
+
+    if (search) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+          { currentCompany: { contains: search, mode: "insensitive" } },
+        ],
+      };
+    }
+
+    const SORTABLE: Record<string, any> = {
+      stageUpdatedAt: { stageUpdatedAt: sortDir },
+      createdAt: { createdAt: sortDir },
+    };
+    const orderBy = SORTABLE[sortBy] ?? { stageUpdatedAt: "desc" };
+
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: PIPELINE_SELECT,
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: pipelines,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+    });
+  } catch (err) {
+    console.error("getPipelines:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipelines" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /pipeline/stats
+// Count by stage for the scoped user — drives the kanban header numbers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getPipelineStats = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const { requirementId, recruiterId, clientId } = req.query as Record<
+      string,
+      string
+    >;
+
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+    const where: any = {
+      requirement: { ...scopeWhere, deletedAt: null },
+      isRejected: false,
+      isWithdrawn: false,
+    };
+
+    if (requirementId) where.requirementId = requirementId;
+    if (clientId) where.requirement = { ...where.requirement, clientId };
+    if (recruiterId) where.recruiterId = recruiterId;
+
+    const [byStage, rejected, withdrawn, onHold] = await Promise.all([
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where,
+        _count: { _all: true },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: { ...where, isRejected: true },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: { ...where, isWithdrawn: true },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: { ...where, isOnHold: true },
+      }),
+    ]);
+
+    // resolve stage details for the grouped counts
+    const stageIds = byStage.map((s) => s.currentStageId);
+    const stages = stageIds.length
+      ? await prisma.pipelineStage.findMany({
+          where: { id: { in: stageIds } },
+          select: { id: true, code: true, label: true, order: true },
+        })
+      : [];
+
+    const stageMap = new Map(stages.map((s) => [s.id, s]));
+
+    const stageBreakdown = byStage
+      .map((row) => {
+        const stage = stageMap.get(row.currentStageId);
+        return stage
+          ? {
+              stageId: row.currentStageId,
+              code: stage.code,
+              label: stage.label,
+              order: stage.order,
+              count: row._count._all,
+            }
+          : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a!.order - b!.order);
+
+    const total = stageBreakdown.reduce((acc, s) => acc + s!.count, 0);
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        rejected,
+        withdrawn,
+        onHold,
+        byStage: stageBreakdown,
+      },
+    });
+  } catch (err) {
+    console.error("getPipelineStats:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline stats" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /pipeline/:pipelineId
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getPipelineById = async (req: Request, res: Response) => {
+  try {
+    const { pipelineId } = req.params;
+
+    const pipeline = await prisma.requirementCandidatePipeline.findUnique({
+      where: { id: pipelineId },
+      select: PIPELINE_SELECT,
+    });
+
+    if (!pipeline) {
+      res
+        .status(404)
+        .json({ success: false, message: "Pipeline entry not found" });
+      return;
+    }
+
+    res.json({ success: true, data: pipeline });
+  } catch (err) {
+    console.error("getPipelineById:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline" });
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /requirements/:id/candidates
 // Called by Candidate Service after ingest.
-// Creates CandidateSnapshot + RequirementCandidatePipeline in one transaction.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const pushCandidate = async (req: Request, res: Response) => {
@@ -93,7 +365,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
       return;
     }
 
-    // check duplicate — same candidate already in this requirement's pipeline
     const duplicate = await prisma.candidateSnapshot.findUnique({
       where: {
         candidateServiceId_requirementId: {
@@ -112,7 +383,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
       return;
     }
 
-    // resolve starting stage — always "01" / Sourced
     const sourced = await prisma.pipelineStage.findFirst({
       where: { code: "01", isActive: true },
       select: { id: true },
@@ -128,7 +398,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. create snapshot — frozen point-in-time copy
       const snapshot = await tx.candidateSnapshot.create({
         data: {
           candidateServiceId: body.candidateServiceId,
@@ -146,7 +415,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
         },
       });
 
-      // 2. create pipeline row at stage 01
       const pipeline = await tx.requirementCandidatePipeline.create({
         data: {
           snapshotId: snapshot.id,
@@ -164,7 +432,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
         },
       });
 
-      // 3. write initial stage log entry (fromStage null = entry point)
       await tx.candidatePipelineStageLog.create({
         data: {
           pipelineId: pipeline.id,
@@ -176,7 +443,6 @@ export const pushCandidate = async (req: Request, res: Response) => {
         },
       });
 
-      // 4. bump activeApplications on requirement
       await tx.requirement.update({
         where: { id: requirementId },
         data: { activeApplications: { increment: 1 } },
@@ -203,191 +469,180 @@ export const pushCandidate = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/stage
-// Move candidate to next stage. Enforces sequence.
-// Mandatory stages can only be skipped with skipReason.
+// PATCH /:pipelineId/stage  (also works as /requirements/:id/candidates/:pipelineId/stage)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const updatePipelineStage = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId, pipelineId } = req.params;
-    const { stageId, skipReason, note } = req.body;
-    const actorId = req.user!.id;
+// export const updatePipelineStage = async (req: Request, res: Response) => {
+//   try {
+//     const pipelineId = req.params.pipelineId ?? req.params.pipelineId;
+//     const requirementId = req.params.id ?? undefined;
+//     const { stageId, skipReason, note } = req.body;
+//     const actorId = req.user!.id;
 
-    const pipeline = await findPipeline(pipelineId, requirementId);
-    if (!pipeline) {
-      res
-        .status(404)
-        .json({ success: false, message: "Pipeline entry not found" });
-      return;
-    }
+//     const pipeline = await findPipeline(pipelineId, requirementId);
+//     if (!pipeline) {
+//       res
+//         .status(404)
+//         .json({ success: false, message: "Pipeline entry not found" });
+//       return;
+//     }
 
-    if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res.status(400).json({
-        success: false,
-        message: "Cannot move stage on a rejected or withdrawn candidate",
-      });
-      return;
-    }
+//     if (pipeline.isRejected || pipeline.isWithdrawn) {
+//       res.status(400).json({
+//         success: false,
+//         message: "Cannot move stage on a rejected or withdrawn candidate",
+//       });
+//       return;
+//     }
 
-    if (pipeline.currentStage.isTerminal) {
-      res.status(400).json({
-        success: false,
-        message: "Candidate has already reached a terminal stage",
-      });
-      return;
-    }
+//     if (pipeline.currentStage.isTerminal) {
+//       res.status(400).json({
+//         success: false,
+//         message: "Candidate has already reached a terminal stage",
+//       });
+//       return;
+//     }
 
-    // resolve target stage
-    const targetStage = await prisma.pipelineStage.findUnique({
-      where: { id: stageId },
-      select: {
-        id: true,
-        code: true,
-        order: true,
-        isMandatory: true,
-        isTerminal: true,
-        label: true,
-      },
-    });
+//     const targetStage = await prisma.pipelineStage.findUnique({
+//       where: { id: stageId },
+//       select: {
+//         id: true,
+//         code: true,
+//         order: true,
+//         isMandatory: true,
+//         isTerminal: true,
+//         label: true,
+//       },
+//     });
 
-    if (!targetStage || !targetStage) {
-      res
-        .status(404)
-        .json({ success: false, message: "Target stage not found" });
-      return;
-    }
+//     if (!targetStage) {
+//       res
+//         .status(404)
+//         .json({ success: false, message: "Target stage not found" });
+//       return;
+//     }
 
-    // must move forward
-    if (targetStage.order <= pipeline.currentStage.order) {
-      res.status(400).json({
-        success: false,
-        message: "Stage must move forward in sequence",
-      });
-      return;
-    }
+//     if (targetStage.order <= pipeline.currentStage.order) {
+//       res
+//         .status(400)
+//         .json({
+//           success: false,
+//           message: "Stage must move forward in sequence",
+//         });
+//       return;
+//     }
 
-    // check if any mandatory stages are being skipped
-    const stages = await getStageSequence(requirementId);
-    const currentIdx = stages.findIndex(
-      (s) => s.id === pipeline.currentStageId
-    );
-    const targetIdx = stages.findIndex((s) => s.id === stageId);
+//     const stages = await getStageSequence(pipeline.requirementId);
+//     const currentIdx = stages.findIndex(
+//       (s) => s.id === pipeline.currentStageId
+//     );
+//     const targetIdx = stages.findIndex((s) => s.id === stageId);
 
-    if (targetIdx === -1) {
-      res.status(400).json({
-        success: false,
-        message:
-          "Target stage is not valid for this requirement's service line",
-      });
-      return;
-    }
+//     if (targetIdx === -1) {
+//       res.status(400).json({
+//         success: false,
+//         message:
+//           "Target stage is not valid for this requirement's service line",
+//       });
+//       return;
+//     }
 
-    const skippedMandatory = stages
-      .slice(currentIdx + 1, targetIdx)
-      .filter((s) => s.isMandatory);
+//     const skippedMandatory = stages
+//       .slice(currentIdx + 1, targetIdx)
+//       .filter((s) => s.isMandatory);
 
-    if (skippedMandatory.length > 0 && !skipReason) {
-      res.status(400).json({
-        success: false,
-        message: `Skipping mandatory stage(s): ${skippedMandatory
-          .map((s) => s.label)
-          .join(", ")}. Provide skipReason.`,
-        skippedStages: skippedMandatory.map((s) => ({
-          code: s.code,
-          label: s.label,
-        })),
-      });
-      return;
-    }
+//     if (skippedMandatory.length > 0 && !skipReason) {
+//       res.status(400).json({
+//         success: false,
+//         message: `Skipping mandatory stage(s): ${skippedMandatory
+//           .map((s) => s.label)
+//           .join(", ")}. Provide skipReason.`,
+//         skippedStages: skippedMandatory.map((s) => ({
+//           code: s.code,
+//           label: s.label,
+//         })),
+//       });
+//       return;
+//     }
 
-    const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
+//     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
-    await prisma.$transaction(async (tx) => {
-      // update pipeline current stage
-      await tx.requirementCandidatePipeline.update({
-        where: { id: pipelineId },
-        data: {
-          currentStageId: stageId,
-          stageUpdatedAt: new Date(),
-          stageUpdatedById: actorId,
-          // lift hold if moving forward
-          isOnHold: false,
-          onHoldAt: null,
-          onHoldReason: null,
-        },
-      });
+//     await prisma.$transaction(async (tx) => {
+//       await tx.requirementCandidatePipeline.update({
+//         where: { id: pipelineId },
+//         data: {
+//           currentStageId: stageId,
+//           stageUpdatedAt: new Date(),
+//           stageUpdatedById: actorId,
+//           isOnHold: false,
+//           onHoldAt: null,
+//           onHoldReason: null,
+//         },
+//       });
 
-      // append stage log
-      await tx.candidatePipelineStageLog.create({
-        data: {
-          pipelineId,
-          fromStageId: pipeline.currentStageId,
-          toStageId: stageId,
-          changedById: actorId,
-          wasSkipped: skippedMandatory.length > 0,
-          skipReason: skipReason ?? null,
-          timeInPrevStageMins,
-          note: note ?? null,
-        },
-      });
+//       await tx.candidatePipelineStageLog.create({
+//         data: {
+//           pipelineId,
+//           fromStageId: pipeline.currentStageId,
+//           toStageId: stageId,
+//           changedById: actorId,
+//           wasSkipped: skippedMandatory.length > 0,
+//           skipReason: skipReason ?? null,
+//           timeInPrevStageMins,
+//           note: note ?? null,
+//         },
+//       });
 
-      // bump interviewsScheduled counter on requirement if moving into an interview stage
-      const interviewCodes = ["05", "06", "07A", "07B", "08"];
-      if (interviewCodes.includes(targetStage.code)) {
-        await tx.requirement.update({
-          where: { id: requirementId },
-          data: { interviewsScheduled: { increment: 1 } },
-        });
+//       const interviewCodes = ["05", "06", "07A", "07B", "08"];
+//       if (interviewCodes.includes(targetStage.code)) {
+//         await tx.requirement.update({
+//           where: { id: pipeline.requirementId },
+//           data: { interviewsScheduled: { increment: 1 } },
+//         });
+//         await tx.requirementAssignment.updateMany({
+//           where: {
+//             requirementId: pipeline.requirementId,
+//             assignedToId: pipeline.recruiterId,
+//             status: "ACTIVE",
+//           },
+//           data: { interviewsCount: { increment: 1 } },
+//         });
+//       }
 
-        // bump assignment interviewsCount if assignment exists
-        if (pipeline.recruiterId) {
-          await tx.requirementAssignment.updateMany({
-            where: {
-              requirementId,
-              assignedToId: pipeline.recruiterId,
-              status: "ACTIVE",
-            },
-            data: { interviewsCount: { increment: 1 } },
-          });
-        }
-      }
+//       if (targetStage.isTerminal) {
+//         await tx.requirement.update({
+//           where: { id: pipeline.requirementId },
+//           data: {
+//             filledOpenings: { increment: 1 },
+//             activeApplications: { decrement: 1 },
+//           },
+//         });
+//       }
+//     });
 
-      // bump filledOpenings if joined
-      if (targetStage.isTerminal) {
-        await tx.requirement.update({
-          where: { id: requirementId },
-          data: {
-            filledOpenings: { increment: 1 },
-            activeApplications: { decrement: 1 },
-          },
-        });
-      }
-    });
-
-    res.json({
-      success: true,
-      message: `Stage moved to ${targetStage.label}`,
-      data: {
-        pipelineId,
-        stageCode: targetStage.code,
-        stageLabel: targetStage.label,
-      },
-    });
-  } catch (err) {
-    console.error("updatePipelineStage:", err);
-    res.status(500).json({ success: false, message: "Failed to update stage" });
-  }
-};
+//     res.json({
+//       success: true,
+//       message: `Stage moved to ${targetStage.label}`,
+//       data: {
+//         pipelineId,
+//         stageCode: targetStage.code,
+//         stageLabel: targetStage.label,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("updatePipelineStage:", err);
+//     res.status(500).json({ success: false, message: "Failed to update stage" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/submit
-// Mark candidate as submitted to client.
+// PATCH /:pipelineId/submit
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const submitCandidate = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { submissionNote } = req.body;
     const actorId = req.user!.id;
 
@@ -400,12 +655,10 @@ export const submitCandidate = async (req: Request, res: Response) => {
     }
 
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
 
@@ -418,9 +671,6 @@ export const submitCandidate = async (req: Request, res: Response) => {
       return;
     }
 
-    const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
-
-    // resolve submitted_to_client stage
     const submittedStage = await prisma.pipelineStage.findFirst({
       where: { code: "04", isActive: true },
       select: { id: true, label: true },
@@ -432,6 +682,8 @@ export const submitCandidate = async (req: Request, res: Response) => {
         .json({ success: false, message: "Stage 04 not configured" });
       return;
     }
+
+    const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
     await prisma.$transaction(async (tx) => {
       await tx.requirementCandidatePipeline.update({
@@ -457,10 +709,9 @@ export const submitCandidate = async (req: Request, res: Response) => {
         },
       });
 
-      // bump submissionsCount on assignment
       await tx.requirementAssignment.updateMany({
         where: {
-          requirementId,
+          requirementId: pipeline.requirementId,
           assignedToId: pipeline.recruiterId,
           status: "ACTIVE",
         },
@@ -478,13 +729,13 @@ export const submitCandidate = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/offer
-// Roll an offer — moves to stage 09.
+// PATCH /:pipelineId/offer
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const rollOffer = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { offeredCtc, salaryCurrency, salaryType, expectedJoiningDate } =
       req.body;
     const actorId = req.user!.id;
@@ -498,12 +749,10 @@ export const rollOffer = async (req: Request, res: Response) => {
     }
 
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
 
@@ -552,7 +801,7 @@ export const rollOffer = async (req: Request, res: Response) => {
       });
 
       await tx.requirement.update({
-        where: { id: requirementId },
+        where: { id: pipeline.requirementId },
         data: { offersRolledOut: { increment: 1 } },
       });
     });
@@ -565,13 +814,13 @@ export const rollOffer = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/offer/status
-// Accept / decline / revoke offer.
+// PATCH /:pipelineId/offer/status
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateOfferStatus = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { offerStatus, actualJoiningDate, declineReason, revocationReason } =
       req.body;
     const actorId = req.user!.id;
@@ -585,16 +834,14 @@ export const updateOfferStatus = async (req: Request, res: Response) => {
     }
 
     if (pipeline.offerStatus !== "PENDING") {
-      res.status(400).json({
-        success: false,
-        message: "Offer is not in PENDING state",
-      });
+      res
+        .status(400)
+        .json({ success: false, message: "Offer is not in PENDING state" });
       return;
     }
 
     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
-    // if accepted move to joined stage, otherwise stay on offer stage
     let nextStageId = pipeline.currentStageId;
     let stageNote = "";
 
@@ -637,9 +884,8 @@ export const updateOfferStatus = async (req: Request, res: Response) => {
           },
         });
 
-        // joined — bump counters
         await tx.requirement.update({
-          where: { id: requirementId },
+          where: { id: pipeline.requirementId },
           data: {
             filledOpenings: { increment: 1 },
             activeApplications: { decrement: 1 },
@@ -658,12 +904,13 @@ export const updateOfferStatus = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/reject
+// PATCH /:pipelineId/reject
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const rejectCandidate = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { rejectionReason } = req.body;
     const actorId = req.user!.id;
 
@@ -699,7 +946,7 @@ export const rejectCandidate = async (req: Request, res: Response) => {
         data: {
           pipelineId,
           fromStageId: pipeline.currentStageId,
-          toStageId: pipeline.currentStageId, // stays on same stage, just marked rejected
+          toStageId: pipeline.currentStageId,
           changedById: actorId,
           timeInPrevStageMins,
           note: `Rejected: ${rejectionReason}`,
@@ -707,7 +954,7 @@ export const rejectCandidate = async (req: Request, res: Response) => {
       });
 
       await tx.requirement.update({
-        where: { id: requirementId },
+        where: { id: pipeline.requirementId },
         data: { activeApplications: { decrement: 1 } },
       });
     });
@@ -722,12 +969,13 @@ export const rejectCandidate = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/withdraw
+// PATCH /:pipelineId/withdraw
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const withdrawCandidate = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { withdrawnReason } = req.body;
     const actorId = req.user!.id;
 
@@ -770,7 +1018,7 @@ export const withdrawCandidate = async (req: Request, res: Response) => {
       });
 
       await tx.requirement.update({
-        where: { id: requirementId },
+        where: { id: pipeline.requirementId },
         data: { activeApplications: { decrement: 1 } },
       });
     });
@@ -785,12 +1033,13 @@ export const withdrawCandidate = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /requirements/:id/candidates/:pipelineId/hold
+// PATCH /:pipelineId/hold
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const holdCandidate = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
     const { onHoldReason } = req.body;
     const actorId = req.user!.id;
 
@@ -803,12 +1052,10 @@ export const holdCandidate = async (req: Request, res: Response) => {
     }
 
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
 
@@ -821,11 +1068,7 @@ export const holdCandidate = async (req: Request, res: Response) => {
 
     await prisma.requirementCandidatePipeline.update({
       where: { id: pipelineId },
-      data: {
-        isOnHold: true,
-        onHoldAt: new Date(),
-        onHoldReason,
-      },
+      data: { isOnHold: true, onHoldAt: new Date(), onHoldReason },
     });
 
     res.json({ success: true, message: "Candidate placed on hold" });
@@ -838,16 +1081,19 @@ export const holdCandidate = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /requirements/:id/candidates/:pipelineId/timeline
-// Full stage log — source of TAT and aging display.
+// GET /:pipelineId/timeline
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getPipelineTimeline = async (req: Request, res: Response) => {
   try {
-    const { id: requirementId, pipelineId } = req.params;
+    const pipelineId = req.params.pipelineId;
+    const requirementId = req.params.id ?? undefined;
 
     const pipeline = await prisma.requirementCandidatePipeline.findFirst({
-      where: { id: pipelineId, requirementId },
+      where: {
+        id: pipelineId,
+        ...(requirementId ? { requirementId } : {}),
+      },
       select: {
         id: true,
         isRejected: true,
@@ -857,13 +1103,23 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
         withdrawnReason: true,
         onHoldReason: true,
         submittedAt: true,
+        submissionNote: true,
         offeredCtc: true,
+        salaryCurrency: true,
         offerStatus: true,
         expectedJoiningDate: true,
         actualJoiningDate: true,
         createdAt: true,
         currentStage: { select: { code: true, label: true, order: true } },
         recruiter: { select: { id: true, firstName: true, lastName: true } },
+        requirement: {
+          select: {
+            id: true,
+            reqCode: true,
+            title: true,
+            client: { select: { id: true, name: true } },
+          },
+        },
         snapshot: {
           select: {
             candidateServiceId: true,
@@ -878,8 +1134,6 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
         stageHistory: {
           select: {
             id: true,
-            fromStageId: true,
-            toStageId: true,
             wasSkipped: true,
             skipReason: true,
             timeInPrevStageMins: true,
@@ -903,7 +1157,6 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
       return;
     }
 
-    // compute total time in pipeline so far
     const totalMins = pipeline.stageHistory.reduce(
       (acc, log) => acc + (log.timeInPrevStageMins ?? 0),
       0
@@ -922,5 +1175,310 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch timeline" });
+  }
+};
+
+// // controller/pipelineStage.controller.ts
+// import { Request, Response } from "express";
+// import prisma from "@/utils/prisma/client";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /pipeline-stages
+// Returns all active stages ordered by sequence.
+// serviceLineId filter lets frontend fetch stages for a specific service line
+// (merging universal + service-line-specific stages in correct order).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getPipelineStages = async (req: Request, res: Response) => {
+  try {
+    const { serviceLineId, includeInactive } = req.query as Record<
+      string,
+      string
+    >;
+
+    const where: any = {};
+
+    if (includeInactive !== "true") where.isActive = true;
+
+    // if serviceLineId provided — return universal stages + stages for that service line
+    // this gives the correct full sequence for that service line (with the right stage 7 variant)
+    if (serviceLineId) {
+      where.OR = [{ serviceLineId: null }, { serviceLineId }];
+    }
+
+    const stages = await prisma.pipelineStage.findMany({
+      where,
+      orderBy: { order: "asc" },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        isMandatory: true,
+        isTerminal: true,
+        isActive: true,
+        serviceLineId: true,
+        serviceLine: { select: { id: true, name: true } },
+      },
+    });
+
+    res.json({ success: true, data: stages });
+  } catch (err) {
+    console.error("getPipelineStages:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline stages" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /pipeline-stages
+// Admin only. Used to add a new stage (e.g. a new service-line-specific variant).
+// Core 01–10 sequence is seeded — this is for additions only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createPipelineStage = async (req: Request, res: Response) => {
+  try {
+    const { code, label, order, serviceLineId, isMandatory, isTerminal } =
+      req.body;
+
+    // code must be unique — guard duplicate
+    const existing = await prisma.pipelineStage.findUnique({
+      where: { code },
+      select: { id: true },
+    });
+
+    if (existing) {
+      res.status(409).json({
+        success: false,
+        message: `Stage with code "${code}" already exists`,
+      });
+      return;
+    }
+
+    // if serviceLineId provided, verify it exists
+    if (serviceLineId) {
+      const sl = await prisma.serviceLine.findUnique({
+        where: { id: serviceLineId },
+        select: { id: true },
+      });
+
+      if (!sl) {
+        res
+          .status(404)
+          .json({ success: false, message: "Service line not found" });
+        return;
+      }
+    }
+
+    const stage = await prisma.pipelineStage.create({
+      data: {
+        code: code.trim().toUpperCase(),
+        label: label.trim(),
+        order,
+        serviceLineId: serviceLineId ?? null,
+        isMandatory: isMandatory ?? true,
+        isTerminal: isTerminal ?? false,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        isMandatory: true,
+        isTerminal: true,
+        isActive: true,
+        serviceLineId: true,
+        serviceLine: { select: { id: true, name: true } },
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Pipeline stage created",
+      data: stage,
+    });
+  } catch (err) {
+    console.error("createPipelineStage:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to create pipeline stage" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /pipeline-stages/:id
+// Label and isMandatory can be updated.
+// code, order, isTerminal, serviceLineId — locked after creation.
+// Changing those would corrupt existing pipeline history.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updatePipelineStage = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const {
+      code,
+      label,
+      order,
+      serviceLineId,
+      isMandatory,
+      isTerminal,
+      isActive,
+    } = req.body;
+
+    const existing = await prisma.pipelineStage.findUnique({
+      where: { id },
+      select: { id: true, code: true },
+    });
+
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Stage not found" });
+      return;
+    }
+
+    // code uniqueness check if changing
+    if (code && code.trim().toUpperCase() !== existing.code) {
+      const codeTaken = await prisma.pipelineStage.findFirst({
+        where: { code: code.trim().toUpperCase(), id: { not: id } },
+        select: { id: true },
+      });
+      if (codeTaken) {
+        res.status(409).json({
+          success: false,
+          message: `Stage code "${code.toUpperCase()}" is already used by another stage`,
+        });
+        return;
+      }
+    }
+
+    // verify serviceLineId if provided
+    if (serviceLineId) {
+      const sl = await prisma.serviceLine.findUnique({
+        where: { id: serviceLineId },
+        select: { id: true },
+      });
+      if (!sl) {
+        res
+          .status(404)
+          .json({ success: false, message: "Service line not found" });
+        return;
+      }
+    }
+
+    // count active pipelines at this stage — warn but don't block
+    const activePipelineCount = await prisma.requirementCandidatePipeline.count(
+      {
+        where: { currentStageId: id },
+      }
+    );
+
+    const updated = await prisma.pipelineStage.update({
+      where: { id },
+      data: {
+        ...(code !== undefined && { code: code.trim().toUpperCase() }),
+        ...(label !== undefined && { label: label.trim() }),
+        ...(order !== undefined && { order: Number(order) }),
+        ...(serviceLineId !== undefined && {
+          serviceLineId: serviceLineId || null,
+        }),
+        ...(isMandatory !== undefined && { isMandatory }),
+        ...(isTerminal !== undefined && { isTerminal }),
+        ...(isActive !== undefined && { isActive }),
+      },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        isMandatory: true,
+        isTerminal: true,
+        isActive: true,
+        serviceLineId: true,
+        serviceLine: { select: { id: true, name: true } },
+      },
+    });
+
+    res.json({
+      success: true,
+      message: "Pipeline stage updated",
+      data: updated,
+      ...(activePipelineCount > 0 && {
+        warning: `${activePipelineCount} active pipeline row(s) are currently at this stage.`,
+      }),
+    });
+  } catch (err) {
+    console.error("updatePipelineStage:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update pipeline stage" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /pipeline-stages/:id
+// Hard block if any pipeline row is currently on this stage.
+// Safe to delete only if no active pipelines reference it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const deletePipelineStage = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await prisma.pipelineStage.findUnique({
+      where: { id },
+      select: { id: true, code: true, label: true },
+    });
+
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Stage not found" });
+      return;
+    }
+
+    // block delete if any active pipeline is currently on this stage
+    const activePipelineCount = await prisma.requirementCandidatePipeline.count(
+      {
+        where: { currentStageId: id },
+      }
+    );
+
+    if (activePipelineCount > 0) {
+      res.status(409).json({
+        success: false,
+        message: `Cannot delete stage "${existing.label}" — ${activePipelineCount} active pipeline(s) are currently at this stage`,
+      });
+      return;
+    }
+
+    // block delete if this is a seeded core stage (codes 01–10, 07A, 07B)
+    const SEEDED_CODES = [
+      "01",
+      "02",
+      "03",
+      "04",
+      "05",
+      "06",
+      "07A",
+      "07B",
+      "08",
+      "09",
+      "10",
+    ];
+    if (SEEDED_CODES.includes(existing.code)) {
+      res.status(403).json({
+        success: false,
+        message: `Stage "${existing.code}" is a core seeded stage and cannot be deleted. Use isActive = false to deactivate it instead.`,
+      });
+      return;
+    }
+
+    await prisma.pipelineStage.delete({ where: { id } });
+
+    res.json({ success: true, message: `Stage "${existing.label}" deleted` });
+  } catch (err) {
+    console.error("deletePipelineStage:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to delete pipeline stage" });
   }
 };

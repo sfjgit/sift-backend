@@ -249,8 +249,9 @@ model User {
   notifications Notification[] @relation("UserNotifications")
   auditLogs     AuditLog[]     @relation("AuditLogActor")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  userAppCredentials UserAppCredential[]
 
   @@index([email])
   @@index([isActive])
@@ -258,6 +259,22 @@ model User {
   @@index([departmentId])
   @@index([reportingToId])
   @@index([teamLeadId])
+}
+
+model UserAppCredential {
+  id        String   @id @default(uuid())
+  userId    String
+  appName   String // 'NAUKRI', 'LINKEDIN', 'GITHUB', etc.
+  email     String
+  password  String // AES-256 encrypted
+  metadata  Json? // any extra fields — API keys, tokens, org IDs, etc.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, appName]) // one credential per app per user
+  @@map("user_app_credentials")
 }
 
 model RefreshToken {
@@ -639,19 +656,19 @@ model RequirementDocument {
 
 model PipelineStage {
   id            String  @id @default(uuid())
-  code          String  @unique  // "01", "02", "07A", "07B", "10"
-  label         String           // "Sourced", "KaaS Review", "Joined"
-  order         Int              // 1,2,...10 — 07A and 07B both have order 7
-  serviceLineId String?          // null = all service lines, set only for 07A / 07B
+  code          String  @unique // "01", "02", "07A", "07B", "10"
+  label         String // "Sourced", "KaaS Review", "Joined"
+  order         Int // 1,2,...10 — 07A and 07B both have order 7
+  serviceLineId String? // null = all service lines, set only for 07A / 07B
   isMandatory   Boolean @default(true)
   isTerminal    Boolean @default(false) // true only for Joined
   isActive      Boolean @default(true)
 
   serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
 
-  candidatePipelines  RequirementCandidatePipeline[]
-  stageHistoriesFrom  CandidatePipelineStageLog[] @relation("StageLogFrom")
-  stageHistoriesTo    CandidatePipelineStageLog[] @relation("StageLogTo")
+  candidatePipelines RequirementCandidatePipeline[]
+  stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
+  stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
 
   @@index([order])
   @@index([serviceLineId])
@@ -665,8 +682,8 @@ model PipelineStage {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model CandidateSnapshot {
-  id                 String   @id @default(uuid())
-  candidateServiceId String   // Candidate Service UUID — no cross-service FK
+  id                 String @id @default(uuid())
+  candidateServiceId String // Candidate Service UUID — no cross-service FK
 
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id])
@@ -734,11 +751,11 @@ model RequirementCandidatePipeline {
 
   // offer
   offeredCtc          Float?
-  salaryCurrency      String?     @default("INR")
+  salaryCurrency      String?      @default("INR")
   salaryType          SalaryType?
   offeredAt           DateTime?
   offeredById         String?
-  offeredBy           User?       @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
+  offeredBy           User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
   offerStatus         OfferStatus?
   expectedJoiningDate DateTime?
   actualJoiningDate   DateTime?
@@ -790,8 +807,8 @@ model CandidatePipelineStageLog {
   changedById String
   changedBy   User   @relation("StageLogChangedBy", fields: [changedById], references: [id])
 
-  wasSkipped  Boolean @default(false)
-  skipReason  String?
+  wasSkipped Boolean @default(false)
+  skipReason String?
 
   // how long candidate sat in the previous stage before this transition
   timeInPrevStageMins Int?

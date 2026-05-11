@@ -8,9 +8,14 @@ import requirementRoutes from "./requirements.routes";
 import dashboardRoutes from "./dashboard.routes";
 import departmentRoutes from "./department.routes";
 import serviceLineRoutes from "./serviceLine.routes";
-import pipelineStages from "./pipelineStage.routes";
+// import pipelineStages from "./pipelineStage.routes";
+import pipelineRoutes from "@/routes/pipeline.routes";
+import pipelineStageRoutes from "@/routes/pipelineStage.routes";
 
 const router = Router();
+
+import internalRoutes from "@/routes/internal.routes";
+router.use("/internal", internalRoutes);
 import notificationRoutes from "./notification.routes";
 router.use("/notifications", notificationRoutes);
 router.use("/auth", authRoutes);
@@ -22,6 +27,7 @@ router.use("/business-units", businessUnitRoutes);
 router.use("/departments", departmentRoutes);
 router.use("/service-lines", serviceLineRoutes);
 router.use("/requirements", requirementRoutes);
-router.use("/pipeline-stages", pipelineStages);
+router.use("/pipeline", pipelineRoutes);
+router.use("/pipeline-stages", pipelineStageRoutes);
 
 export default router;
