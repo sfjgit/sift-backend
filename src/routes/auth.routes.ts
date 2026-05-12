@@ -31,7 +31,7 @@ router.post(
   authenticateUser,
   // authorize('SUPER_ADMIN'),
   validate.body(registerSchema),
-  register,
+  register
 );
 // router.use("/", (_req, res) => {
 //   console.log("Root route accessed");
@@ -61,7 +61,7 @@ router.post("/refresh", refresh);
  * @desc    Logout
  * @access  Public
  */
-router.delete("/logout", validate.body(refreshSchema), logout);
+router.post("/logout", authenticateUser, logout);
 
 /**
  * @route   PATCH /api/auth/reset-password/:userId
@@ -74,7 +74,7 @@ router.patch(
   // authorize("SUPER_ADMIN"),
   validate.params(resetPasswordParamsSchema),
   validate.body(resetPasswordBodySchema),
-  resetPassword,
+  resetPassword
 );
 
 /**
@@ -87,7 +87,7 @@ router.get(
   authenticateUser,
   // authorize("SUPER_ADMIN"),
   validate.params(getUserCredentialsSchema),
-  getUserCredentials,
+  getUserCredentials
 );
 
 export default router;

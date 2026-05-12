@@ -233,14 +233,12 @@ export const refresh = async (req: Request, res: Response) => {
 
 export const logout = async (req: Request, res: Response) => {
   try {
-    const { refreshToken } = req.validatedBody;
-    const userId = req.headers["x-user-id"] as string;
-    await prisma.refreshToken.delete({
-      where: {
-        token: refreshToken,
-        userId: userId,
-      },
+    const userId = req.user.id;
+
+    await prisma.refreshToken.deleteMany({
+      where: { userId },
     });
+
     await createAuditLog({
       actorId: userId,
       action: "LOGOUT",
@@ -248,7 +246,19 @@ export const logout = async (req: Request, res: Response) => {
       recordId: userId,
       req,
     });
-    console.log("Audit log created successfully");
+
+    res.clearCookie("accessToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+    });
+
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+    });
+
     return res
       .status(200)
       .json({ success: true, message: "Logout successful" });

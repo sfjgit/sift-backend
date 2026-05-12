@@ -40,6 +40,19 @@ router.use(scopeFilter("users"));
 
 router.get("/", validate.query(listUsersQuery), listUsers);
 
+router.get("/app-credentials", authenticateUser, async (req, res) => {
+  const records = await prisma.userAppCredential.findMany({
+    where: { userId: req.user!.id },
+    select: {
+      id: true,
+      appName: true,
+      email: true,
+      metadata: true,
+      updatedAt: true,
+    },
+  });
+  return res.json({ success: true, data: records });
+});
 // GET /core/api/user/app-credentials/:appName
 // Extension calls: /core/api/user/app-credentials/NAUKRI
 router.get("/app-credentials/:appName", async (req, res) => {
@@ -94,6 +107,7 @@ router.post("/app-credentials", async (req, res) => {
 
   return res.json({ success: true, message: `${appName} credentials saved` });
 });
+
 router.get("/subordinates", authenticateUser, getMySubordinates);
 router.get("/:id", validate.params(userIdParams), getUserById);
 router.get("/:id/tree", validate.params(userIdParams), getUserTree);

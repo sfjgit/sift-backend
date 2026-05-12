@@ -1,4 +1,6 @@
-// routes/requirement.routes.ts
+// File: requirement.routes.ts
+// Path: src/routes/requirement.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
@@ -25,13 +27,16 @@ import {
   getRequirements,
   getRequirementById,
   getRequirementTree,
+  getRequirementDetail, // ← NEW full detail with pipeline summary
   createRequirement,
   updateRequirement,
   updateRequirementStatus,
   deleteRequirement,
   createAssignment,
   removeAssignment,
-  getCandidates,
+  getCandidates, // ← UPDATED (paginated + aging)
+  getCandidateDetail, // ← NEW single candidate detail
+  getActivities, // ← NEW activities
   getRequirementStats,
 } from "@/controller/requirement.controller";
 import {
@@ -51,7 +56,6 @@ import {
   addDocument,
   getDocuments,
   resolveDocument,
-  getActivities,
 } from "@/controller/requirementExtras.controller";
 import { upload } from "@/services/s3.service";
 
@@ -72,8 +76,13 @@ router.post(
   createRequirement
 );
 
-// ── single
+// ── single — basic (used by edit forms etc.)
 router.get("/:id", authenticateUser, scope, getRequirementById);
+
+// ── FULL DETAIL — header + pipeline stage counts + assignments + notes + docs
+// This is the main endpoint for the requirement detail page
+router.get("/:id/detail", authenticateUser, scope, getRequirementDetail);
+
 router.put(
   "/:id",
   authenticateUser,
@@ -118,12 +127,12 @@ router.delete(
   removeAssignment
 );
 
-// ── pipeline candidates
-// list — all candidates in pipeline for this requirement
+// ── CANDIDATES — paginated list with aging, filters, search
+// Query: stageCode, stageId, assignmentId, recruiterId, isRejected, isWithdrawn,
+//        isOnHold, activeOnly, search, page, limit, sortBy, sortDir
 router.get("/:id/candidates", authenticateUser, scope, getCandidates);
 
-// push — called internally by Candidate Service after ingest (service-to-service, auth via shared secret)
-// creates CandidateSnapshot + RequirementCandidatePipeline row
+// ── push candidate — called by Candidate Service after ingest (internal / service-to-service)
 router.post(
   "/:id/candidates",
   authenticateUser,
@@ -131,7 +140,15 @@ router.post(
   pushCandidate
 );
 
-// stage transition — recruiter moves candidate forward in pipeline
+// ── single candidate full detail in this requirement
+router.get(
+  "/:id/candidates/:pipelineId",
+  authenticateUser,
+  scope,
+  getCandidateDetail
+);
+
+// ── stage transition
 router.patch(
   "/:id/candidates/:pipelineId/stage",
   authenticateUser,
@@ -141,7 +158,7 @@ router.patch(
   updatePipelineStage
 );
 
-// submit to client
+// ── submit to client
 router.patch(
   "/:id/candidates/:pipelineId/submit",
   authenticateUser,
@@ -151,7 +168,7 @@ router.patch(
   submitCandidate
 );
 
-// roll offer
+// ── offer
 router.patch(
   "/:id/candidates/:pipelineId/offer",
   authenticateUser,
@@ -160,8 +177,6 @@ router.patch(
   validate.body(rollOfferSchema),
   rollOffer
 );
-
-// offer response — accepted / declined / revoked
 router.patch(
   "/:id/candidates/:pipelineId/offer/status",
   authenticateUser,
@@ -171,7 +186,7 @@ router.patch(
   updateOfferStatus
 );
 
-// terminal states — reject / withdraw / hold
+// ── terminal states
 router.patch(
   "/:id/candidates/:pipelineId/reject",
   authenticateUser,
@@ -197,7 +212,7 @@ router.patch(
   holdCandidate
 );
 
-// timeline — full stage log for one candidate in this requirement
+// ── stage timeline for one candidate
 router.get(
   "/:id/candidates/:pipelineId/timeline",
   authenticateUser,
@@ -232,7 +247,7 @@ router.patch(
   resolveDocument
 );
 
-// ── activities
+// ── activity log
 router.get("/:id/activities", authenticateUser, scope, getActivities);
 
 export default router;

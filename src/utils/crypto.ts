@@ -1,5 +1,8 @@
 // src/utils/crypto.ts
 import crypto from "crypto";
+import { config } from "dotenv";
+
+config();
 
 const ALGORITHM = "aes-256-cbc";
 const SECRET = process.env.NAUKRI_CREDS_SECRET || "";

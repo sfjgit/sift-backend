@@ -1,4 +1,6 @@
-// controller/requirement.controller.ts
+// File: requirement.controller.ts
+// Path: src/controller/requirement.controller.ts
+
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import {
@@ -7,12 +9,650 @@ import {
 } from "@/services/requirementService";
 import { getSubordinateIds } from "@/services/orgService";
 
-// ── GET /requirements/stats
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER — compute aging string from a date to now
+// "2h 15m", "3d 4h", "1m 2d"
+// ─────────────────────────────────────────────────────────────────────────────
+function computeAging(from: Date): { minutes: number; label: string } {
+  const diffMs = Date.now() - new Date(from).getTime();
+  const totalMins = Math.floor(diffMs / 60000);
+  const mins = totalMins % 60;
+  const hours = Math.floor(totalMins / 60) % 24;
+  const days = Math.floor(totalMins / 1440) % 30;
+  const months = Math.floor(totalMins / 43200);
+
+  let label = "";
+  if (months > 0) label = `${months}mo ${days}d`;
+  else if (days > 0) label = `${days}d ${hours}h`;
+  else if (hours > 0) label = `${hours}h ${mins}m`;
+  else label = `${totalMins}m`;
+
+  return { minutes: totalMins, label };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/detail
+// Full requirement detail — header + pipeline stage counts + team
+// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementDetail = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id, ...scopeWhere, deletedAt: null },
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        description: true,
+        status: true,
+        priority: true,
+        jobType: true,
+        remoteType: true,
+        location: true,
+        country: true,
+        skills: true,
+        experienceMin: true,
+        experienceMax: true,
+        salaryMin: true,
+        salaryMax: true,
+        salaryType: true,
+        totalOpenings: true,
+        filledOpenings: true,
+        activeApplications: true,
+        interviewsScheduled: true,
+        offersRolledOut: true,
+        startDate: true,
+        endDate: true,
+        respondBy: true,
+        turnaroundDays: true,
+        closedAt: true,
+        isRespondByBreached: true,
+        isTurnaroundBreached: true,
+        jdFileKey: true,
+        jdFileName: true,
+        jdFileType: true,
+        jdUploadedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        approvedAt: true,
+
+        client: {
+          select: {
+            id: true,
+            name: true,
+            industry: true,
+            city: true,
+            country: true,
+          },
+        },
+        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true, code: true } },
+        clientSpoc: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
+            email: true,
+            phone: true,
+            isPrimary: true,
+            handler: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+        approvedBy: { select: { id: true, firstName: true, lastName: true } },
+        closedBy: { select: { id: true, firstName: true, lastName: true } },
+
+        // active recruiters on this requirement (distinct assignees depth >= 1)
+        assignments: {
+          where: { status: "ACTIVE" },
+          select: {
+            id: true,
+            depth: true,
+            allocatedOpenings: true,
+            filledOpenings: true,
+            submissionsCount: true,
+            interviewsCount: true,
+            deadline: true,
+            assignedTo: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+            assignedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { depth: "asc" },
+        },
+
+        statusHistory: {
+          select: {
+            id: true,
+            fromStatus: true,
+            toStatus: true,
+            reason: true,
+            changedAt: true,
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { changedAt: "desc" },
+        },
+
+        notes: {
+          select: {
+            id: true,
+            content: true,
+            createdAt: true,
+            author: { select: { id: true, firstName: true, lastName: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        },
+
+        documents: {
+          select: {
+            id: true,
+            fileName: true,
+            fileKey: true,
+            fileType: true,
+            content: true,
+            isIssue: true,
+            issueResolved: true,
+            createdAt: true,
+            raisedBy: { select: { id: true, firstName: true, lastName: true } },
+            resolvedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            resolvedAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    // ── Pipeline stage counts — group by currentStageId
+    const allStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // filter stages relevant to this requirement's service line
+    const serviceLineId = (requirement as any).serviceLine?.id ?? null;
+    const relevantStages = allStages.filter(
+      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
+    );
+
+    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
+      by: ["currentStageId"],
+      where: { requirementId: id },
+      _count: { id: true },
+    });
+
+    const stageCountMap = Object.fromEntries(
+      stageCounts.map((s) => [s.currentStageId, s._count.id])
+    );
+
+    const pipelineStageSummary = relevantStages.map((stage) => ({
+      id: stage.id,
+      code: stage.code,
+      label: stage.label,
+      order: stage.order,
+      count: stageCountMap[stage.id] ?? 0,
+    }));
+
+    // ── Total pipeline count
+    const totalCandidates = await prisma.requirementCandidatePipeline.count({
+      where: { requirementId: id },
+    });
+
+    const activeCount = await prisma.requirementCandidatePipeline.count({
+      where: { requirementId: id, isRejected: false, isWithdrawn: false },
+    });
+    const rejectedCount = await prisma.requirementCandidatePipeline.count({
+      where: { requirementId: id, isRejected: true },
+    });
+    const withdrawnCount = await prisma.requirementCandidatePipeline.count({
+      where: { requirementId: id, isWithdrawn: true },
+    });
+    const onHoldCount = await prisma.requirementCandidatePipeline.count({
+      where: { requirementId: id, isOnHold: true },
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        ...requirement,
+        pipelineSummary: {
+          total: totalCandidates,
+          active: activeCount,
+          rejected: rejectedCount,
+          withdrawn: withdrawnCount,
+          onHold: onHoldCount,
+          byStage: pipelineStageSummary,
+        },
+      },
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementDetail:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch requirement detail" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates
+// Paginated, filtered candidate pipeline list with aging
+// Query params:
+//   stageCode, stageId, assignmentId, recruiterId
+//   isRejected, isWithdrawn, isOnHold, activeOnly (bool)
+//   search (fullName, email, phone, currentCompany)
+//   page, limit, sortBy (stageUpdatedAt | createdAt | aging), sortDir
+// ─────────────────────────────────────────────────────────────────────────────
+export const getCandidates = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId } = req.params;
+    const {
+      stageCode,
+      stageId,
+      assignmentId,
+      recruiterId,
+      isRejected,
+      isWithdrawn,
+      isOnHold,
+      activeOnly,
+      search,
+      page = "1",
+      limit = "25",
+      sortBy = "stageUpdatedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const where: any = { requirementId };
+
+    if (assignmentId) where.assignmentId = assignmentId;
+    if (recruiterId) where.recruiterId = recruiterId;
+
+    // terminal state filters
+    if (isRejected !== undefined) where.isRejected = isRejected === "true";
+    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
+    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
+
+    // activeOnly = not rejected AND not withdrawn
+    if (activeOnly === "true") {
+      where.isRejected = false;
+      where.isWithdrawn = false;
+    }
+
+    // stage filter
+    if (stageId) {
+      where.currentStageId = stageId;
+    } else if (stageCode) {
+      where.currentStage = { code: stageCode };
+    }
+
+    // search across snapshot display fields
+    if (search) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+          { phone: { contains: search, mode: "insensitive" } },
+          { currentCompany: { contains: search, mode: "insensitive" } },
+          { currentTitle: { contains: search, mode: "insensitive" } },
+        ],
+      };
+    }
+
+    const SORTABLE = ["stageUpdatedAt", "createdAt", "submittedAt"];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { stageUpdatedAt: "desc" as const };
+
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: {
+          id: true,
+          isRejected: true,
+          isWithdrawn: true,
+          isOnHold: true,
+          rejectionReason: true,
+          withdrawnReason: true,
+          onHoldReason: true,
+          stageUpdatedAt: true,
+          createdAt: true,
+
+          // submission
+          submittedAt: true,
+          submissionNote: true,
+
+          // offer
+          offeredCtc: true,
+          salaryCurrency: true,
+          salaryType: true,
+          offeredAt: true,
+          offerStatus: true,
+          expectedJoiningDate: true,
+          actualJoiningDate: true,
+
+          currentStage: {
+            select: { id: true, code: true, label: true, order: true },
+          },
+
+          // full stage history for this candidate in this requirement
+          stageHistory: {
+            select: {
+              id: true,
+              fromStage: { select: { id: true, code: true, label: true } },
+              toStage: { select: { id: true, code: true, label: true } },
+              changedBy: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+              wasSkipped: true,
+              skipReason: true,
+              timeInPrevStageMins: true,
+              note: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: "asc" },
+          },
+
+          snapshot: {
+            select: {
+              id: true,
+              candidateServiceId: true,
+              fullName: true,
+              email: true,
+              phone: true,
+              currentTitle: true,
+              currentCompany: true,
+              totalExpYears: true,
+              topSkills: true,
+              resumeUrl: true,
+              snapshotAt: true,
+              rawSnapshot: true, // full candidate blob from candidate service
+            },
+          },
+
+          assignment: {
+            select: {
+              id: true,
+              depth: true,
+              assignedTo: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  employeeId: true,
+                },
+              },
+            },
+          },
+
+          recruiter: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+            },
+          },
+
+          submittedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          offeredBy: { select: { id: true, firstName: true, lastName: true } },
+          rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+          stageUpdatedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    // ── Compute aging for each candidate
+    const enriched = pipelines.map((p) => ({
+      ...p,
+      aging: computeAging(p.stageUpdatedAt),
+    }));
+
+    return res.json({
+      success: true,
+      data: enriched,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+    });
+  } catch (err) {
+    console.error("getCandidates:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidates" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/activities
+// Requirement activity log — all events on this requirement
+// ─────────────────────────────────────────────────────────────────────────────
+export const getActivities = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId } = req.params;
+    const { page = "1", limit = "30" } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const [total, activities] = await Promise.all([
+      prisma.requirementActivity.count({ where: { requirementId } }),
+      prisma.requirementActivity.findMany({
+        where: { requirementId },
+        select: {
+          id: true,
+          type: true,
+          summary: true,
+          meta: true,
+          createdAt: true,
+          actor: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: activities,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+    });
+  } catch (err) {
+    console.error("getActivities:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch activities" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates/:pipelineId
+// Single candidate full detail in this requirement
+// ─────────────────────────────────────────────────────────────────────────────
+export const getCandidateDetail = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId, pipelineId } = req.params;
+
+    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+      where: { id: pipelineId, requirementId },
+      select: {
+        id: true,
+        isRejected: true,
+        rejectedAt: true,
+        rejectionReason: true,
+        isWithdrawn: true,
+        withdrawnAt: true,
+        withdrawnReason: true,
+        isOnHold: true,
+        onHoldAt: true,
+        onHoldReason: true,
+        stageUpdatedAt: true,
+        submittedAt: true,
+        submissionNote: true,
+        offeredCtc: true,
+        salaryCurrency: true,
+        salaryType: true,
+        offeredAt: true,
+        offerStatus: true,
+        expectedJoiningDate: true,
+        actualJoiningDate: true,
+        createdAt: true,
+        updatedAt: true,
+
+        currentStage: {
+          select: { id: true, code: true, label: true, order: true },
+        },
+        stageUpdatedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+
+        stageHistory: {
+          select: {
+            id: true,
+            wasSkipped: true,
+            skipReason: true,
+            timeInPrevStageMins: true,
+            note: true,
+            createdAt: true,
+            fromStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            toStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+
+        snapshot: {
+          select: {
+            id: true,
+            candidateServiceId: true,
+            snapshotAt: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+            resumeUrl: true,
+            rawSnapshot: true,
+          },
+        },
+
+        assignment: {
+          select: {
+            id: true,
+            depth: true,
+            assignedTo: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+              },
+            },
+          },
+        },
+        recruiter: { select: { id: true, firstName: true, lastName: true } },
+        submittedBy: { select: { id: true, firstName: true, lastName: true } },
+        offeredBy: { select: { id: true, firstName: true, lastName: true } },
+        rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!pipeline) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Candidate pipeline not found" });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...pipeline,
+        aging: computeAging(pipeline.stageUpdatedAt),
+      },
+    });
+  } catch (err) {
+    console.error("getCandidateDetail:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidate detail" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALL EXISTING CONTROLLERS BELOW — UNTOUCHED
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const getRequirementStats = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const [byStatusRaw, byPriorityRaw, breached, recentlyCreated] =
@@ -61,7 +701,6 @@ export const getRequirementStats = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /requirements
 export const getRequirements = async (req: Request, res: Response) => {
   try {
     const {
@@ -79,10 +718,8 @@ export const getRequirements = async (req: Request, res: Response) => {
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
-
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const where: any = { ...scopeWhere, deletedAt: null };
 
@@ -90,11 +727,7 @@ export const getRequirements = async (req: Request, res: Response) => {
     if (priority) where.priority = priority;
     if (clientId) where.clientId = clientId;
     if (serviceLineId) where.serviceLineId = serviceLineId;
-
-    if (buId) {
-      where.businessUnit = { ancestorIds: { has: buId } };
-    }
-
+    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
     if (search) {
       where.AND = [
         ...(where.AND ?? []),
@@ -163,7 +796,6 @@ export const getRequirements = async (req: Request, res: Response) => {
               },
             },
           },
-          // pipelines count replaces old candidates count
           _count: { select: { pipelines: true, assignments: true } },
         },
         orderBy,
@@ -195,13 +827,11 @@ export const getRequirements = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /requirements/:id — full detail
 export const getRequirementById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const requirement = await prisma.requirement.findFirst({
@@ -282,10 +912,9 @@ export const getRequirementById = async (req: Request, res: Response) => {
     });
 
     if (!requirement) {
-      res
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
     }
 
     res.json({
@@ -304,14 +933,13 @@ export const getRequirementById = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /requirements/:id/tree — full assignment tree with pipeline candidates
 export const getRequirementTree = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
     const requirement = await prisma.requirement.findFirst({
       where: { id: requirementId, ...scopeWhere, deletedAt: null },
       select: {
@@ -328,10 +956,9 @@ export const getRequirementTree = async (req: Request, res: Response) => {
     });
 
     if (!requirement) {
-      res
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
     }
 
     const subordinateIds = isSuperAdmin
@@ -369,7 +996,6 @@ export const getRequirementTree = async (req: Request, res: Response) => {
         },
         assignedBy: { select: { id: true, firstName: true, lastName: true } },
         assigneeBU: { select: { id: true, name: true } },
-        // pipelines scoped to this assignment — replaces old candidates[]
         pipelines: {
           select: {
             id: true,
@@ -399,10 +1025,8 @@ export const getRequirementTree = async (req: Request, res: Response) => {
       },
     });
 
-    // build tree from flat list
     const assignmentMap = new Map<string, any>();
     const roots: any[] = [];
-
     assignments.forEach((a) => assignmentMap.set(a.id, { ...a, children: [] }));
     assignments.forEach((a) => {
       if (a.parentAssignmentId && assignmentMap.has(a.parentAssignmentId)) {
@@ -423,7 +1047,6 @@ export const getRequirementTree = async (req: Request, res: Response) => {
   }
 };
 
-// ── POST /requirements
 export const createRequirement = async (req: Request, res: Response) => {
   try {
     const actorId = req.user!.id;
@@ -440,14 +1063,12 @@ export const createRequirement = async (req: Request, res: Response) => {
     });
 
     if (!spoc || !spoc.isActive) {
-      res
+      return res
         .status(400)
         .json({ success: false, message: "Invalid or inactive SPOC" });
-      return;
     }
 
     const reqCode = await generateReqCode();
-
     const requirement = await prisma.requirement.create({
       data: {
         reqCode,
@@ -498,7 +1119,7 @@ export const createRequirement = async (req: Request, res: Response) => {
       },
     });
 
-    res
+    return res
       .status(201)
       .json({
         success: true,
@@ -507,13 +1128,12 @@ export const createRequirement = async (req: Request, res: Response) => {
       });
   } catch (err) {
     console.error("createRequirement:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to create requirement" });
   }
 };
 
-// ── PUT /requirements/:id
 export const updateRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -525,19 +1145,17 @@ export const updateRequirement = async (req: Request, res: Response) => {
       select: { id: true, status: true },
     });
 
-    if (!existing) {
-      res
+    if (!existing)
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
-    }
-
     if (["CLOSED", "CANCELLED"].includes(existing.status)) {
-      res.status(400).json({
-        success: false,
-        message: "Cannot edit a closed or cancelled requirement",
-      });
-      return;
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Cannot edit a closed or cancelled requirement",
+        });
     }
 
     const updated = await prisma.requirement.update({
@@ -602,16 +1220,19 @@ export const updateRequirement = async (req: Request, res: Response) => {
       },
     });
 
-    res.json({ success: true, message: "Requirement updated", data: updated });
+    return res.json({
+      success: true,
+      message: "Requirement updated",
+      data: updated,
+    });
   } catch (err) {
     console.error("updateRequirement:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to update requirement" });
   }
 };
 
-// ── PATCH /requirements/:id/status
 export const updateRequirementStatus = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -623,19 +1244,14 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       select: { id: true, status: true, reqCode: true },
     });
 
-    if (!existing) {
-      res
+    if (!existing)
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
-    }
-
-    if (existing.status === status) {
-      res
+    if (existing.status === status)
+      return res
         .status(400)
         .json({ success: false, message: "Already in this status" });
-      return;
-    }
 
     const data: any = { status };
     if (status === "ACTIVE") {
@@ -673,59 +1289,51 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       }),
     ]);
 
-    res.json({ success: true, message: "Status updated", data: updated });
+    return res.json({
+      success: true,
+      message: "Status updated",
+      data: updated,
+    });
   } catch (err) {
     console.error("updateRequirementStatus:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to update status" });
   }
 };
 
-// ── DELETE /requirements/:id — soft delete
 export const deleteRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
     const existing = await prisma.requirement.findFirst({
       where: { id, deletedAt: null },
       select: { id: true, status: true },
     });
-
-    if (!existing) {
-      res
+    if (!existing)
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
-    }
-
     if (existing.status === "ACTIVE") {
-      res.status(400).json({
-        success: false,
-        message: "Cannot delete an active requirement. Close it first.",
-      });
-      return;
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Cannot delete an active requirement. Close it first.",
+        });
     }
-
     await prisma.requirement.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
-
-    res.json({ success: true, message: "Requirement deleted" });
+    return res.json({ success: true, message: "Requirement deleted" });
   } catch (err) {
     console.error("deleteRequirement:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to delete requirement" });
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ASSIGNMENTS
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── POST /requirements/:id/assignments
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
@@ -738,41 +1346,39 @@ export const createAssignment = async (req: Request, res: Response) => {
       select: { id: true, status: true, clientId: true, reqCode: true },
     });
 
-    if (!requirement) {
-      res
+    if (!requirement)
+      return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-      return;
-    }
-
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
-      res.status(400).json({
-        success: false,
-        message: "Can only assign on active requirements",
-      });
-      return;
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Can only assign on active requirements",
+        });
     }
 
     const subordinateIds = await getSubordinateIds(actorId);
     if (!subordinateIds.includes(assignedToId) && !req.user!.isSuperAdmin) {
-      res.status(403).json({
-        success: false,
-        message: "You can only assign to people in your reporting tree",
-      });
-      return;
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "You can only assign to people in your reporting tree",
+        });
     }
 
     const duplicate = await prisma.requirementAssignment.findFirst({
       where: { requirementId, assignedToId, status: "ACTIVE" },
     });
-
-    if (duplicate) {
-      res.status(409).json({
-        success: false,
-        message: "Already actively assigned to this person",
-      });
-      return;
-    }
+    if (duplicate)
+      return res
+        .status(409)
+        .json({
+          success: false,
+          message: "Already actively assigned to this person",
+        });
 
     let depth = 0;
     if (parentAssignmentId) {
@@ -780,12 +1386,10 @@ export const createAssignment = async (req: Request, res: Response) => {
         where: { id: parentAssignmentId },
         select: { depth: true },
       });
-      if (!parent) {
-        res
+      if (!parent)
+        return res
           .status(404)
           .json({ success: false, message: "Parent assignment not found" });
-        return;
-      }
       depth = parent.depth + 1;
     }
 
@@ -793,7 +1397,6 @@ export const createAssignment = async (req: Request, res: Response) => {
       where: { id: assignedToId },
       select: { departmentId: true },
     });
-
     const assignment = await prisma.$transaction(async (tx) => {
       const a = await tx.requirementAssignment.create({
         data: {
@@ -819,7 +1422,6 @@ export const createAssignment = async (req: Request, res: Response) => {
           assignedBy: { select: { id: true, firstName: true, lastName: true } },
         },
       });
-
       await tx.requirementActivity.create({
         data: {
           requirementId,
@@ -828,22 +1430,20 @@ export const createAssignment = async (req: Request, res: Response) => {
           summary: `Assigned to ${a.assignedTo.firstName} ${a.assignedTo.lastName}`,
         },
       });
-
       return a;
     });
 
-    res
+    return res
       .status(201)
       .json({ success: true, message: "Assignment created", data: assignment });
   } catch (err) {
     console.error("createAssignment:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to create assignment" });
   }
 };
 
-// ── DELETE /requirements/:id/assignments/:assignmentId
 export const removeAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId, assignmentId } = req.params;
@@ -854,19 +1454,17 @@ export const removeAssignment = async (req: Request, res: Response) => {
 
     const assignment = await prisma.requirementAssignment.findFirst({
       where: { id: assignmentId, requirementId, status: "ACTIVE" },
-      select: { id: true, assignedToId: true },
+      select: { id: true },
     });
-
-    if (!assignment) {
-      res.status(404).json({ success: false, message: "Assignment not found" });
-      return;
-    }
+    if (!assignment)
+      return res
+        .status(404)
+        .json({ success: false, message: "Assignment not found" });
 
     await prisma.requirementAssignment.update({
       where: { id: assignmentId },
       data: { status: "REMOVED", removedAt: new Date(), removedReason: reason },
     });
-
     await prisma.requirementActivity.create({
       data: {
         requirementId,
@@ -877,93 +1475,11 @@ export const removeAssignment = async (req: Request, res: Response) => {
       },
     });
 
-    res.json({ success: true, message: "Assignment removed" });
+    return res.json({ success: true, message: "Assignment removed" });
   } catch (err) {
     console.error("removeAssignment:", err);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Failed to remove assignment" });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE CANDIDATES
-// All candidate pipeline operations are handled by pipeline.controller.ts
-// These are thin pass-through endpoints for the requirement context.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── GET /requirements/:id/candidates
-// Returns all pipeline rows for this requirement — current stage + snapshot display fields
-export const getCandidates = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId } = req.params;
-    const { stageCode, assignmentId, isRejected, isWithdrawn, isOnHold } =
-      req.query as Record<string, string>;
-
-    const where: any = { requirementId };
-    if (assignmentId) where.assignmentId = assignmentId;
-    if (isRejected !== undefined) where.isRejected = isRejected === "true";
-    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
-    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
-
-    // filter by stage code if provided — join through currentStage
-    if (stageCode) {
-      where.currentStage = { code: stageCode };
-    }
-
-    const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where,
-      select: {
-        id: true,
-        recruiterId: true,
-        stageUpdatedAt: true,
-        isRejected: true,
-        isWithdrawn: true,
-        isOnHold: true,
-        rejectionReason: true,
-        withdrawnReason: true,
-        onHoldReason: true,
-        submittedAt: true,
-        offeredCtc: true,
-        offerStatus: true,
-        expectedJoiningDate: true,
-        actualJoiningDate: true,
-        createdAt: true,
-        currentStage: {
-          select: { id: true, code: true, label: true, order: true },
-        },
-        snapshot: {
-          select: {
-            id: true,
-            candidateServiceId: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            currentTitle: true,
-            currentCompany: true,
-            totalExpYears: true,
-            topSkills: true,
-            resumeUrl: true,
-          },
-        },
-        assignment: {
-          select: {
-            id: true,
-            assignedTo: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-          },
-        },
-        recruiter: { select: { id: true, firstName: true, lastName: true } },
-      },
-      orderBy: { stageUpdatedAt: "desc" },
-    });
-
-    res.json({ success: true, data: pipelines });
-  } catch (err) {
-    console.error("getCandidates:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch candidates" });
   }
 };

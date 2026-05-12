@@ -968,6 +968,9 @@ export const getUserTree = async (req: Request, res: Response) => {
 // Full detail — all assignments + history, who assigned what,
 // assignments they gave to others, requirements created,
 // candidates sourced by stage, full chain context
+// File: user.controller.ts
+// Path: src/controller/user.controller.ts
+
 export const getUserCard = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -1023,7 +1026,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
           orderBy: { firstName: "asc" },
         },
-
         teamMembers: {
           where: { isActive: true },
           select: {
@@ -1175,7 +1177,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
         },
 
-        // ── updated: spocsHandled replaces clientSpocs ──
         spocsHandled: {
           where: { isActive: true },
           select: {
@@ -1224,18 +1225,28 @@ export const getUserCard = async (req: Request, res: Response) => {
       return;
     }
 
-    const candidateStats = await prisma.requirementCandidate.groupBy({
-      by: ["currentStage"],
-      where: { assignment: { assignedToId: id } },
-      _count: { id: true },
+    // ── Candidate stats via RequirementCandidatePipeline (correct model name)
+    // Group by currentStageId — join PipelineStage to get the label
+    const pipelineRows = await prisma.requirementCandidatePipeline.findMany({
+      where: {
+        assignment: { assignedToId: id },
+      },
+      select: {
+        id: true,
+        currentStage: { select: { id: true, code: true, label: true } },
+      },
     });
 
-    const totalCandidatesSourced = candidateStats.reduce(
-      (sum, s) => sum + s._count.id,
-      0
-    );
-    const candidatesByStage = Object.fromEntries(
-      candidateStats.map((s) => [s.currentStage, s._count.id])
+    const totalCandidatesSourced = pipelineRows.length;
+
+    // Build stage breakdown: { "Sourced": 5, "Screening": 3, ... }
+    const candidatesByStage = pipelineRows.reduce<Record<string, number>>(
+      (acc, row) => {
+        const label = row.currentStage.label;
+        acc[label] = (acc[label] || 0) + 1;
+        return acc;
+      },
+      {}
     );
 
     const activeAssignments = user.assignmentsReceived.filter(
@@ -1259,7 +1270,7 @@ export const getUserCard = async (req: Request, res: Response) => {
       ),
       totalAssignmentsGiven: user._count.assignmentsGiven,
       requirementsCreated: user._count.requirementsCreated,
-      spocsHandledCount: user._count.spocsHandled, // ← fixed, was clientSpocsCount
+      spocsHandledCount: user._count.spocsHandled,
       spocsAddedCount: user._count.spocsAdded,
       candidatesSourced: totalCandidatesSourced,
       candidatesByStage,
