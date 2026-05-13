@@ -3,7 +3,9 @@ import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import { clientScopeWhere } from "@/middleware/scopeFilter.middleware";
 
-// ── GET /clients
+// ── GET /clients// File: client.controller.ts (getClients function only)
+// Path: src/controller/client.controller.ts
+
 export const getClients = async (req: Request, res: Response) => {
   try {
     const {
@@ -20,8 +22,50 @@ export const getClients = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
+    const userId = req.user!.id;
+    const scope = req.scopeFilter?.type; // "OWN" | "DEPARTMENT" | "BU" | "ALL"
+
+    // ── Build scope-based client filter ───────────────────────────────────────
+    let scopeClause: any = {};
+    console.log(scope);
+
+    if (req.user!.isSuperAdmin || scope === "ALL") {
+      // no restriction
+      scopeClause = {};
+      console.log(scope);
+    } else if (scope === "DEPARTMENT") {
+      // "Department" for us = everyone who reports to me (direct subordinates)
+      // fetch all users with reportingToId = current user
+      const subordinates = await prisma.user.findMany({
+        where: { reportingToId: userId, isActive: true },
+        select: { id: true },
+      });
+
+      const handlerIds = [userId, ...subordinates.map((u) => u.id)];
+
+      // clients where any active spoc is handled by me or my subordinates
+      scopeClause = {
+        spocs: {
+          some: {
+            handlerId: { in: handlerIds },
+            isActive: true,
+          },
+        },
+      };
+    } else {
+      // OWN — only clients where I am the spoc handler
+      scopeClause = {
+        spocs: {
+          some: {
+            handlerId: userId,
+            isActive: true,
+          },
+        },
+      };
+    }
+
     const where: any = {
-      ...clientScopeWhere(req.scopeFilter),
+      ...scopeClause,
       deletedAt: null,
     };
 
@@ -35,7 +79,15 @@ export const getClients = async (req: Request, res: Response) => {
       ];
     }
     if (serviceLineId) {
-      where.spocs = { some: { serviceLineId, isActive: true } };
+      // merge with existing spocs filter if already set
+      if (where.spocs?.some) {
+        where.spocs.some = {
+          ...where.spocs.some,
+          serviceLineId,
+        };
+      } else {
+        where.spocs = { some: { serviceLineId, isActive: true } };
+      }
     }
 
     const SORTABLE = ["name", "createdAt", "updatedAt", "status"];
