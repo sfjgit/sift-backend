@@ -13,6 +13,8 @@ datasource db {
 
 enum PermissionScope {
   OWN
+  TEAM
+  REPORTING
   DEPARTMENT
   BU
   ALL
@@ -305,12 +307,28 @@ model Role {
   updatedAt DateTime @updatedAt
 }
 
+
+model Module {
+  id       String  @id @default(uuid())
+  name     String  @unique  // "users", "clients", "requirements"
+  label    String           // "Users", "Clients", "Requirements"
+  order    Int?
+  isActive Boolean @default(true)
+
+  permissions RolePermission[]
+
+  createdAt DateTime @default(now())
+}
+
 model RolePermission {
   id     String @id @default(uuid())
   roleId String
   role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   module String
+
+   moduleId String?
+  modules   Module? @relation(fields: [moduleId], references: [id])
 
   canView   Boolean @default(false)
   canAdd    Boolean @default(false)

@@ -1,4 +1,6 @@
-// routes/pipeline.routes.ts
+// File: pipeline.routes.ts
+// Path: src/routes/pipeline.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
@@ -16,91 +18,128 @@ import {
   holdCandidateSchema,
 } from "@/validators/requirement.validators";
 import {
+  // Pipeline list + stats
   getPipelines,
   getPipelineStats,
-  getPipelineById,
+  // Pipeline stage admin CRUD
+  getPipelineStages,
+  createPipelineStage,
   updatePipelineStage,
+  deletePipelineStage,
+  // Candidate ingest
+  pushCandidate,
+  // Single pipeline read
+  getPipelineById,
+  getPipelineTimeline,
+  // Candidate stage actions
+  moveCandidateStage,
   submitCandidate,
   rollOffer,
   updateOfferStatus,
   rejectCandidate,
   withdrawCandidate,
   holdCandidate,
-  getPipelineTimeline,
 } from "@/controller/pipeline.controller";
 
 const router = Router();
 const scope = scopeFilter("requirements");
+const auth = authenticateUser;
+const edit = checkPermission("canEdit");
 
-// ── list + stats
-router.get("/", authenticateUser, scope, getPipelines);
-router.get("/stats", authenticateUser, scope, getPipelineStats);
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPELINE STAGE ADMIN — /pipeline-stages
+// Must be registered BEFORE /pipeline/:pipelineId routes to avoid
+// "pipeline-stages" being matched as a pipelineId
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ── single pipeline
-router.get("/:pipelineId", authenticateUser, scope, getPipelineById);
-router.get(
-  "/:pipelineId/timeline",
-  authenticateUser,
-  scope,
-  getPipelineTimeline
-);
+router.get("/pipeline-stages", auth, getPipelineStages);
+router.post("/pipeline-stages", auth, createPipelineStage);
+router.patch("/pipeline-stages/:stageId", auth, updatePipelineStage);
+router.delete("/pipeline-stages/:stageId", auth, deletePipelineStage);
 
-// ── stage transitions
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPELINE LIST + STATS — /pipeline
+// Static paths before dynamic /:pipelineId
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/", auth, scope, getPipelines);
+router.get("/stats", auth, scope, getPipelineStats);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SINGLE PIPELINE — /pipeline/:pipelineId
+// GET routes before PATCH routes, specific paths before dynamic
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/:pipelineId", auth, scope, getPipelineById);
+router.get("/:pipelineId/timeline", auth, scope, getPipelineTimeline);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE STAGE ACTIONS — /pipeline/:pipelineId/*
+// offer/status must come BEFORE offer to avoid "status" matching as pipelineId
+// ─────────────────────────────────────────────────────────────────────────────
+
 router.patch(
   "/:pipelineId/stage",
-  authenticateUser,
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
   validate.body(updatePipelineStageSchema),
-  updatePipelineStage
+  moveCandidateStage
 );
 router.patch(
   "/:pipelineId/submit",
-  authenticateUser,
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
   validate.body(submitCandidateSchema),
   submitCandidate
 );
 router.patch(
-  "/:pipelineId/offer",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(rollOfferSchema),
-  rollOffer
-);
-router.patch(
   "/:pipelineId/offer/status",
-  authenticateUser,
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
   validate.body(updateOfferStatusSchema),
   updateOfferStatus
 );
 router.patch(
-  "/:pipelineId/reject",
-  authenticateUser,
+  "/:pipelineId/offer",
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
+  validate.body(rollOfferSchema),
+  rollOffer
+);
+router.patch(
+  "/:pipelineId/reject",
+  auth,
+  scope,
+  edit,
   validate.body(rejectCandidateSchema),
   rejectCandidate
 );
 router.patch(
   "/:pipelineId/withdraw",
-  authenticateUser,
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
   validate.body(withdrawCandidateSchema),
   withdrawCandidate
 );
 router.patch(
   "/:pipelineId/hold",
-  authenticateUser,
+  auth,
   scope,
-  checkPermission("canEdit"),
+  edit,
   validate.body(holdCandidateSchema),
   holdCandidate
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE INGEST — POST /requirements/:id/candidates
+// Registered on requirement routes, not here — kept for reference
+// router.post("/requirements/:id/candidates", auth, scope, edit, pushCandidate);
+// ─────────────────────────────────────────────────────────────────────────────
+
+export { pushCandidate }; // re-export for requirement.routes.ts
 export default router;

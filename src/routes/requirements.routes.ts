@@ -38,6 +38,8 @@ import {
   getCandidateDetail, // ← NEW single candidate detail
   getActivities, // ← NEW activities
   getRequirementStats,
+  getRequirementCandidates,
+  getRequirementCandidateById,
 } from "@/controller/requirement.controller";
 import {
   pushCandidate,
@@ -130,7 +132,19 @@ router.delete(
 // ── CANDIDATES — paginated list with aging, filters, search
 // Query: stageCode, stageId, assignmentId, recruiterId, isRejected, isWithdrawn,
 //        isOnHold, activeOnly, search, page, limit, sortBy, sortDir
-router.get("/:id/candidates", authenticateUser, scope, getCandidates);
+router.get(
+  "/:id/candidates",
+  authenticateUser,
+  scope,
+  getRequirementCandidates
+);
+
+router.get(
+  "/:id/candidates/:pipelineId",
+  authenticateUser,
+  scope,
+  getRequirementCandidateById
+);
 
 // ── push candidate — called by Candidate Service after ingest (internal / service-to-service)
 router.post(
@@ -141,12 +155,12 @@ router.post(
 );
 
 // ── single candidate full detail in this requirement
-router.get(
-  "/:id/candidates/:pipelineId",
-  authenticateUser,
-  scope,
-  getCandidateDetail
-);
+// router.get(
+//   "/:id/candidates/:pipelineId",
+//   authenticateUser,
+//   scope,
+//   getCandidateDetail
+// );
 
 // ── stage transition
 router.patch(

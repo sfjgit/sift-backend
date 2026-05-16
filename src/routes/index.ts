@@ -11,12 +11,15 @@ import serviceLineRoutes from "./serviceLine.routes";
 // import pipelineStages from "./pipelineStage.routes";
 import pipelineRoutes from "@/routes/pipeline.routes";
 import pipelineStageRoutes from "@/routes/pipelineStage.routes";
+import notificationRoutes from "./notification.routes";
+import internalRoutes from "@/routes/internal.routes";
+import moduleRoutes from "./module.routes";
 
 const router = Router();
 
-import internalRoutes from "@/routes/internal.routes";
+router.use("/modules", moduleRoutes);
+
 router.use("/internal", internalRoutes);
-import notificationRoutes from "./notification.routes";
 router.use("/notifications", notificationRoutes);
 router.use("/auth", authRoutes);
 router.use("/dashboard", dashboardRoutes);

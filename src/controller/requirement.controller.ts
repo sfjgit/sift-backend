@@ -34,11 +34,16 @@ function computeAging(from: Date): { minutes: number; label: string } {
 // GET /requirements/:id/detail
 // Full requirement detail — header + pipeline stage counts + team
 // ─────────────────────────────────────────────────────────────────────────────
+// File: requirement.controller.ts
+// Path: src/controller/requirement.controller.ts
+
 export const getRequirementDetail = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
 
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
@@ -80,7 +85,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         createdAt: true,
         updatedAt: true,
         approvedAt: true,
-
         client: {
           select: {
             id: true,
@@ -107,8 +111,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         createdBy: { select: { id: true, firstName: true, lastName: true } },
         approvedBy: { select: { id: true, firstName: true, lastName: true } },
         closedBy: { select: { id: true, firstName: true, lastName: true } },
-
-        // active recruiters on this requirement (distinct assignees depth >= 1)
         assignments: {
           where: { status: "ACTIVE" },
           select: {
@@ -134,7 +136,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { depth: "asc" },
         },
-
         statusHistory: {
           select: {
             id: true,
@@ -148,7 +149,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { changedAt: "desc" },
         },
-
         notes: {
           select: {
             id: true,
@@ -158,7 +158,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { createdAt: "desc" },
         },
-
         documents: {
           select: {
             id: true,
@@ -186,7 +185,14 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         .json({ success: false, message: "Requirement not found" });
     }
 
-    // ── Pipeline stage counts — group by currentStageId
+    // ── Scope: creator sees all pipeline counts, others get filtered
+    const isCreatedByMe = requirement.createdBy.id === userId;
+    const visibleRecruiterIds = isCreatedByMe
+      ? null
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    // ── Stages relevant to this service line
+    const serviceLineId = (requirement as any).serviceLine?.id ?? null;
     const allStages = await prisma.pipelineStage.findMany({
       where: { isActive: true },
       select: {
@@ -198,18 +204,75 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       },
       orderBy: { order: "asc" },
     });
-
-    // filter stages relevant to this requirement's service line
-    const serviceLineId = (requirement as any).serviceLine?.id ?? null;
     const relevantStages = allStages.filter(
       (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
     );
 
-    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
-      by: ["currentStageId"],
-      where: { requirementId: id },
-      _count: { id: true },
-    });
+    // ── Scoped stage counts + summary counts — all in one Promise.all
+    const [
+      stageCounts,
+      totalCandidates,
+      activeCount,
+      rejectedCount,
+      withdrawnCount,
+      onHoldCount,
+    ] = await Promise.all([
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: {
+          requirementId: id,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+        _count: { id: true },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: {
+          requirementId: id,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: {
+          requirementId: id,
+          isRejected: false,
+          isWithdrawn: false,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: {
+          requirementId: id,
+          isRejected: true,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: {
+          requirementId: id,
+          isWithdrawn: true,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+      }),
+      prisma.requirementCandidatePipeline.count({
+        where: {
+          requirementId: id,
+          isOnHold: true,
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+      }),
+    ]);
 
     const stageCountMap = Object.fromEntries(
       stageCounts.map((s) => [s.currentStageId, s._count.id])
@@ -222,24 +285,6 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       order: stage.order,
       count: stageCountMap[stage.id] ?? 0,
     }));
-
-    // ── Total pipeline count
-    const totalCandidates = await prisma.requirementCandidatePipeline.count({
-      where: { requirementId: id },
-    });
-
-    const activeCount = await prisma.requirementCandidatePipeline.count({
-      where: { requirementId: id, isRejected: false, isWithdrawn: false },
-    });
-    const rejectedCount = await prisma.requirementCandidatePipeline.count({
-      where: { requirementId: id, isRejected: true },
-    });
-    const withdrawnCount = await prisma.requirementCandidatePipeline.count({
-      where: { requirementId: id, isWithdrawn: true },
-    });
-    const onHoldCount = await prisma.requirementCandidatePipeline.count({
-      where: { requirementId: id, isOnHold: true },
-    });
 
     return res.json({
       success: true,
@@ -266,6 +311,376 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch requirement detail" });
   }
 };
+
+// File: requirementCandidates.controller.ts
+// Path: src/controllers/requirementCandidates.controller.ts
+
+// import { Request, Response } from "express";
+// import { prisma } from "../lib/prisma";
+// import { PermissionScope } from "@prisma/client";
+// import { getVisibleRecruiterIds } from "../lib/scopeHelpers";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates
+// Paginated, scope-filtered pipeline rows for a requirement
+// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementCandidates = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId } = req.params;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
+    const {
+      stageId,
+      activeOnly,
+      search,
+      page = "1",
+      limit = "25",
+      sortBy = "stageUpdatedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    // ── Verify requirement exists and user has access
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, deletedAt: null },
+      select: { id: true, createdById: true },
+    });
+
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    // ── Scope: creator sees all, others get filtered
+    const isCreatedByMe = requirement.createdById === userId;
+    const visibleRecruiterIds = isCreatedByMe
+      ? null
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    // ── Build where clause
+    const where: any = { requirementId };
+
+    if (visibleRecruiterIds !== null) {
+      where.recruiterId = { in: visibleRecruiterIds };
+    }
+
+    if (stageId) {
+      where.currentStageId = stageId;
+    }
+
+    if (activeOnly === "true") {
+      where.isRejected = false;
+      where.isWithdrawn = false;
+    }
+
+    if (search) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+          { currentTitle: { contains: search, mode: "insensitive" } },
+          { currentCompany: { contains: search, mode: "insensitive" } },
+          { topSkills: { has: search } },
+        ],
+      };
+    }
+
+    const SORTABLE = ["stageUpdatedAt", "createdAt", "updatedAt"];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { stageUpdatedAt: "desc" as const };
+
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: {
+          id: true,
+          requirementId: true,
+          recruiterId: true,
+          currentStageId: true,
+          stageUpdatedAt: true,
+          isRejected: true,
+          isWithdrawn: true,
+          isOnHold: true,
+          onHoldReason: true,
+          rejectionReason: true,
+          withdrawnReason: true,
+          submittedAt: true,
+          submissionNote: true,
+          offeredCtc: true,
+          salaryCurrency: true,
+          salaryType: true,
+          offeredAt: true,
+          offerStatus: true,
+          expectedJoiningDate: true,
+          actualJoiningDate: true,
+          createdAt: true,
+          updatedAt: true,
+          currentStage: {
+            select: { id: true, code: true, label: true, order: true },
+          },
+          recruiter: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          snapshot: {
+            select: {
+              id: true,
+              candidateServiceId: true,
+              fullName: true,
+              email: true,
+              phone: true,
+              currentTitle: true,
+              currentCompany: true,
+              totalExpYears: true,
+              topSkills: true,
+              resumeUrl: true,
+              rawSnapshot: true,
+              snapshotAt: true,
+            },
+          },
+          // summary stage history — count of transitions only for list view
+          stageHistory: {
+            select: {
+              id: true,
+              fromStageId: true,
+              toStageId: true,
+              timeInPrevStageMins: true,
+              createdAt: true,
+              fromStage: { select: { code: true, label: true } },
+              toStage: { select: { code: true, label: true } },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    // ── Compute current stage aging (now - stageUpdatedAt) for each pipeline
+    const now = Date.now();
+    const enriched = pipelines.map((p) => {
+      const agingMins = Math.floor(
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      );
+      return {
+        ...p,
+        aging: {
+          minutes: agingMins,
+          label: formatAgingLabel(agingMins),
+        },
+      };
+    });
+
+    res.json({
+      success: true,
+      data: enriched,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidates:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidates" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates/:pipelineId
+// Full single candidate detail — snapshot + complete stage history with aging
+// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementCandidateById = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { id: requirementId, pipelineId } = req.params;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
+    // ── Verify requirement
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, deletedAt: null },
+      select: { id: true, createdById: true },
+    });
+
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    const isCreatedByMe = requirement.createdById === userId;
+    const visibleRecruiterIds = isCreatedByMe
+      ? null
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    // ── Fetch pipeline with full history
+    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+      where: {
+        id: pipelineId,
+        requirementId,
+        // scope guard — can't access candidates outside your scope
+        ...(visibleRecruiterIds !== null
+          ? { recruiterId: { in: visibleRecruiterIds } }
+          : {}),
+      },
+      select: {
+        id: true,
+        requirementId: true,
+        recruiterId: true,
+        currentStageId: true,
+        stageUpdatedAt: true,
+        isRejected: true,
+        isWithdrawn: true,
+        isOnHold: true,
+        onHoldAt: true,
+        onHoldReason: true,
+        rejectedAt: true,
+        rejectionReason: true,
+        withdrawnAt: true,
+        withdrawnReason: true,
+        submittedAt: true,
+        submissionNote: true,
+        offeredCtc: true,
+        salaryCurrency: true,
+        salaryType: true,
+        offeredAt: true,
+        offerStatus: true,
+        expectedJoiningDate: true,
+        actualJoiningDate: true,
+        createdAt: true,
+        updatedAt: true,
+        currentStage: {
+          select: { id: true, code: true, label: true, order: true },
+        },
+        recruiter: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        stageUpdatedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        submittedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        offeredBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        rejectedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        snapshot: {
+          select: {
+            id: true,
+            candidateServiceId: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+            resumeUrl: true,
+            rawSnapshot: true,
+            snapshotAt: true,
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+        // Full stage history with time spent per stage
+        stageHistory: {
+          select: {
+            id: true,
+            fromStageId: true,
+            toStageId: true,
+            timeInPrevStageMins: true,
+            wasSkipped: true,
+            skipReason: true,
+            note: true,
+            createdAt: true,
+            fromStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            toStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!pipeline) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Candidate pipeline not found" });
+    }
+
+    // ── Compute current stage aging
+    const agingMins = Math.floor(
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
+    );
+
+    // ── Compute total time in pipeline
+    const totalPipelineMins =
+      pipeline.stageHistory.reduce(
+        (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
+        0
+      ) + agingMins;
+
+    res.json({
+      success: true,
+      data: {
+        ...pipeline,
+        aging: {
+          minutes: agingMins,
+          label: formatAgingLabel(agingMins),
+        },
+        totalPipelineAging: {
+          minutes: totalPipelineMins,
+          label: formatAgingLabel(totalPipelineMins),
+        },
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidateById:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidate detail" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL
+// ─────────────────────────────────────────────────────────────────────────────
+function formatAgingLabel(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  return `${months}mo`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/candidates
@@ -831,6 +1246,54 @@ export const getRequirementStats = async (req: Request, res: Response) => {
 // Path: src/controller/requirement.controller.ts
 // REPLACE ONLY: getRequirements function
 
+// File: requirements.controller.ts
+// Path: src/controllers/requirements.controller.ts
+
+// import { Request, Response } from "express";
+// import { prisma } from "../lib/prisma";
+// import { getRequirementScopeWhere } from "../lib/scopeHelpers";
+import { PermissionScope } from "@prisma/client";
+
+/**
+ * Build the set of recruiter IDs visible to `userId` based on their canViewScope.
+ * Returns null when no recruiter filter should be applied (ALL / superAdmin).
+ */
+async function getVisibleRecruiterIds(
+  userId: string,
+  isSuperAdmin: boolean,
+  canViewScope: PermissionScope
+): Promise<string[] | null> {
+  // superAdmin or ALL scope → no recruiter filter
+  if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
+
+  if (canViewScope === PermissionScope.OWN) return [userId];
+
+  if (canViewScope === PermissionScope.TEAM) {
+    // self + everyone whose teamLeadId = userId
+    const teamMembers = await prisma.user.findMany({
+      where: { teamLeadId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...teamMembers.map((u) => u.id)];
+  }
+
+  if (canViewScope === PermissionScope.REPORTING) {
+    // self + everyone whose reportingToId = userId (direct reportees — recruiters under DM)
+    const reportees = await prisma.user.findMany({
+      where: { reportingToId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...reportees.map((u) => u.id)];
+  }
+
+  // DEPARTMENT / BU fallback — treat same as REPORTING for now
+  const reportees = await prisma.user.findMany({
+    where: { reportingToId: userId, isActive: true },
+    select: { id: true },
+  });
+  return [userId, ...reportees.map((u) => u.id)];
+}
+
 export const getRequirements = async (req: Request, res: Response) => {
   try {
     const {
@@ -848,8 +1311,12 @@ export const getRequirements = async (req: Request, res: Response) => {
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
+
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const where: any = { ...scopeWhere, deletedAt: null };
 
@@ -938,56 +1405,111 @@ export const getRequirements = async (req: Request, res: Response) => {
       }),
     ]);
 
-    // ── Batch fetch pipeline stage counts — one groupBy for all req IDs
-    const reqIds = requirements.map((r) => r.id);
-
-    const [stageCounts, allStages] = await Promise.all([
-      reqIds.length
-        ? prisma.requirementCandidatePipeline.groupBy({
-            by: ["requirementId", "currentStageId"],
-            where: { requirementId: { in: reqIds } },
-            _count: { id: true },
-          })
-        : Promise.resolve([]),
-      prisma.pipelineStage.findMany({
-        where: { isActive: true },
-        select: {
-          id: true,
-          code: true,
-          label: true,
-          order: true,
-          serviceLineId: true,
+    if (!requirements.length) {
+      return res.json({
+        success: true,
+        data: [],
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: take,
+          pages: Math.ceil(total / take),
         },
-        orderBy: { order: "asc" },
-      }),
-    ]);
-
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-    const countsByReq: Record<
-      string,
-      {
-        stageId: string;
-        code: string;
-        label: string;
-        order: number;
-        count: number;
-      }[]
-    > = {};
-
-    for (const sc of stageCounts as any[]) {
-      const stage = stageById[sc.currentStageId];
-      if (!stage) continue;
-      if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
-      countsByReq[sc.requirementId].push({
-        stageId: sc.currentStageId,
-        code: stage.code,
-        label: stage.label,
-        order: stage.order,
-        count: sc._count.id,
+        permissions: {
+          canAdd: req.modulePermission.canAdd,
+          canEdit: req.modulePermission.canEdit,
+          canDelete: req.modulePermission.canDelete,
+        },
       });
     }
 
+    // ── Split requirements into two buckets:
+    //    1. createdByMe  → show full pipeline counts (no recruiter filter)
+    //    2. assignedOnly → filter pipeline counts by scope-derived recruiter IDs
+    const reqIds = requirements.map((r) => r.id);
+    const createdByMeIds = new Set(
+      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+    );
+    const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+
+    // ── Resolve visible recruiter IDs for scope-filtered bucket (one DB call)
+    const visibleRecruiterIds = await getVisibleRecruiterIds(
+      userId,
+      isSuperAdmin,
+      canViewScope
+    );
+
+    // ── Fetch pipeline stages lookup
+    const allStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+    // ── Run both groupBy queries in parallel
+    const [fullCounts, scopedCounts] = await Promise.all([
+      // Bucket 1 — created by me: no recruiter filter, full counts
+      createdByMeIds.size > 0
+        ? prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: { requirementId: { in: [...createdByMeIds] } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+
+      // Bucket 2 — assigned only: recruiter-filtered counts
+      assignedOnlyIds.length > 0
+        ? prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: {
+              requirementId: { in: assignedOnlyIds },
+              // null visibleRecruiterIds means ALL scope — no filter
+              ...(visibleRecruiterIds !== null
+                ? { recruiterId: { in: visibleRecruiterIds } }
+                : {}),
+            },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // ── Merge both result sets into countsByReq
+    type StageCount = {
+      stageId: string;
+      code: string;
+      label: string;
+      order: number;
+      count: number;
+    };
+
+    const countsByReq: Record<string, StageCount[]> = {};
+
+    const pushToCountsByReq = (rows: typeof fullCounts) => {
+      for (const sc of rows as any[]) {
+        const stage = stageById[sc.currentStageId];
+        if (!stage) continue;
+        if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+        countsByReq[sc.requirementId].push({
+          stageId: sc.currentStageId,
+          code: stage.code,
+          label: stage.label,
+          order: stage.order,
+          count: sc._count.id,
+        });
+      }
+    };
+
+    pushToCountsByReq(fullCounts);
+    pushToCountsByReq(scopedCounts);
+
+    // Sort each req's stages by order
     for (const key of Object.keys(countsByReq)) {
       countsByReq[key].sort((a, b) => a.order - b.order);
     }
@@ -1020,11 +1542,17 @@ export const getRequirements = async (req: Request, res: Response) => {
   }
 };
 
+// File: requirements.controller.ts
+// Path: src/controllers/requirements.controller.ts
+
 export const getRequirementById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const requirement = await prisma.requirement.findFirst({
@@ -1110,9 +1638,58 @@ export const getRequirementById = async (req: Request, res: Response) => {
         .json({ success: false, message: "Requirement not found" });
     }
 
+    // ── Pipeline stage counts — same two-bucket logic as getRequirements
+    const isCreatedByMe = requirement.createdBy.id === userId;
+
+    const visibleRecruiterIds = isCreatedByMe
+      ? null // creator sees full counts — skip scope resolution entirely
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    const [allStages, stageCounts] = await Promise.all([
+      prisma.pipelineStage.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          code: true,
+          label: true,
+          order: true,
+          serviceLineId: true,
+        },
+        orderBy: { order: "asc" },
+      }),
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: {
+          requirementId: id,
+          // null = no filter (creator or ALL scope)
+          ...(visibleRecruiterIds !== null
+            ? { recruiterId: { in: visibleRecruiterIds } }
+            : {}),
+        },
+        _count: { id: true },
+      }),
+    ]);
+
+    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+    const pipelineStageCounts = stageCounts
+      .map((sc: any) => {
+        const stage = stageById[sc.currentStageId];
+        if (!stage) return null;
+        return {
+          stageId: sc.currentStageId,
+          code: stage.code,
+          label: stage.label,
+          order: stage.order,
+          count: sc._count.id,
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.order - b.order);
+
     res.json({
       success: true,
-      data: requirement,
+      data: { ...requirement, pipelineStageCounts },
       permissions: {
         canEdit: req.modulePermission.canEdit,
         canDelete: req.modulePermission.canDelete,
