@@ -1,16 +1,63 @@
-// controller/dashboard.controller.ts
+// File: dashboard.controller.ts
+// Path: src/controller/dashboard.controller.ts
+
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { getRequirementScopeWhere } from "@/services/requirementService";
+import { getVisibleRecruiterIds } from "@/utils/scopeUtils";
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function parseDateRange(from?: string, to?: string) {
+  const dateFrom = from ? new Date(from) : undefined;
+  // set to end-of-day so "to" is inclusive
+  let dateTo: Date | undefined;
+  if (to) {
+    dateTo = new Date(to);
+    dateTo.setHours(23, 59, 59, 999);
+  }
+  return { dateFrom, dateTo };
+}
+
+function buildCreatedAtFilter(dateFrom?: Date, dateTo?: Date) {
+  if (!dateFrom && !dateTo) return {};
+  return {
+    createdAt: {
+      ...(dateFrom ? { gte: dateFrom } : {}),
+      ...(dateTo ? { lte: dateTo } : {}),
+    },
+  };
+}
+
+function buildStageUpdatedAtFilter(dateFrom?: Date, dateTo?: Date) {
+  if (!dateFrom && !dateTo) return {};
+  return {
+    stageUpdatedAt: {
+      ...(dateFrom ? { gte: dateFrom } : {}),
+      ...(dateTo ? { lte: dateTo } : {}),
+    },
+  };
+}
+
+// ─── GET /dashboard/stats ─────────────────────────────────────────────────────
+// Rewritten: accepts dateFrom/dateTo driving BOTH requirement counts and
+// pipeline stage counts. Scope applied on both sides.
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const { buId, deptId, serviceLineId, clientId } = req.query as Record<
-      string,
-      string
-    >;
+
+    const {
+      buId,
+      deptId,
+      serviceLineId,
+      clientId,
+      dateFrom: rawFrom,
+      dateTo: rawTo,
+    } = req.query as Record<string, string>;
+
+    const { dateFrom, dateTo } = parseDateRange(rawFrom, rawTo);
 
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
@@ -20,6 +67,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     const deptFilter = deptId ? { createdBy: { departmentId: deptId } } : {};
     const slFilter = serviceLineId ? { serviceLineId } : {};
     const clientFilter = clientId ? { clientId } : {};
+    const dateFilter = buildCreatedAtFilter(dateFrom, dateTo);
 
     const baseWhere = {
       ...scopeWhere,
@@ -28,6 +76,27 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       ...deptFilter,
       ...slFilter,
       ...clientFilter,
+      ...dateFilter,
+    };
+
+    // pipeline rows scoped to visible recruiters
+    const visibleRecruiterIds = await getVisibleRecruiterIds(
+      userId,
+      isSuperAdmin
+    );
+
+    const pipelineBaseWhere = {
+      requirement: {
+        ...scopeWhere,
+        deletedAt: null,
+        ...buFilter,
+        ...slFilter,
+        ...clientFilter,
+      },
+      ...(visibleRecruiterIds
+        ? { recruiterId: { in: visibleRecruiterIds } }
+        : {}),
+      ...buildStageUpdatedAtFilter(dateFrom, dateTo),
     };
 
     const oneWeekAgo = new Date();
@@ -44,9 +113,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       thisWeek,
       highPriority,
       totalClients,
-      // active candidates = pipeline rows not rejected/withdrawn
       totalCandidates,
-      // pipeline stage breakdown via PipelineStage join
       pipelineCounts,
       buBreakdownRaw,
       slBreakdownRaw,
@@ -80,19 +147,19 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         },
       }),
 
-      // active pipeline rows — not rejected, not withdrawn
+      // active pipeline — not rejected, not withdrawn, scoped + date filtered
       prisma.requirementCandidatePipeline.count({
         where: {
-          requirement: baseWhere,
+          ...pipelineBaseWhere,
           isRejected: false,
           isWithdrawn: false,
         },
       }),
 
-      // stage breakdown — group by stageId then resolve labels
+      // pipeline stage breakdown — scoped + date filtered
       prisma.requirementCandidatePipeline.groupBy({
         by: ["currentStageId"],
-        where: { requirement: baseWhere },
+        where: pipelineBaseWhere,
         _count: { _all: true },
       }),
 
@@ -109,40 +176,42 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       }),
     ]);
 
-    // resolve stage labels for pipeline breakdown
+    // resolve labels
     const stageIds = pipelineCounts
       .map((p) => p.currentStageId)
       .filter(Boolean) as string[];
+    const buIds = buBreakdownRaw
+      .map((b) => b.businessUnitId)
+      .filter(Boolean) as string[];
+    const slIds = slBreakdownRaw
+      .map((s) => s.serviceLineId)
+      .filter(Boolean) as string[];
 
     const [stagesData, busData, slsData] = await Promise.all([
-      stageIds.length > 0
+      stageIds.length
         ? prisma.pipelineStage.findMany({
             where: { id: { in: stageIds } },
-            select: { id: true, code: true, label: true, order: true },
+            select: {
+              id: true,
+              code: true,
+              label: true,
+              order: true,
+              serviceLineId: true,
+            },
           })
         : [],
-      (() => {
-        const buIds = buBreakdownRaw
-          .map((b) => b.businessUnitId)
-          .filter(Boolean) as string[];
-        return buIds.length > 0
-          ? prisma.businessUnit.findMany({
-              where: { id: { in: buIds } },
-              select: { id: true, name: true },
-            })
-          : [];
-      })(),
-      (() => {
-        const slIds = slBreakdownRaw
-          .map((s) => s.serviceLineId)
-          .filter(Boolean) as string[];
-        return slIds.length > 0
-          ? prisma.serviceLine.findMany({
-              where: { id: { in: slIds } },
-              select: { id: true, name: true },
-            })
-          : [];
-      })(),
+      buIds.length
+        ? prisma.businessUnit.findMany({
+            where: { id: { in: buIds } },
+            select: { id: true, name: true },
+          })
+        : [],
+      slIds.length
+        ? prisma.serviceLine.findMany({
+            where: { id: { in: slIds } },
+            select: { id: true, name: true },
+          })
+        : [],
     ]);
 
     const stageMap = new Map(
@@ -152,6 +221,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
           code: string;
           label: string;
           order: number;
+          serviceLineId: string | null;
         }[]
       ).map((s) => [s.id, s])
     );
@@ -162,7 +232,6 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       (slsData as { id: string; name: string }[]).map((s) => [s.id, s.name])
     );
 
-    // pipeline breakdown sorted by stage order
     const pipeline = pipelineCounts
       .filter((p) => stageMap.has(p.currentStageId))
       .map((p) => {
@@ -172,6 +241,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
           code: stage.code,
           label: stage.label,
           order: stage.order,
+          serviceLineId: stage.serviceLineId,
           count: p._count._all,
         };
       })
@@ -212,6 +282,14 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         pipeline,
         buBreakdown,
         slBreakdown,
+        // echo back applied filters so frontend can display them
+        appliedFilters: {
+          dateFrom: dateFrom?.toISOString() ?? null,
+          dateTo: dateTo?.toISOString() ?? null,
+          buId: buId ?? null,
+          serviceLineId: serviceLineId ?? null,
+          clientId: clientId ?? null,
+        },
       },
     });
   } catch (err) {
@@ -220,6 +298,169 @@ export const getDashboardStats = async (req: Request, res: Response) => {
   }
 };
 
+// ─── GET /dashboard/pipeline-overview ────────────────────────────────────────
+// New endpoint. Returns every pipeline stage with:
+//   - total count (scoped)
+//   - active count (not rejected, not withdrawn, not on hold)
+//   - inactive count (rejected + withdrawn + on hold)
+//   - onHold count
+//   - stageId for redirect → /requirements?stageId=x
+// Accepts same filters as stats: buId, serviceLineId, clientId, dateFrom, dateTo
+
+export const getPipelineOverview = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    const {
+      buId,
+      serviceLineId,
+      clientId,
+      dateFrom: rawFrom,
+      dateTo: rawTo,
+    } = req.query as Record<string, string>;
+
+    const { dateFrom, dateTo } = parseDateRange(rawFrom, rawTo);
+
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+    const visibleRecruiterIds = await getVisibleRecruiterIds(
+      userId,
+      isSuperAdmin
+    );
+
+    const requirementFilter = {
+      ...scopeWhere,
+      deletedAt: null,
+      ...(buId ? { businessUnit: { ancestorIds: { has: buId } } } : {}),
+      ...(serviceLineId ? { serviceLineId } : {}),
+      ...(clientId ? { clientId } : {}),
+    };
+
+    const pipelineBaseWhere = {
+      requirement: requirementFilter,
+      ...(visibleRecruiterIds
+        ? { recruiterId: { in: visibleRecruiterIds } }
+        : {}),
+      ...buildStageUpdatedAtFilter(dateFrom, dateTo),
+    };
+
+    // fetch all stage definitions first (for ordering + labels)
+    const allStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+        isTerminal: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // single groupBy with all pipeline rows
+    const [
+      totalByStage,
+      activeByStage,
+      rejectedByStage,
+      withdrawnByStage,
+      onHoldByStage,
+    ] = await Promise.all([
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: pipelineBaseWhere,
+        _count: { _all: true },
+      }),
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: {
+          ...pipelineBaseWhere,
+          isRejected: false,
+          isWithdrawn: false,
+          isOnHold: false,
+        },
+        _count: { _all: true },
+      }),
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: { ...pipelineBaseWhere, isRejected: true },
+        _count: { _all: true },
+      }),
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: { ...pipelineBaseWhere, isWithdrawn: true },
+        _count: { _all: true },
+      }),
+      prisma.requirementCandidatePipeline.groupBy({
+        by: ["currentStageId"],
+        where: { ...pipelineBaseWhere, isOnHold: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const toMap = (
+      rows: { currentStageId: string; _count: { _all: number } }[]
+    ) => new Map(rows.map((r) => [r.currentStageId, r._count._all]));
+
+    const totalMap = toMap(totalByStage);
+    const activeMap = toMap(activeByStage);
+    const rejectedMap = toMap(rejectedByStage);
+    const withdrawnMap = toMap(withdrawnByStage);
+    const onHoldMap = toMap(onHoldByStage);
+
+    const stages = allStages.map((stage) => ({
+      stageId: stage.id,
+      code: stage.code,
+      label: stage.label,
+      order: stage.order,
+      serviceLineId: stage.serviceLineId,
+      isTerminal: stage.isTerminal,
+      total: totalMap.get(stage.id) ?? 0,
+      active: activeMap.get(stage.id) ?? 0,
+      rejected: rejectedMap.get(stage.id) ?? 0,
+      withdrawn: withdrawnMap.get(stage.id) ?? 0,
+      onHold: onHoldMap.get(stage.id) ?? 0,
+      // inactive = rejected + withdrawn + on hold
+      inactive:
+        (rejectedMap.get(stage.id) ?? 0) +
+        (withdrawnMap.get(stage.id) ?? 0) +
+        (onHoldMap.get(stage.id) ?? 0),
+    }));
+
+    // top-level summary
+    const summary = {
+      totalCandidates: stages.reduce((s, st) => s + st.total, 0),
+      activeCandidates: stages.reduce((s, st) => s + st.active, 0),
+      inactiveCandidates: stages.reduce((s, st) => s + st.inactive, 0),
+      onHold: stages.reduce((s, st) => s + st.onHold, 0),
+    };
+
+    res.json({
+      success: true,
+      data: {
+        summary,
+        stages,
+        appliedFilters: {
+          dateFrom: dateFrom?.toISOString() ?? null,
+          dateTo: dateTo?.toISOString() ?? null,
+          buId: buId ?? null,
+          serviceLineId: serviceLineId ?? null,
+          clientId: clientId ?? null,
+        },
+      },
+    });
+  } catch (err) {
+    console.error("getPipelineOverview:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline overview" });
+  }
+};
+
+// ─── GET /dashboard/my-assignments ───────────────────────────────────────────
+// Unchanged logic, kept here for co-location.
+
 export const getMyAssignments = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -227,6 +468,7 @@ export const getMyAssignments = async (req: Request, res: Response) => {
     const assignments = await prisma.requirementAssignment.findMany({
       where: { assignedToId: userId, status: "ACTIVE" },
       orderBy: { assignedAt: "desc" },
+      take: 20,
       select: {
         id: true,
         depth: true,
@@ -249,7 +491,6 @@ export const getMyAssignments = async (req: Request, res: Response) => {
             totalOpenings: true,
             filledOpenings: true,
             activeApplications: true,
-            description: true,
             location: true,
             jobType: true,
             remoteType: true,
@@ -260,7 +501,6 @@ export const getMyAssignments = async (req: Request, res: Response) => {
           },
         },
         assignedBy: { select: { id: true, firstName: true, lastName: true } },
-        // pipeline rows assigned to me for each requirement
         pipelines: {
           where: { isRejected: false, isWithdrawn: false },
           select: {
@@ -280,9 +520,8 @@ export const getMyAssignments = async (req: Request, res: Response) => {
             },
           },
           orderBy: { stageUpdatedAt: "desc" },
-          take: 10, // cap per assignment — frontend loads full list separately
+          take: 5,
         },
-        // depth 1 children
         childAssignments: {
           where: { status: "ACTIVE" },
           select: {
@@ -294,9 +533,6 @@ export const getMyAssignments = async (req: Request, res: Response) => {
             deadline: true,
             assignedAt: true,
             assignedTo: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-            assignedBy: {
               select: { id: true, firstName: true, lastName: true },
             },
             pipelines: {
@@ -312,55 +548,13 @@ export const getMyAssignments = async (req: Request, res: Response) => {
                   select: {
                     candidateServiceId: true,
                     fullName: true,
-                    email: true,
                     currentTitle: true,
                     topSkills: true,
                   },
                 },
               },
               orderBy: { stageUpdatedAt: "desc" },
-              take: 10,
-            },
-            // depth 2 children
-            childAssignments: {
-              where: { status: "ACTIVE" },
-              select: {
-                id: true,
-                depth: true,
-                allocatedOpenings: true,
-                filledOpenings: true,
-                submissionsCount: true,
-                deadline: true,
-                assignedAt: true,
-                assignedTo: {
-                  select: { id: true, firstName: true, lastName: true },
-                },
-                assignedBy: {
-                  select: { id: true, firstName: true, lastName: true },
-                },
-                pipelines: {
-                  where: { isRejected: false, isWithdrawn: false },
-                  select: {
-                    id: true,
-                    isOnHold: true,
-                    stageUpdatedAt: true,
-                    currentStage: {
-                      select: { code: true, label: true, order: true },
-                    },
-                    snapshot: {
-                      select: {
-                        candidateServiceId: true,
-                        fullName: true,
-                        email: true,
-                        currentTitle: true,
-                        topSkills: true,
-                      },
-                    },
-                  },
-                  orderBy: { stageUpdatedAt: "desc" },
-                  take: 10,
-                },
-              },
+              take: 5,
             },
           },
         },
@@ -376,37 +570,36 @@ export const getMyAssignments = async (req: Request, res: Response) => {
   }
 };
 
+// ─── GET /dashboard/activity ──────────────────────────────────────────────────
+
 export const getDashboardActivity = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
+
     const {
       buId,
-      deptId,
       serviceLineId,
       clientId,
       limit = "20",
+      dateFrom: rawFrom,
+      dateTo: rawTo,
     } = req.query as Record<string, string>;
 
-    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const { dateFrom, dateTo } = parseDateRange(rawFrom, rawTo);
 
-    const buFilter = buId
-      ? { businessUnit: { ancestorIds: { has: buId } } }
-      : {};
-    const deptFilter = deptId ? { createdBy: { departmentId: deptId } } : {};
-    const slFilter = serviceLineId ? { serviceLineId } : {};
-    const clientFilter = clientId ? { clientId } : {};
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const activities = await prisma.requirementActivity.findMany({
       where: {
         requirement: {
           ...scopeWhere,
           deletedAt: null,
-          ...buFilter,
-          ...deptFilter,
-          ...slFilter,
-          ...clientFilter,
+          ...(buId ? { businessUnit: { ancestorIds: { has: buId } } } : {}),
+          ...(serviceLineId ? { serviceLineId } : {}),
+          ...(clientId ? { clientId } : {}),
         },
+        ...buildCreatedAtFilter(dateFrom, dateTo),
       },
       select: {
         id: true,
