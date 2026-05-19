@@ -204,6 +204,9 @@ model User {
 
   reportingToId String?
   reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
+
+
+  
   subordinates  User[]  @relation("ReportsTo")
 
   teamLeadId  String?

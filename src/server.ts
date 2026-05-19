@@ -61,7 +61,7 @@ app.use(
 );
 
 // Helmet - sets various HTTP headers for security
-app.use(helmet());
+// app.use(helmet());
 
 // // Rate limiter middleware with logging
 const limiter = rateLimit({

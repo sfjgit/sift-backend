@@ -93,7 +93,7 @@ export const setTokenCookies = (
   accessToken: string,
   refreshToken: string
 ) => {
-  const isProduction = process.env.NODE_ENV === "production";
+  const isProduction = true;
 
   const base = {
     httpOnly: true,
