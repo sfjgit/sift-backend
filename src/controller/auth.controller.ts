@@ -96,7 +96,10 @@ export const login = async (req: Request, res: Response) => {
 
     const payload: JWTPayLoad = {
       ...user,
-      role: { name: user.role.name, permissions: user.role.permissions },
+      // role: { name: user.role.name, permissions: user.role.permissions },
+      role: {
+        name: user.role.name,
+      },
     };
 
     const accessToken = generateAccessToken(payload);
@@ -202,16 +205,24 @@ export const refresh = async (req: Request, res: Response) => {
     //   },
     // };
 
-    const payload: JWTPayLoad = {
-      ...user,
-      role: {
-        name: user.role.name,
-        permissions: user.role.permissions,
-      },
-    };
+    // const payload: JWTPayLoad = {
+    //   ...user,
+    //   role: {
+    //     name: user.role.name,
+    //     permissions: user.role.permissions,
+    //   },
+    // };
 
     // Rotate — delete old refresh token, issue new pair
     await prisma.refreshToken.delete({ where: { token: refreshToken } });
+
+    const payload: JWTPayLoad = {
+      id: user.id,
+      email: user.email,
+      roleId: user.roleId,
+      roleName: user.role.name,
+      isSuperAdmin: user.isSuperAdmin,
+    };
 
     const newAccessToken = generateAccessToken(payload);
     const newRefreshToken = generateRefreshToken(payload);

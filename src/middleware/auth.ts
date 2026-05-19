@@ -96,7 +96,7 @@ export const setTokenCookies = (
   const isProduction = true;
 
   const base = {
-    httpOnly: true,
+    httpOnly: false,
     secure: isProduction,
     sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
     path: "/",
