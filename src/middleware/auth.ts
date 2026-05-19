@@ -91,22 +91,14 @@ export const authenticateUser = async (
 export const setTokenCookies = (
   res: Response,
   accessToken: string,
-  refreshToken: string,
-  req: Request // pass req in so we can inspect the origin
+  refreshToken: string
 ) => {
-  const origin = req.headers.origin || req.headers.referer || "";
-
-  // Cross-origin = request came from a different host than the API
-  // "none" + secure is ONLY safe when the client is actually on HTTPS
-  const isCrossOrigin = origin !== "" && !origin.startsWith("http://localhost");
-  const isOriginSecure = origin.startsWith("https://");
-
-  const useSameNone = isCrossOrigin && isOriginSecure;
+  const isProduction = process.env.NODE_ENV === "production";
 
   const base = {
     httpOnly: true,
-    secure: useSameNone, // true only when the client is on https
-    sameSite: (useSameNone ? "none" : "lax") as "none" | "lax",
+    secure: isProduction,
+    sameSite: "lax" as const, // ✅ lax works now — requests are same-origin via proxy
     path: "/",
   };
 
@@ -122,6 +114,41 @@ export const setTokenCookies = (
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
+
+// export const setTokenCookies = (
+//   res: Response,
+//   accessToken: string,
+//   refreshToken: string,
+//   req: Request // pass req in so we can inspect the origin
+// ) => {
+//   const origin = req.headers.origin || req.headers.referer || "";
+
+//   // Cross-origin = request came from a different host than the API
+//   // "none" + secure is ONLY safe when the client is actually on HTTPS
+//   const isCrossOrigin = origin !== "" && !origin.startsWith("http://localhost");
+//   const isOriginSecure = origin.startsWith("https://");
+
+//   const useSameNone = isCrossOrigin && isOriginSecure;
+
+//   const base = {
+//     httpOnly: true,
+//     secure: useSameNone, // true only when the client is on https
+//     sameSite: (useSameNone ? "none" : "lax") as "none" | "lax",
+//     path: "/",
+//   };
+
+//   res.cookie("accessToken", accessToken, {
+//     ...base,
+//     httpOnly: false,
+//     maxAge: 15 * 60 * 1000,
+//   });
+
+//   res.cookie("refreshToken", refreshToken, {
+//     ...base,
+//     httpOnly: true,
+//     maxAge: 7 * 24 * 60 * 60 * 1000,
+//   });
+// };
 
 // export const setTokenCookies = (
 //   res: Response,
