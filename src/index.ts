@@ -19,7 +19,9 @@ async function startServer() {
     startAssignmentDeadlineChecker();
 
     app.listen(PORT, () => {
-      console.log(`🚀 Auth service running on http://localhost:${PORT}`);
+      console.log(
+        `🚀 Auth service  ==================================== on http://localhost:${PORT}`
+      );
     });
   } catch (error) {
     console.error("❌ Failed to connect to DB:", error);
