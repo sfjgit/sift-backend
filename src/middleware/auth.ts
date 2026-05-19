@@ -93,12 +93,10 @@ export const setTokenCookies = (
   accessToken: string,
   refreshToken: string
 ) => {
-  const isProduction = process.env.NODE_ENV === "production";
-
   const base = {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax" as const, // ✅ lax works now — requests are same-origin via proxy
+    secure: true, // ✅ always true — Cloud Run is always HTTPS
+    sameSite: "lax" as const,
     path: "/",
   };
 
@@ -114,6 +112,33 @@ export const setTokenCookies = (
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
+
+// export const setTokenCookies = (
+//   res: Response,
+//   accessToken: string,
+//   refreshToken: string
+// ) => {
+//   const isProduction = process.env.NODE_ENV === "production";
+
+//   const base = {
+//     httpOnly: true,
+//     secure: isProduction,
+//     sameSite: "lax" as const, // ✅ lax works now — requests are same-origin via proxy
+//     path: "/",
+//   };
+
+//   res.cookie("accessToken", accessToken, {
+//     ...base,
+//     httpOnly: false,
+//     maxAge: 15 * 60 * 1000,
+//   });
+
+//   res.cookie("refreshToken", refreshToken, {
+//     ...base,
+//     httpOnly: true,
+//     maxAge: 7 * 24 * 60 * 60 * 1000,
+//   });
+// };
 
 // export const setTokenCookies = (
 //   res: Response,
