@@ -23,6 +23,7 @@ export const SYSTEM_MODULES = [
   "audit-logs",
   "reports",
   "settings",
+  "pipeline-stages",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
