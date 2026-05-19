@@ -93,22 +93,22 @@ export const setTokenCookies = (
   accessToken: string,
   refreshToken: string
 ) => {
+  const isProduction = process.env.NODE_ENV === "production";
+
   const base = {
     httpOnly: true,
-    secure: true, // ✅ always true — Cloud Run is always HTTPS
-    sameSite: "lax" as const,
+    secure: isProduction,
+    sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
     path: "/",
   };
 
   res.cookie("accessToken", accessToken, {
     ...base,
-    httpOnly: false,
     maxAge: 15 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
     ...base,
-    httpOnly: true,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
