@@ -1,3 +1,4 @@
+import { config } from "dotenv";
 import jwt from "jsonwebtoken";
 // export interface JWTPayLoad {
 //   userId: string;
@@ -8,6 +9,8 @@ import jwt from "jsonwebtoken";
 //     permissions: string[];
 //   };
 // }
+
+config();
 export interface JWTPayLoad {
   id: string;
   email: string;

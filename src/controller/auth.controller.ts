@@ -71,39 +71,47 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
+    console.log("🔵 [LOGIN] Request received");
+    console.log("🔵 [LOGIN] Body:", req.validatedBody);
+
     const { email, password } = req.validatedBody;
+
     const user = await prisma.user.findUnique({
       where: { email },
-      include: {
-        role: {
-          include: {
-            permissions: true,
-          },
-        },
-      },
+      include: { role: { include: { permissions: true } } },
     });
-    console.log(user);
+
     if (!user) {
+      console.log("🔴 [LOGIN] User not found:", email);
       return res.status(401).json({ message: "Email not found" });
     }
+    console.log("🟢 [LOGIN] User found:", user.id, user.email);
+
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
+      console.log("🔴 [LOGIN] Invalid password for:", email);
       return res.status(401).json({ message: "Invalid password" });
     }
+    console.log("🟢 [LOGIN] Password valid");
+
     const payload: JWTPayLoad = {
       ...user,
-      role: {
-        name: user.role.name,
-        permissions: user.role.permissions,
-      },
+      role: { name: user.role.name, permissions: user.role.permissions },
     };
-
-    console.log("JWT Payload:", JSON.stringify(payload, null, 2));
-    loggers.info("JWT Payload:", JSON.stringify(payload, null, 2));
 
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
+    console.log("🟢 [LOGIN] Tokens generated");
+    console.log("🟢 [LOGIN] accessToken:", accessToken?.slice(0, 20) + "...");
+
+    console.log("🔵 [LOGIN] Calling setTokenCookies...");
     setTokenCookies(res, accessToken, refreshToken);
+    console.log("🟢 [LOGIN] setTokenCookies called");
+    console.log(
+      "🟢 [LOGIN] Response headers after setTokenCookies:",
+      res.getHeaders()
+    );
+
     await prisma.refreshToken.create({
       data: {
         token: refreshToken,
@@ -111,6 +119,8 @@ export const login = async (req: Request, res: Response) => {
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });
+    console.log("🟢 [LOGIN] Refresh token saved to DB");
+
     await createAuditLog({
       actorId: user.id,
       action: "LOGIN",
@@ -118,17 +128,18 @@ export const login = async (req: Request, res: Response) => {
       recordId: user.id,
       req,
     });
-    console.log("Audit log created successfully");
+    console.log("🟢 [LOGIN] Audit log created");
+
     const { passwordHash, passwordPlain, ...safeUser } = user;
+
+    console.log("🟢 [LOGIN] Sending 200 response");
     return res.status(200).json({
       success: true,
       message: "Login successful",
       data: safeUser,
-      // accessToken: accessToken,
-      // refreshToken: refreshToken,
     });
   } catch (error) {
-    console.error("Error logging in:", error);
+    console.error("🔴 [LOGIN] Error:", error);
     return res
       .status(500)
       .json({ success: false, message: "Error logging in" });
