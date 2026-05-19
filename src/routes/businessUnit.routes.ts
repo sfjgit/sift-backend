@@ -1,4 +1,6 @@
-// routes/bu.routes.ts
+// File: bu.routes.ts
+// Path: src/routes/bu.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {

@@ -1,11 +1,12 @@
-// controller/bu.controller.ts
+// File: bu.controller.ts
+// Path: src/controller/bu.controller.ts
+
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import type { CreateBUInput, UpdateBUInput } from "@/validators/bu.validator";
 
 // ─────────────────────────────────────────
 // ancestorIds maintenance
-// call this on create/update whenever parentBUId changes
 // ─────────────────────────────────────────
 
 async function resolveAncestorIds(
@@ -20,13 +21,11 @@ async function resolveAncestorIds(
 
   if (!parent) return [];
 
-  // parent's ancestors + parent itself
   return [...parent.ancestorIds, parent.id];
 }
 
 // ─────────────────────────────────────────
 // GET /business-units
-// returns flat list + nested tree both
 // ─────────────────────────────────────────
 
 export const listBusinessUnits = async (req: Request, res: Response) => {
@@ -44,13 +43,11 @@ export const listBusinessUnits = async (req: Request, res: Response) => {
         _count: {
           select: {
             clients: true,
-            // requirements: true,
           },
         },
       },
     });
 
-    // build tree in memory
     const map = new Map<string, any>();
     all.forEach((bu) => map.set(bu.id, { ...bu, children: [] }));
 
@@ -90,7 +87,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
         ancestorIds: true,
         createdAt: true,
 
-        // parent chain for breadcrumb
         parentBU: {
           select: {
             id: true,
@@ -100,7 +96,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           },
         },
 
-        // child BUs
         childBUs: {
           select: {
             id: true,
@@ -116,7 +111,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           orderBy: { name: "asc" },
         },
 
-        // clients under this BU
         clients: {
           where: { deletedAt: null },
           select: {
@@ -128,7 +122,10 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
               where: { isActive: true },
               select: {
                 isPrimary: true,
-                user: { select: { id: true, firstName: true, lastName: true } },
+                // schema: ClientSpoc has handlerId/handler — NOT user
+                handler: {
+                  select: { id: true, firstName: true, lastName: true },
+                },
                 serviceLine: { select: { id: true, name: true } },
               },
               take: 2,
@@ -143,7 +140,6 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
           take: 25,
         },
 
-        // top requirements
         requirementsBU: {
           where: { deletedAt: null },
           select: {
@@ -180,14 +176,12 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
       return;
     }
 
-    // requirement breakdown by status for this BU
-    // uses ancestorIds — catches sub-BU requirements too
-    const allBUIds = [id];
+    // requirement breakdown by status — includes sub-BU requirements
     const children = await prisma.businessUnit.findMany({
       where: { ancestorIds: { has: id } },
       select: { id: true },
     });
-    children.forEach((c) => allBUIds.push(c.id));
+    const allBUIds = [id, ...children.map((c) => c.id)];
 
     const reqStatusCounts = await prisma.requirement.groupBy({
       by: ["status"],
@@ -223,7 +217,6 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
     const existing = await prisma.businessUnit.findUnique({
       where: { name: body.name },
     });
-
     if (existing) {
       res
         .status(409)
@@ -256,7 +249,6 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
       }
     }
 
-    // resolve ancestorIds before creating
     const ancestorIds = await resolveAncestorIds(body.parentBUId);
 
     const bu = await prisma.$transaction(async (tx) => {
@@ -360,8 +352,6 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
       return;
     }
 
-    // if parentBUId changed — recalculate ancestorIds
-    // and cascade update to all children
     const parentChanged =
       body.parentBUId !== undefined && body.parentBUId !== existing.parentBUId;
     const newAncestorIds = parentChanged
@@ -388,18 +378,16 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
         },
       });
 
-      // cascade ancestorIds update to all children
-      if (parentChanged) {
+      // cascade ancestorIds update to all descendants
+      if (parentChanged && newAncestorIds) {
         const children = await tx.businessUnit.findMany({
           where: { ancestorIds: { has: id } },
           select: { id: true, ancestorIds: true },
         });
 
         for (const child of children) {
-          // rebuild child's ancestorIds:
-          // everything before this BU in its chain + new chain for this BU + this BU
           const idxInChild = child.ancestorIds.indexOf(id);
-          const suffix = child.ancestorIds.slice(idxInChild); // keeps id + anything below
+          const suffix = child.ancestorIds.slice(idxInChild);
           const newChildAncestors = [...newAncestorIds, ...suffix];
 
           await tx.businessUnit.update({
@@ -436,7 +424,7 @@ export const updateBusinessUnit = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────
 // DELETE /business-units/:id
-// blocked if has clients, child BUs, requirements
+// blocked if has clients, child BUs, or requirements
 // ─────────────────────────────────────────
 
 export const deleteBusinessUnit = async (req: Request, res: Response) => {
