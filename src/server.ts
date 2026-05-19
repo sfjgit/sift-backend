@@ -37,6 +37,7 @@ const allowedOrigins = [
   "http://localhost:3002",
   "http://localhost:3003",
   "https://ats-alpha-olive.vercel.app",
+  "https://ats-frontend-rose.vercel.app",
 ];
 
 app.use(cookieParser());
