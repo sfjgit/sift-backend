@@ -103,7 +103,7 @@ export const login = async (req: Request, res: Response) => {
 
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
-    setTokenCookies(res, accessToken, refreshToken, req);
+    setTokenCookies(res, accessToken, refreshToken);
     await prisma.refreshToken.create({
       data: {
         token: refreshToken,
@@ -205,7 +205,7 @@ export const refresh = async (req: Request, res: Response) => {
     const newAccessToken = generateAccessToken(payload);
     const newRefreshToken = generateRefreshToken(payload);
 
-    setTokenCookies(res, newAccessToken, newRefreshToken, req);
+    setTokenCookies(res, newAccessToken, newRefreshToken);
 
     await prisma.refreshToken.create({
       data: {
