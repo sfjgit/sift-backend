@@ -36,7 +36,7 @@ morgan.token("method-colored", (req) => {
 
 // Custom token for URL with truncation
 morgan.token("url-truncated", (req) => {
-  const url = req.originalUrl || req.url;
+  const url = req?.originalUrl || req.url;
   return url.length > 60 ? `${url.substring(0, 57)}...` : url;
 });
 

@@ -55,7 +55,7 @@ export const register = async (req: Request, res: Response) => {
       req,
     });
     console.log("Audit log created successfully");
-    const { passwordHash, passwordPlain, ...safeUser } = user;
+    const { passwordHash, ...safeUser } = user;
     return res.status(201).json({
       success: true,
       message: "User created successfully",
@@ -94,13 +94,17 @@ export const login = async (req: Request, res: Response) => {
     }
     console.log("🟢 [LOGIN] Password valid");
 
-    const payload: JWTPayLoad = {
-      ...user,
-      role: { name: user.role.name, permissions: user.role.permissions },
+    const payload: any = {
+      id: user.id,
+      email: user.email,
+      roleId: user.roleId,
+      roleName: user.role.name,
+      isSuperAdmin: user.isSuperAdmin,
     };
 
     const accessToken = generateAccessToken(payload);
     const refreshToken = generateRefreshToken(payload);
+
     console.log("🟢 [LOGIN] Tokens generated");
     console.log("🟢 [LOGIN] accessToken:", accessToken?.slice(0, 20) + "...");
 
@@ -130,7 +134,7 @@ export const login = async (req: Request, res: Response) => {
     });
     console.log("🟢 [LOGIN] Audit log created");
 
-    const { passwordHash, passwordPlain, ...safeUser } = user;
+    const { passwordHash, ...safeUser } = user;
 
     console.log("🟢 [LOGIN] Sending 200 response");
     return res.status(200).json({
@@ -202,16 +206,24 @@ export const refresh = async (req: Request, res: Response) => {
     //   },
     // };
 
-    const payload: JWTPayLoad = {
-      ...user,
-      role: {
-        name: user.role.name,
-        permissions: user.role.permissions,
-      },
-    };
+    // const payload: JWTPayLoad = {
+    //   ...user,
+    //   role: {
+    //     name: user.role.name,
+    //     permissions: user.role.permissions,
+    //   },
+    // };
 
     // Rotate — delete old refresh token, issue new pair
     await prisma.refreshToken.delete({ where: { token: refreshToken } });
+
+    const payload: any = {
+      id: user.id,
+      email: user.email,
+      roleId: user.roleId,
+      roleName: user.role.name,
+      isSuperAdmin: user.isSuperAdmin,
+    };
 
     const newAccessToken = generateAccessToken(payload);
     const newRefreshToken = generateRefreshToken(payload);
@@ -227,7 +239,7 @@ export const refresh = async (req: Request, res: Response) => {
     });
 
     // Return same user shape as login
-    const { passwordHash, passwordPlain, ...safeUser } = user;
+    const { passwordHash, ...safeUser } = user;
 
     return res.status(200).json({
       success: true,

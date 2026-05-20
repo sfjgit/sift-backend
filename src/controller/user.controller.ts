@@ -1,4 +1,6 @@
-// controller/user.controller.ts
+// File: user.controller.ts
+// Path: src/controller/user.controller.ts
+
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import bcrypt from "bcryptjs";
@@ -32,20 +34,15 @@ export const listUsers = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    // ── Scope: non-superadmins see only themselves + subtree ──────────────
     let visibleUserIds: string[] | null = null;
     if (!isSuperAdmin) {
       const subordinates = await getSubordinateIds(userId);
       visibleUserIds = [userId, ...subordinates];
     }
 
-    // ── buId: resolve to a list of matching userIds via assignments + spocs ─
-    // We do this upfront because Prisma can't do cross-relation OR in a where
-    // cleanly without raw SQL or subqueries.
     let buUserIds: string[] | null = null;
     if (buId) {
       const [assignmentUsers, spocUsers] = await Promise.all([
-        // users who have ACTIVE assignments in this BU (or any descendant BU)
         prisma.requirementAssignment.findMany({
           where: {
             status: "ACTIVE",
@@ -54,7 +51,6 @@ export const listUsers = async (req: Request, res: Response) => {
           select: { assignedToId: true },
           distinct: ["assignedToId"],
         }),
-        // users who handle spocs in this BU (or any descendant BU)
         prisma.clientSpoc.findMany({
           where: {
             isActive: true,
@@ -72,18 +68,14 @@ export const listUsers = async (req: Request, res: Response) => {
       buUserIds = [...ids];
     }
 
-    // ── Build where ────────────────────────────────────────────────────────
     const where: any = {};
 
-    // scope constraint
     if (visibleUserIds) {
       where.id = { in: visibleUserIds };
     }
 
-    // BU constraint — intersect with scope if both present
     if (buUserIds !== null) {
       if (where.id) {
-        // intersect
         const scopeSet = new Set(where.id.in as string[]);
         where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
       } else {
@@ -96,28 +88,22 @@ export const listUsers = async (req: Request, res: Response) => {
     if (departmentId) where.departmentId = departmentId;
     if (reportingToId) where.reportingToId = reportingToId;
 
-    // teamId = filter by teamLeadId
     if (teamId) where.teamLeadId = teamId;
 
-    // teamRole
     if (teamRole) {
       if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
-        // user is a team lead — has at least one active team member
         where.teamMembers = { some: { isActive: true } };
       } else if (teamRole === "MEMBER") {
-        // user belongs to a team
         where.teamLeadId = { not: null };
       }
     }
 
-    // isClientHandler — has at least one active spoc they handle
     if (isClientHandler === "true") {
       where.spocsHandled = { some: { isActive: true } };
     } else if (isClientHandler === "false") {
       where.spocsHandled = { none: { isActive: true } };
     }
 
-    // search
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: "insensitive" } },
@@ -191,6 +177,7 @@ export const listUsers = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to fetch users" });
   }
 };
+
 // ─────────────────────────────────────────
 // GET /users/:id
 // ─────────────────────────────────────────
@@ -201,7 +188,6 @@ export const getUserById = async (req: Request, res: Response) => {
     const actorId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    // can only view yourself or someone in your subtree
     if (!isSuperAdmin && id !== actorId) {
       const subordinates = await getSubordinateIds(actorId);
       if (!subordinates.includes(id)) {
@@ -218,7 +204,6 @@ export const getUserById = async (req: Request, res: Response) => {
         firstName: true,
         lastName: true,
         middleName: true,
-        nickName: true,
         displayName: true,
         employeeId: true,
         phone: true,
@@ -300,7 +285,6 @@ export const createUser = async (req: Request, res: Response) => {
     const body = req.body;
     const actorId = req.user!.id;
 
-    // email uniqueness
     const emailExists = await prisma.user.findUnique({
       where: { email: body.email },
       select: { id: true },
@@ -310,7 +294,6 @@ export const createUser = async (req: Request, res: Response) => {
       return;
     }
 
-    // employeeId uniqueness
     if (body.employeeId) {
       const empExists = await prisma.user.findUnique({
         where: { employeeId: body.employeeId },
@@ -324,7 +307,6 @@ export const createUser = async (req: Request, res: Response) => {
       }
     }
 
-    // validate role exists
     const role = await prisma.role.findUnique({
       where: { id: body.roleId },
       select: { id: true },
@@ -334,7 +316,6 @@ export const createUser = async (req: Request, res: Response) => {
       return;
     }
 
-    // validate reportingTo exists
     if (body.reportingToId) {
       const manager = await prisma.user.findUnique({
         where: { id: body.reportingToId },
@@ -348,7 +329,6 @@ export const createUser = async (req: Request, res: Response) => {
       }
     }
 
-    // validate teamLead exists
     if (body.teamLeadId) {
       const tl = await prisma.user.findUnique({
         where: { id: body.teamLeadId },
@@ -372,7 +352,6 @@ export const createUser = async (req: Request, res: Response) => {
           firstName: body.firstName,
           lastName: body.lastName,
           middleName: body.middleName ?? null,
-          nickName: body.nickName ?? null,
           displayName: body.displayName ?? null,
           employeeId: body.employeeId ?? null,
           phone: body.phone ?? null,
@@ -472,7 +451,6 @@ export const updateUser = async (req: Request, res: Response) => {
           ...(body.firstName !== undefined && { firstName: body.firstName }),
           ...(body.lastName !== undefined && { lastName: body.lastName }),
           ...(body.middleName !== undefined && { middleName: body.middleName }),
-          ...(body.nickName !== undefined && { nickName: body.nickName }),
           ...(body.displayName !== undefined && {
             displayName: body.displayName,
           }),
@@ -596,7 +574,6 @@ export const assignReporting = async (req: Request, res: Response) => {
       return;
     }
 
-    // circular check — reportingToId must not be in id's subtree
     if (reportingToId) {
       const subtree = await getSubordinateIds(id);
       if (subtree.includes(reportingToId)) {
@@ -787,23 +764,12 @@ export const assignRole = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────
 // GET /users/:id/tree
-// full org tree rooted at this user
 // ─────────────────────────────────────────
 
-// import prisma from "@/utils/prisma/client";
-// import { Request, Response } from "express";
-
-// ── GET /users/:id/tree — enhanced with role, dept, location, join date
-
-// ── GET /users/:id/tree
-// Each node includes inline stats for canvas display:
-// activeReqs, totalSubmissions, totalInterviews, totalFilled,
-// requirementsCreated, clientSpocs
 export const getUserTree = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Step 1 — recursive CTE to pull full subtree
     const rows = await prisma.$queryRaw<
       {
         id: string;
@@ -861,7 +827,6 @@ export const getUserTree = async (req: Request, res: Response) => {
 
     const userIds = rows.map((r) => r.id);
 
-    // Step 2 — batch: assignment stats for all nodes (one query)
     const assignmentStats = await prisma.requirementAssignment.groupBy({
       by: ["assignedToId"],
       where: { assignedToId: { in: userIds }, status: "ACTIVE" },
@@ -874,14 +839,12 @@ export const getUserTree = async (req: Request, res: Response) => {
       },
     });
 
-    // Step 3 — batch: requirements created count per user
     const reqsCreated = await prisma.requirement.groupBy({
       by: ["createdById"],
       where: { createdById: { in: userIds }, deletedAt: null },
       _count: { id: true },
     });
 
-    // Step 4 — batch: active client SPOCs per user
     const spocs = await prisma.clientSpoc.findMany({
       where: { handlerId: { in: userIds }, isActive: true },
       select: {
@@ -892,7 +855,6 @@ export const getUserTree = async (req: Request, res: Response) => {
       },
     });
 
-    // Build lookup maps
     const statsMap = new Map(
       assignmentStats.map((s) => [
         s.assignedToId,
@@ -916,7 +878,6 @@ export const getUserTree = async (req: Request, res: Response) => {
       spocsMap.get(s.handlerId)!.push(s);
     });
 
-    // Step 5 — build tree with stats on each node
     const map = new Map<string, any>();
     rows.forEach((r) => {
       const s = statsMap.get(r.id);
@@ -964,12 +925,9 @@ export const getUserTree = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /users/:id/card
-// Full detail — all assignments + history, who assigned what,
-// assignments they gave to others, requirements created,
-// candidates sourced by stage, full chain context
-// File: user.controller.ts
-// Path: src/controller/user.controller.ts
+// ─────────────────────────────────────────
+// GET /users/:id/card
+// ─────────────────────────────────────────
 
 export const getUserCard = async (req: Request, res: Response) => {
   try {
@@ -992,10 +950,8 @@ export const getUserCard = async (req: Request, res: Response) => {
         isActive: true,
         isSuperAdmin: true,
         createdAt: true,
-
         role: { select: { id: true, name: true } },
         department: { select: { id: true, name: true } },
-
         reportingTo: {
           select: {
             id: true,
@@ -1014,7 +970,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             role: { select: { id: true, name: true } },
           },
         },
-
         subordinates: {
           where: { isActive: true },
           select: {
@@ -1037,7 +992,6 @@ export const getUserCard = async (req: Request, res: Response) => {
           },
           orderBy: { firstName: "asc" },
         },
-
         assignmentsReceived: {
           orderBy: { assignedAt: "desc" },
           take: 30,
@@ -1121,7 +1075,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             },
           },
         },
-
         assignmentsGiven: {
           where: { status: "ACTIVE" },
           orderBy: { assignedAt: "desc" },
@@ -1156,7 +1109,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             },
           },
         },
-
         requirementsCreated: {
           where: { deletedAt: null },
           orderBy: { createdAt: "desc" },
@@ -1176,7 +1128,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             businessUnit: { select: { id: true, name: true } },
           },
         },
-
         spocsHandled: {
           where: { isActive: true },
           select: {
@@ -1205,7 +1156,6 @@ export const getUserCard = async (req: Request, res: Response) => {
             addedBy: { select: { id: true, firstName: true, lastName: true } },
           },
         },
-
         _count: {
           select: {
             subordinates: true,
@@ -1225,12 +1175,8 @@ export const getUserCard = async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Candidate stats via RequirementCandidatePipeline (correct model name)
-    // Group by currentStageId — join PipelineStage to get the label
     const pipelineRows = await prisma.requirementCandidatePipeline.findMany({
-      where: {
-        assignment: { assignedToId: id },
-      },
+      where: { assignment: { assignedToId: id } },
       select: {
         id: true,
         currentStage: { select: { id: true, code: true, label: true } },
@@ -1239,7 +1185,6 @@ export const getUserCard = async (req: Request, res: Response) => {
 
     const totalCandidatesSourced = pipelineRows.length;
 
-    // Build stage breakdown: { "Sourced": 5, "Screening": 3, ... }
     const candidatesByStage = pipelineRows.reduce<Record<string, number>>(
       (acc, row) => {
         const label = row.currentStage.label;
@@ -1288,6 +1233,10 @@ export const getUserCard = async (req: Request, res: Response) => {
   }
 };
 
+// ─────────────────────────────────────────
+// GET /users/subordinates
+// ─────────────────────────────────────────
+
 export const getMySubordinates = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -1311,7 +1260,6 @@ export const getMySubordinates = async (req: Request, res: Response) => {
       orderBy: { firstName: "asc" },
     });
 
-    // dedupe by id (a user could match both conditions)
     const seen = new Set<string>();
     const deduped = users.filter((u) => {
       if (seen.has(u.id)) return false;

@@ -1,4 +1,6 @@
-// routes/user.routes.ts
+// File: user.routes.ts
+// Path: src/routes/user.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import {
@@ -35,12 +37,29 @@ import { decrypt, encrypt } from "@/utils/crypto";
 
 const router = Router();
 
+// authenticateUser + scopeFilter applied to all routes in this router
 router.use(authenticateUser);
 router.use(scopeFilter("users"));
 
+// ── Static routes MUST come before /:id to avoid param shadowing ──────────
+
 router.get("/", validate.query(listUsersQuery), listUsers);
 
-router.get("/app-credentials", authenticateUser, async (req, res) => {
+router.post(
+  "/",
+  checkPermission("canAdd"),
+  validate.body(createUserBody),
+  createUser
+);
+
+// GET /users/subordinates — returns direct reports + team members of the caller
+// Must be declared before /:id or Express will match "subordinates" as the id param
+router.get("/subordinates", getMySubordinates);
+
+// ── App credentials (no :id prefix — static segment) ────────────────────────
+
+// GET /users/app-credentials — list all saved credentials for the caller (no passwords)
+router.get("/app-credentials", async (req, res) => {
   const records = await prisma.userAppCredential.findMany({
     where: { userId: req.user!.id },
     select: {
@@ -53,8 +72,9 @@ router.get("/app-credentials", authenticateUser, async (req, res) => {
   });
   return res.json({ success: true, data: records });
 });
-// GET /core/api/user/app-credentials/:appName
-// Extension calls: /core/api/user/app-credentials/NAUKRI
+
+// GET /users/app-credentials/:appName — fetch decrypted credential for one app
+// e.g. GET /users/app-credentials/NAUKRI
 router.get("/app-credentials/:appName", async (req, res) => {
   const record = await prisma.userAppCredential.findUnique({
     where: {
@@ -83,8 +103,7 @@ router.get("/app-credentials/:appName", async (req, res) => {
   });
 });
 
-// POST /core/api/user/app-credentials
-// { appName: 'NAUKRI', email: '...', password: '...', metadata: {} }
+// POST /users/app-credentials — upsert credential for an app
 router.post("/app-credentials", async (req, res) => {
   const { appName, email, password, metadata } = req.body;
 
@@ -108,23 +127,19 @@ router.post("/app-credentials", async (req, res) => {
   return res.json({ success: true, message: `${appName} credentials saved` });
 });
 
-router.get("/subordinates", authenticateUser, getMySubordinates);
+// ── Param routes (:id) ───────────────────────────────────────────────────────
+
 router.get("/:id", validate.params(userIdParams), getUserById);
 router.get("/:id/tree", validate.params(userIdParams), getUserTree);
-router.get("/:id/card", authenticateUser, getUserCard);
+router.get("/:id/card", validate.params(userIdParams), getUserCard);
 
-router.post(
-  "/",
-  checkPermission("canAdd"),
-  validate.body(createUserBody),
-  createUser
-);
 router.put(
   "/:id",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: updateUserBody }),
   updateUser
 );
+
 router.patch(
   "/:id/toggle",
   checkPermission("canEdit"),
@@ -138,18 +153,21 @@ router.patch(
   validate.request({ params: userIdParams, body: assignReportingBody }),
   assignReporting
 );
+
 router.patch(
   "/:id/teamlead",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignTeamLeadBody }),
   assignTeamLead
 );
+
 router.patch(
   "/:id/department",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignDepartmentBody }),
   assignDepartment
 );
+
 router.patch(
   "/:id/role",
   checkPermission("canEdit"),
