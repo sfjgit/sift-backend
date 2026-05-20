@@ -28,7 +28,9 @@ export const authenticateUser = async (
   next: NextFunction
 ) => {
   try {
-    const accessToken = req.cookies?.accessToken;
+    const accessToken =
+      req.cookies?.accessToken ||
+      req.headers.authorization?.replace("Bearer ", "").trim();
 
     if (!accessToken) {
       res.status(401).json({
@@ -104,6 +106,7 @@ export const setTokenCookies = (
 
   res.cookie("accessToken", accessToken, {
     ...base,
+    httpOnly: false,
     maxAge: 15 * 60 * 1000,
   });
 
