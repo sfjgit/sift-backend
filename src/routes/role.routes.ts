@@ -23,7 +23,7 @@ import { validate } from "@/validators/validator";
 const router = Router();
 
 router.use(authenticateUser);
-router.use(scopeFilter("settings")); // roles live under settings module
+router.use(scopeFilter("roles")); // roles live under settings module
 
 // ── Utility — before /:id ────────────────────────────────────────────────────
 router.get("/modules", getModules);
