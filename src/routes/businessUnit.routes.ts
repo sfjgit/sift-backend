@@ -24,7 +24,7 @@ import {
 const router = Router();
 
 router.use(authenticateUser);
-router.use(scopeFilter("business_units"));
+router.use(scopeFilter("business-units"));
 
 router.get("/", listBusinessUnits);
 router.get("/:id", validate.params(buIdParams), getBusinessUnitById);
