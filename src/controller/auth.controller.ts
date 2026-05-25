@@ -100,6 +100,7 @@ export const login = async (req: Request, res: Response) => {
       roleId: user.roleId,
       roleName: user.role.name,
       isSuperAdmin: user.isSuperAdmin,
+      isActive: user.isActive,
     };
 
     const accessToken = generateAccessToken(payload);
@@ -223,6 +224,7 @@ export const refresh = async (req: Request, res: Response) => {
       roleId: user.roleId,
       roleName: user.role.name,
       isSuperAdmin: user.isSuperAdmin,
+      isActive: user.isActive,
     };
 
     const newAccessToken = generateAccessToken(payload);
