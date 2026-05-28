@@ -277,6 +277,132 @@ export const getUserById = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────
+// PATCH /users/:id/reset-password
+//
+// Only a superAdmin can call this.
+// Body: { newPassword: string }
+// - hashes the new password
+// - updates the user
+// - nukes all refresh tokens (force re-login)
+// - writes audit log
+// - fires an in-house notification to the target user
+// ─────────────────────────────────────────
+
+export const adminResetPassword = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    const actorId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // ── guard: only superAdmins ───────────────────────────────────────────────
+    if (!isSuperAdmin) {
+      res.status(403).json({
+        success: false,
+        code: "FORBIDDEN",
+        message: "Only super admins can reset passwords",
+      });
+      return;
+    }
+
+    // ── guard: can't reset your own via this endpoint ─────────────────────────
+    if (id === actorId) {
+      res.status(400).json({
+        success: false,
+        code: "SELF_RESET",
+        message: "Use the change-password flow to update your own password",
+      });
+      return;
+    }
+
+    // ── target must exist ─────────────────────────────────────────────────────
+    const target = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        isActive: true,
+      },
+    });
+
+    if (!target) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+
+    if (!target.isActive) {
+      res.status(400).json({
+        success: false,
+        code: "USER_INACTIVE",
+        message: "Cannot reset password for an inactive user",
+      });
+      return;
+    }
+
+    // ── validate password length at minimum (zod can do more) ────────────────
+    if (!newPassword || newPassword.length < 8) {
+      res.status(422).json({
+        success: false,
+        code: "WEAK_PASSWORD",
+        message: "Password must be at least 8 characters",
+      });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await prisma.$transaction(async (tx) => {
+      // 1. update password hash
+      await tx.user.update({
+        where: { id },
+        data: { passwordHash },
+      });
+
+      // 2. nuke all refresh tokens → force re-login
+      await tx.refreshToken.deleteMany({ where: { userId: id } });
+
+      // 3. audit log
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: "ADMIN_RESET_PASSWORD",
+          module: "users",
+          recordId: id,
+          newData: { note: "Password reset by super admin" },
+          ip: req.ip,
+          userAgent: req.headers["user-agent"] ?? null,
+        },
+      });
+
+      // 4. in-house notification → target user
+      await tx.notification.create({
+        data: {
+          userId: id,
+          type: "STATUS_CHANGED", // closest semantic fit in your enum
+          title: "Your password was reset",
+          body: "An administrator has reset your password. Please log in with your new credentials.",
+          referenceId: actorId, // actor who did it
+          referenceType: "ASSIGNMENT", // placeholder — extend enum if needed
+          isRead: false,
+        },
+      });
+    });
+
+    res.json({
+      success: true,
+      message: `Password reset for ${target.firstName} ${target.lastName}. All sessions invalidated.`,
+    });
+  } catch (err) {
+    console.error("adminResetPassword:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to reset password" });
+  }
+};
+
+// ─────────────────────────────────────────
 // POST /users
 // ─────────────────────────────────────────
 

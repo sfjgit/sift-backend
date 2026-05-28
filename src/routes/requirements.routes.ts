@@ -135,14 +135,14 @@ router.delete(
 router.get(
   "/:id/candidates",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   getRequirementCandidates
 );
 
 router.get(
   "/:id/candidates/:pipelineId",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   getRequirementCandidateById
 );
 
@@ -166,7 +166,7 @@ router.post(
 router.patch(
   "/:id/candidates/:pipelineId/stage",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(updatePipelineStageSchema),
   updatePipelineStage
@@ -176,7 +176,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/submit",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(submitCandidateSchema),
   submitCandidate
@@ -186,7 +186,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/offer",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(rollOfferSchema),
   rollOffer
@@ -194,7 +194,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/offer/status",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(updateOfferStatusSchema),
   updateOfferStatus
@@ -204,7 +204,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/reject",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(rejectCandidateSchema),
   rejectCandidate
@@ -212,7 +212,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/withdraw",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(withdrawCandidateSchema),
   withdrawCandidate
@@ -220,7 +220,7 @@ router.patch(
 router.patch(
   "/:id/candidates/:pipelineId/hold",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(holdCandidateSchema),
   holdCandidate
@@ -230,7 +230,7 @@ router.patch(
 router.get(
   "/:id/candidates/:pipelineId/timeline",
   authenticateUser,
-  scope,
+  scopeFilter("candidates"),
   getPipelineTimeline
 );
 

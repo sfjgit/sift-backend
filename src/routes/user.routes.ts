@@ -31,6 +31,7 @@ import {
   getUserTree,
   getUserCard,
   getMySubordinates,
+  adminResetPassword,
 } from "@/controller/user.controller";
 import prisma from "@/utils/prisma/client";
 import { decrypt, encrypt } from "@/utils/crypto";
@@ -138,6 +139,15 @@ router.put(
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: updateUserBody }),
   updateUser
+);
+
+// PATCH /users/:id/reset-password
+
+router.patch(
+  "/:id/reset-password",
+  checkPermission("canEdit"),
+  // validate.request({ params: userIdParams, body: resetPasswordBody }),
+  adminResetPassword
 );
 
 router.patch(

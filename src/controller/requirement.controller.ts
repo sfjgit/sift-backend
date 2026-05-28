@@ -13,22 +13,22 @@ import { getSubordinateIds } from "@/services/orgService";
 // HELPER — compute aging string from a date to now
 // "2h 15m", "3d 4h", "1m 2d"
 // ─────────────────────────────────────────────────────────────────────────────
-function computeAging(from: Date): { minutes: number; label: string } {
-  const diffMs = Date.now() - new Date(from).getTime();
-  const totalMins = Math.floor(diffMs / 60000);
-  const mins = totalMins % 60;
-  const hours = Math.floor(totalMins / 60) % 24;
-  const days = Math.floor(totalMins / 1440) % 30;
-  const months = Math.floor(totalMins / 43200);
+// function computeAging(from: Date): { minutes: number; label: string } {
+//   const diffMs = Date.now() - new Date(from).getTime();
+//   const totalMins = Math.floor(diffMs / 60000);
+//   const mins = totalMins % 60;
+//   const hours = Math.floor(totalMins / 60) % 24;
+//   const days = Math.floor(totalMins / 1440) % 30;
+//   const months = Math.floor(totalMins / 43200);
 
-  let label = "";
-  if (months > 0) label = `${months}mo ${days}d`;
-  else if (days > 0) label = `${days}d ${hours}h`;
-  else if (hours > 0) label = `${hours}h ${mins}m`;
-  else label = `${totalMins}m`;
+//   let label = "";
+//   if (months > 0) label = `${months}mo ${days}d`;
+//   else if (days > 0) label = `${days}d ${hours}h`;
+//   else if (hours > 0) label = `${hours}h ${mins}m`;
+//   else label = `${totalMins}m`;
 
-  return { minutes: totalMins, label };
-}
+//   return { minutes: totalMins, label };
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/detail
@@ -324,363 +324,363 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
 // GET /requirements/:id/candidates
 // Paginated, scope-filtered pipeline rows for a requirement
 // ─────────────────────────────────────────────────────────────────────────────
-export const getRequirementCandidates = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId } = req.params;
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+// export const getRequirementCandidates = async (req: Request, res: Response) => {
+//   try {
+//     const { id: requirementId } = req.params;
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope =
+//       req.modulePermission?.canViewScope ?? PermissionScope.OWN;
 
-    const {
-      stageId,
-      activeOnly,
-      search,
-      page = "1",
-      limit = "25",
-      sortBy = "stageUpdatedAt",
-      sortDir = "desc",
-    } = req.query as Record<string, string>;
+//     const {
+//       stageId,
+//       activeOnly,
+//       search,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "stageUpdatedAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = Math.min(parseInt(limit), 100);
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
 
-    // ── Verify requirement exists and user has access
-    const requirement = await prisma.requirement.findFirst({
-      where: { id: requirementId, deletedAt: null },
-      select: { id: true, createdById: true },
-    });
+//     // ── Verify requirement exists and user has access
+//     const requirement = await prisma.requirement.findFirst({
+//       where: { id: requirementId, deletedAt: null },
+//       select: { id: true, createdById: true },
+//     });
 
-    if (!requirement) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Requirement not found" });
-    }
+//     if (!requirement) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "Requirement not found" });
+//     }
 
-    // ── Scope: creator sees all, others get filtered
-    const isCreatedByMe = requirement.createdById === userId;
-    const visibleRecruiterIds = isCreatedByMe
-      ? null
-      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+//     // ── Scope: creator sees all, others get filtered
+//     const isCreatedByMe = requirement.createdById === userId;
+//     const visibleRecruiterIds = isCreatedByMe
+//       ? null
+//       : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
 
-    // ── Build where clause
-    const where: any = { requirementId };
+//     // ── Build where clause
+//     const where: any = { requirementId };
 
-    if (visibleRecruiterIds !== null) {
-      where.recruiterId = { in: visibleRecruiterIds };
-    }
+//     if (visibleRecruiterIds !== null) {
+//       where.recruiterId = { in: visibleRecruiterIds };
+//     }
 
-    if (stageId) {
-      where.currentStageId = stageId;
-    }
+//     if (stageId) {
+//       where.currentStageId = stageId;
+//     }
 
-    if (activeOnly === "true") {
-      where.isRejected = false;
-      where.isWithdrawn = false;
-    }
+//     if (activeOnly === "true") {
+//       where.isRejected = false;
+//       where.isWithdrawn = false;
+//     }
 
-    if (search) {
-      where.snapshot = {
-        OR: [
-          { fullName: { contains: search, mode: "insensitive" } },
-          { email: { contains: search, mode: "insensitive" } },
-          { currentTitle: { contains: search, mode: "insensitive" } },
-          { currentCompany: { contains: search, mode: "insensitive" } },
-          { topSkills: { has: search } },
-        ],
-      };
-    }
+//     if (search) {
+//       where.snapshot = {
+//         OR: [
+//           { fullName: { contains: search, mode: "insensitive" } },
+//           { email: { contains: search, mode: "insensitive" } },
+//           { currentTitle: { contains: search, mode: "insensitive" } },
+//           { currentCompany: { contains: search, mode: "insensitive" } },
+//           { topSkills: { has: search } },
+//         ],
+//       };
+//     }
 
-    const SORTABLE = ["stageUpdatedAt", "createdAt", "updatedAt"];
-    const orderBy = SORTABLE.includes(sortBy)
-      ? { [sortBy]: sortDir as "asc" | "desc" }
-      : { stageUpdatedAt: "desc" as const };
+//     const SORTABLE = ["stageUpdatedAt", "createdAt", "updatedAt"];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { stageUpdatedAt: "desc" as const };
 
-    const [total, pipelines] = await Promise.all([
-      prisma.requirementCandidatePipeline.count({ where }),
-      prisma.requirementCandidatePipeline.findMany({
-        where,
-        select: {
-          id: true,
-          requirementId: true,
-          recruiterId: true,
-          currentStageId: true,
-          stageUpdatedAt: true,
-          isRejected: true,
-          isWithdrawn: true,
-          isOnHold: true,
-          onHoldReason: true,
-          rejectionReason: true,
-          withdrawnReason: true,
-          submittedAt: true,
-          submissionNote: true,
-          offeredCtc: true,
-          salaryCurrency: true,
-          salaryType: true,
-          offeredAt: true,
-          offerStatus: true,
-          expectedJoiningDate: true,
-          actualJoiningDate: true,
-          createdAt: true,
-          updatedAt: true,
-          currentStage: {
-            select: { id: true, code: true, label: true, order: true },
-          },
-          recruiter: {
-            select: { id: true, firstName: true, lastName: true },
-          },
-          snapshot: {
-            select: {
-              id: true,
-              candidateServiceId: true,
-              fullName: true,
-              email: true,
-              phone: true,
-              currentTitle: true,
-              currentCompany: true,
-              totalExpYears: true,
-              topSkills: true,
-              resumeUrl: true,
-              rawSnapshot: true,
-              snapshotAt: true,
-            },
-          },
-          // summary stage history — count of transitions only for list view
-          stageHistory: {
-            select: {
-              id: true,
-              fromStageId: true,
-              toStageId: true,
-              timeInPrevStageMins: true,
-              createdAt: true,
-              fromStage: { select: { code: true, label: true } },
-              toStage: { select: { code: true, label: true } },
-            },
-            orderBy: { createdAt: "asc" },
-          },
-        },
-        orderBy,
-        skip,
-        take,
-      }),
-    ]);
+//     const [total, pipelines] = await Promise.all([
+//       prisma.requirementCandidatePipeline.count({ where }),
+//       prisma.requirementCandidatePipeline.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           requirementId: true,
+//           recruiterId: true,
+//           currentStageId: true,
+//           stageUpdatedAt: true,
+//           isRejected: true,
+//           isWithdrawn: true,
+//           isOnHold: true,
+//           onHoldReason: true,
+//           rejectionReason: true,
+//           withdrawnReason: true,
+//           submittedAt: true,
+//           submissionNote: true,
+//           offeredCtc: true,
+//           salaryCurrency: true,
+//           salaryType: true,
+//           offeredAt: true,
+//           offerStatus: true,
+//           expectedJoiningDate: true,
+//           actualJoiningDate: true,
+//           createdAt: true,
+//           updatedAt: true,
+//           currentStage: {
+//             select: { id: true, code: true, label: true, order: true },
+//           },
+//           recruiter: {
+//             select: { id: true, firstName: true, lastName: true },
+//           },
+//           snapshot: {
+//             select: {
+//               id: true,
+//               candidateServiceId: true,
+//               fullName: true,
+//               email: true,
+//               phone: true,
+//               currentTitle: true,
+//               currentCompany: true,
+//               totalExpYears: true,
+//               topSkills: true,
+//               resumeUrl: true,
+//               rawSnapshot: true,
+//               snapshotAt: true,
+//             },
+//           },
+//           // summary stage history — count of transitions only for list view
+//           stageHistory: {
+//             select: {
+//               id: true,
+//               fromStageId: true,
+//               toStageId: true,
+//               timeInPrevStageMins: true,
+//               createdAt: true,
+//               fromStage: { select: { code: true, label: true } },
+//               toStage: { select: { code: true, label: true } },
+//             },
+//             orderBy: { createdAt: "asc" },
+//           },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
 
-    // ── Compute current stage aging (now - stageUpdatedAt) for each pipeline
-    const now = Date.now();
-    const enriched = pipelines.map((p) => {
-      const agingMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
-      );
-      return {
-        ...p,
-        aging: {
-          minutes: agingMins,
-          label: formatAgingLabel(agingMins),
-        },
-      };
-    });
+//     // ── Compute current stage aging (now - stageUpdatedAt) for each pipeline
+//     const now = Date.now();
+//     const enriched = pipelines.map((p) => {
+//       const agingMins = Math.floor(
+//         (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+//       );
+//       return {
+//         ...p,
+//         aging: {
+//           minutes: agingMins,
+//           label: formatAgingLabel(agingMins),
+//         },
+//       };
+//     });
 
-    res.json({
-      success: true,
-      data: enriched,
-      meta: {
-        total,
-        page: parseInt(page),
-        limit: take,
-        pages: Math.ceil(total / take),
-      },
-    });
-  } catch (err) {
-    console.error("getRequirementCandidates:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch candidates" });
-  }
-};
+//     res.json({
+//       success: true,
+//       data: enriched,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirementCandidates:", err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch candidates" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/candidates/:pipelineId
 // Full single candidate detail — snapshot + complete stage history with aging
 // ─────────────────────────────────────────────────────────────────────────────
-export const getRequirementCandidateById = async (
-  req: Request,
-  res: Response
-) => {
-  try {
-    const { id: requirementId, pipelineId } = req.params;
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+// export const getRequirementCandidateById = async (
+//   req: Request,
+//   res: Response
+// ) => {
+//   try {
+//     const { id: requirementId, pipelineId } = req.params;
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope =
+//       req.modulePermission?.canViewScope ?? PermissionScope.OWN;
 
-    // ── Verify requirement
-    const requirement = await prisma.requirement.findFirst({
-      where: { id: requirementId, deletedAt: null },
-      select: { id: true, createdById: true },
-    });
+//     // ── Verify requirement
+//     const requirement = await prisma.requirement.findFirst({
+//       where: { id: requirementId, deletedAt: null },
+//       select: { id: true, createdById: true },
+//     });
 
-    if (!requirement) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Requirement not found" });
-    }
+//     if (!requirement) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "Requirement not found" });
+//     }
 
-    const isCreatedByMe = requirement.createdById === userId;
-    const visibleRecruiterIds = isCreatedByMe
-      ? null
-      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+//     const isCreatedByMe = requirement.createdById === userId;
+//     const visibleRecruiterIds = isCreatedByMe
+//       ? null
+//       : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
 
-    // ── Fetch pipeline with full history
-    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
-      where: {
-        id: pipelineId,
-        requirementId,
-        // scope guard — can't access candidates outside your scope
-        ...(visibleRecruiterIds !== null
-          ? { recruiterId: { in: visibleRecruiterIds } }
-          : {}),
-      },
-      select: {
-        id: true,
-        requirementId: true,
-        recruiterId: true,
-        currentStageId: true,
-        stageUpdatedAt: true,
-        isRejected: true,
-        isWithdrawn: true,
-        isOnHold: true,
-        onHoldAt: true,
-        onHoldReason: true,
-        rejectedAt: true,
-        rejectionReason: true,
-        withdrawnAt: true,
-        withdrawnReason: true,
-        submittedAt: true,
-        submissionNote: true,
-        offeredCtc: true,
-        salaryCurrency: true,
-        salaryType: true,
-        offeredAt: true,
-        offerStatus: true,
-        expectedJoiningDate: true,
-        actualJoiningDate: true,
-        createdAt: true,
-        updatedAt: true,
-        currentStage: {
-          select: { id: true, code: true, label: true, order: true },
-        },
-        recruiter: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        stageUpdatedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        submittedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        offeredBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        rejectedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        snapshot: {
-          select: {
-            id: true,
-            candidateServiceId: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            currentTitle: true,
-            currentCompany: true,
-            totalExpYears: true,
-            topSkills: true,
-            resumeUrl: true,
-            rawSnapshot: true,
-            snapshotAt: true,
-            createdBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-          },
-        },
-        // Full stage history with time spent per stage
-        stageHistory: {
-          select: {
-            id: true,
-            fromStageId: true,
-            toStageId: true,
-            timeInPrevStageMins: true,
-            wasSkipped: true,
-            skipReason: true,
-            note: true,
-            createdAt: true,
-            fromStage: {
-              select: { id: true, code: true, label: true, order: true },
-            },
-            toStage: {
-              select: { id: true, code: true, label: true, order: true },
-            },
-            changedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-          },
-          orderBy: { createdAt: "asc" },
-        },
-      },
-    });
+//     // ── Fetch pipeline with full history
+//     const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+//       where: {
+//         id: pipelineId,
+//         requirementId,
+//         // scope guard — can't access candidates outside your scope
+//         ...(visibleRecruiterIds !== null
+//           ? { recruiterId: { in: visibleRecruiterIds } }
+//           : {}),
+//       },
+//       select: {
+//         id: true,
+//         requirementId: true,
+//         recruiterId: true,
+//         currentStageId: true,
+//         stageUpdatedAt: true,
+//         isRejected: true,
+//         isWithdrawn: true,
+//         isOnHold: true,
+//         onHoldAt: true,
+//         onHoldReason: true,
+//         rejectedAt: true,
+//         rejectionReason: true,
+//         withdrawnAt: true,
+//         withdrawnReason: true,
+//         submittedAt: true,
+//         submissionNote: true,
+//         offeredCtc: true,
+//         salaryCurrency: true,
+//         salaryType: true,
+//         offeredAt: true,
+//         offerStatus: true,
+//         expectedJoiningDate: true,
+//         actualJoiningDate: true,
+//         createdAt: true,
+//         updatedAt: true,
+//         currentStage: {
+//           select: { id: true, code: true, label: true, order: true },
+//         },
+//         recruiter: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
+//         stageUpdatedBy: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
+//         submittedBy: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
+//         offeredBy: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
+//         rejectedBy: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
+//         snapshot: {
+//           select: {
+//             id: true,
+//             candidateServiceId: true,
+//             fullName: true,
+//             email: true,
+//             phone: true,
+//             currentTitle: true,
+//             currentCompany: true,
+//             totalExpYears: true,
+//             topSkills: true,
+//             resumeUrl: true,
+//             rawSnapshot: true,
+//             snapshotAt: true,
+//             createdBy: {
+//               select: { id: true, firstName: true, lastName: true },
+//             },
+//           },
+//         },
+//         // Full stage history with time spent per stage
+//         stageHistory: {
+//           select: {
+//             id: true,
+//             fromStageId: true,
+//             toStageId: true,
+//             timeInPrevStageMins: true,
+//             wasSkipped: true,
+//             skipReason: true,
+//             note: true,
+//             createdAt: true,
+//             fromStage: {
+//               select: { id: true, code: true, label: true, order: true },
+//             },
+//             toStage: {
+//               select: { id: true, code: true, label: true, order: true },
+//             },
+//             changedBy: {
+//               select: { id: true, firstName: true, lastName: true },
+//             },
+//           },
+//           orderBy: { createdAt: "asc" },
+//         },
+//       },
+//     });
 
-    if (!pipeline) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Candidate pipeline not found" });
-    }
+//     if (!pipeline) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "Candidate pipeline not found" });
+//     }
 
-    // ── Compute current stage aging
-    const agingMins = Math.floor(
-      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
-    );
+//     // ── Compute current stage aging
+//     const agingMins = Math.floor(
+//       (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
+//     );
 
-    // ── Compute total time in pipeline
-    const totalPipelineMins =
-      pipeline.stageHistory.reduce(
-        (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
-        0
-      ) + agingMins;
+//     // ── Compute total time in pipeline
+//     const totalPipelineMins =
+//       pipeline.stageHistory.reduce(
+//         (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
+//         0
+//       ) + agingMins;
 
-    res.json({
-      success: true,
-      data: {
-        ...pipeline,
-        aging: {
-          minutes: agingMins,
-          label: formatAgingLabel(agingMins),
-        },
-        totalPipelineAging: {
-          minutes: totalPipelineMins,
-          label: formatAgingLabel(totalPipelineMins),
-        },
-      },
-    });
-  } catch (err) {
-    console.error("getRequirementCandidateById:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch candidate detail" });
-  }
-};
+//     res.json({
+//       success: true,
+//       data: {
+//         ...pipeline,
+//         aging: {
+//           minutes: agingMins,
+//           label: formatAgingLabel(agingMins),
+//         },
+//         totalPipelineAging: {
+//           minutes: totalPipelineMins,
+//           label: formatAgingLabel(totalPipelineMins),
+//         },
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirementCandidateById:", err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch candidate detail" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTIL
-// ─────────────────────────────────────────────────────────────────────────────
-function formatAgingLabel(mins: number): string {
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  return `${months}mo`;
-}
+// // ─────────────────────────────────────────────────────────────────────────────
+// function formatAgingLabel(mins: number): string {
+//   if (mins < 60) return `${mins}m`;
+//   const hrs = Math.floor(mins / 60);
+//   if (hrs < 24) return `${hrs}h`;
+//   const days = Math.floor(hrs / 24);
+//   if (days < 30) return `${days}d`;
+//   const months = Math.floor(days / 30);
+//   return `${months}mo`;
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/candidates
@@ -691,198 +691,198 @@ function formatAgingLabel(mins: number): string {
 //   search (fullName, email, phone, currentCompany)
 //   page, limit, sortBy (stageUpdatedAt | createdAt | aging), sortDir
 // ─────────────────────────────────────────────────────────────────────────────
-export const getCandidates = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId } = req.params;
-    const {
-      stageCode,
-      stageId,
-      assignmentId,
-      recruiterId,
-      isRejected,
-      isWithdrawn,
-      isOnHold,
-      activeOnly,
-      search,
-      page = "1",
-      limit = "25",
-      sortBy = "stageUpdatedAt",
-      sortDir = "desc",
-    } = req.query as Record<string, string>;
+// export const getCandidates = async (req: Request, res: Response) => {
+//   try {
+//     const { id: requirementId } = req.params;
+//     const {
+//       stageCode,
+//       stageId,
+//       assignmentId,
+//       recruiterId,
+//       isRejected,
+//       isWithdrawn,
+//       isOnHold,
+//       activeOnly,
+//       search,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "stageUpdatedAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = Math.min(parseInt(limit), 100);
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
 
-    const where: any = { requirementId };
+//     const where: any = { requirementId };
 
-    if (assignmentId) where.assignmentId = assignmentId;
-    if (recruiterId) where.recruiterId = recruiterId;
+//     if (assignmentId) where.assignmentId = assignmentId;
+//     if (recruiterId) where.recruiterId = recruiterId;
 
-    // terminal state filters
-    if (isRejected !== undefined) where.isRejected = isRejected === "true";
-    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
-    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
+//     // terminal state filters
+//     if (isRejected !== undefined) where.isRejected = isRejected === "true";
+//     if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
+//     if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
 
-    // activeOnly = not rejected AND not withdrawn
-    if (activeOnly === "true") {
-      where.isRejected = false;
-      where.isWithdrawn = false;
-    }
+//     // activeOnly = not rejected AND not withdrawn
+//     if (activeOnly === "true") {
+//       where.isRejected = false;
+//       where.isWithdrawn = false;
+//     }
 
-    // stage filter
-    if (stageId) {
-      where.currentStageId = stageId;
-    } else if (stageCode) {
-      where.currentStage = { code: stageCode };
-    }
+//     // stage filter
+//     if (stageId) {
+//       where.currentStageId = stageId;
+//     } else if (stageCode) {
+//       where.currentStage = { code: stageCode };
+//     }
 
-    // search across snapshot display fields
-    if (search) {
-      where.snapshot = {
-        OR: [
-          { fullName: { contains: search, mode: "insensitive" } },
-          { email: { contains: search, mode: "insensitive" } },
-          { phone: { contains: search, mode: "insensitive" } },
-          { currentCompany: { contains: search, mode: "insensitive" } },
-          { currentTitle: { contains: search, mode: "insensitive" } },
-        ],
-      };
-    }
+//     // search across snapshot display fields
+//     if (search) {
+//       where.snapshot = {
+//         OR: [
+//           { fullName: { contains: search, mode: "insensitive" } },
+//           { email: { contains: search, mode: "insensitive" } },
+//           { phone: { contains: search, mode: "insensitive" } },
+//           { currentCompany: { contains: search, mode: "insensitive" } },
+//           { currentTitle: { contains: search, mode: "insensitive" } },
+//         ],
+//       };
+//     }
 
-    const SORTABLE = ["stageUpdatedAt", "createdAt", "submittedAt"];
-    const orderBy = SORTABLE.includes(sortBy)
-      ? { [sortBy]: sortDir as "asc" | "desc" }
-      : { stageUpdatedAt: "desc" as const };
+//     const SORTABLE = ["stageUpdatedAt", "createdAt", "submittedAt"];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { stageUpdatedAt: "desc" as const };
 
-    const [total, pipelines] = await Promise.all([
-      prisma.requirementCandidatePipeline.count({ where }),
-      prisma.requirementCandidatePipeline.findMany({
-        where,
-        select: {
-          id: true,
-          isRejected: true,
-          isWithdrawn: true,
-          isOnHold: true,
-          rejectionReason: true,
-          withdrawnReason: true,
-          onHoldReason: true,
-          stageUpdatedAt: true,
-          createdAt: true,
+//     const [total, pipelines] = await Promise.all([
+//       prisma.requirementCandidatePipeline.count({ where }),
+//       prisma.requirementCandidatePipeline.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           isRejected: true,
+//           isWithdrawn: true,
+//           isOnHold: true,
+//           rejectionReason: true,
+//           withdrawnReason: true,
+//           onHoldReason: true,
+//           stageUpdatedAt: true,
+//           createdAt: true,
 
-          // submission
-          submittedAt: true,
-          submissionNote: true,
+//           // submission
+//           submittedAt: true,
+//           submissionNote: true,
 
-          // offer
-          offeredCtc: true,
-          salaryCurrency: true,
-          salaryType: true,
-          offeredAt: true,
-          offerStatus: true,
-          expectedJoiningDate: true,
-          actualJoiningDate: true,
+//           // offer
+//           offeredCtc: true,
+//           salaryCurrency: true,
+//           salaryType: true,
+//           offeredAt: true,
+//           offerStatus: true,
+//           expectedJoiningDate: true,
+//           actualJoiningDate: true,
 
-          currentStage: {
-            select: { id: true, code: true, label: true, order: true },
-          },
+//           currentStage: {
+//             select: { id: true, code: true, label: true, order: true },
+//           },
 
-          // full stage history for this candidate in this requirement
-          stageHistory: {
-            select: {
-              id: true,
-              fromStage: { select: { id: true, code: true, label: true } },
-              toStage: { select: { id: true, code: true, label: true } },
-              changedBy: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-              wasSkipped: true,
-              skipReason: true,
-              timeInPrevStageMins: true,
-              note: true,
-              createdAt: true,
-            },
-            orderBy: { createdAt: "asc" },
-          },
+//           // full stage history for this candidate in this requirement
+//           stageHistory: {
+//             select: {
+//               id: true,
+//               fromStage: { select: { id: true, code: true, label: true } },
+//               toStage: { select: { id: true, code: true, label: true } },
+//               changedBy: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//               wasSkipped: true,
+//               skipReason: true,
+//               timeInPrevStageMins: true,
+//               note: true,
+//               createdAt: true,
+//             },
+//             orderBy: { createdAt: "asc" },
+//           },
 
-          snapshot: {
-            select: {
-              id: true,
-              candidateServiceId: true,
-              fullName: true,
-              email: true,
-              phone: true,
-              currentTitle: true,
-              currentCompany: true,
-              totalExpYears: true,
-              topSkills: true,
-              resumeUrl: true,
-              snapshotAt: true,
-              rawSnapshot: true, // full candidate blob from candidate service
-            },
-          },
+//           snapshot: {
+//             select: {
+//               id: true,
+//               candidateServiceId: true,
+//               fullName: true,
+//               email: true,
+//               phone: true,
+//               currentTitle: true,
+//               currentCompany: true,
+//               totalExpYears: true,
+//               topSkills: true,
+//               resumeUrl: true,
+//               snapshotAt: true,
+//               rawSnapshot: true, // full candidate blob from candidate service
+//             },
+//           },
 
-          assignment: {
-            select: {
-              id: true,
-              depth: true,
-              assignedTo: {
-                select: {
-                  id: true,
-                  firstName: true,
-                  lastName: true,
-                  employeeId: true,
-                },
-              },
-            },
-          },
+//           assignment: {
+//             select: {
+//               id: true,
+//               depth: true,
+//               assignedTo: {
+//                 select: {
+//                   id: true,
+//                   firstName: true,
+//                   lastName: true,
+//                   employeeId: true,
+//                 },
+//               },
+//             },
+//           },
 
-          recruiter: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              employeeId: true,
-            },
-          },
+//           recruiter: {
+//             select: {
+//               id: true,
+//               firstName: true,
+//               lastName: true,
+//               employeeId: true,
+//             },
+//           },
 
-          submittedBy: {
-            select: { id: true, firstName: true, lastName: true },
-          },
-          offeredBy: { select: { id: true, firstName: true, lastName: true } },
-          rejectedBy: { select: { id: true, firstName: true, lastName: true } },
-          stageUpdatedBy: {
-            select: { id: true, firstName: true, lastName: true },
-          },
-        },
-        orderBy,
-        skip,
-        take,
-      }),
-    ]);
+//           submittedBy: {
+//             select: { id: true, firstName: true, lastName: true },
+//           },
+//           offeredBy: { select: { id: true, firstName: true, lastName: true } },
+//           rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+//           stageUpdatedBy: {
+//             select: { id: true, firstName: true, lastName: true },
+//           },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
 
-    // ── Compute aging for each candidate
-    const enriched = pipelines.map((p) => ({
-      ...p,
-      aging: computeAging(p.stageUpdatedAt),
-    }));
+//     // ── Compute aging for each candidate
+//     const enriched = pipelines.map((p) => ({
+//       ...p,
+//       aging: computeAging(p.stageUpdatedAt),
+//     }));
 
-    return res.json({
-      success: true,
-      data: enriched,
-      meta: {
-        total,
-        page: parseInt(page),
-        limit: take,
-        pages: Math.ceil(total / take),
-      },
-    });
-  } catch (err) {
-    console.error("getCandidates:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch candidates" });
-  }
-};
+//     return res.json({
+//       success: true,
+//       data: enriched,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getCandidates:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch candidates" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/activities
@@ -943,122 +943,122 @@ export const getActivities = async (req: Request, res: Response) => {
 // GET /requirements/:id/candidates/:pipelineId
 // Single candidate full detail in this requirement
 // ─────────────────────────────────────────────────────────────────────────────
-export const getCandidateDetail = async (req: Request, res: Response) => {
-  try {
-    const { id: requirementId, pipelineId } = req.params;
+// export const getCandidateDetail = async (req: Request, res: Response) => {
+//   try {
+//     const { id: requirementId, pipelineId } = req.params;
 
-    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
-      where: { id: pipelineId, requirementId },
-      select: {
-        id: true,
-        isRejected: true,
-        rejectedAt: true,
-        rejectionReason: true,
-        isWithdrawn: true,
-        withdrawnAt: true,
-        withdrawnReason: true,
-        isOnHold: true,
-        onHoldAt: true,
-        onHoldReason: true,
-        stageUpdatedAt: true,
-        submittedAt: true,
-        submissionNote: true,
-        offeredCtc: true,
-        salaryCurrency: true,
-        salaryType: true,
-        offeredAt: true,
-        offerStatus: true,
-        expectedJoiningDate: true,
-        actualJoiningDate: true,
-        createdAt: true,
-        updatedAt: true,
+//     const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+//       where: { id: pipelineId, requirementId },
+//       select: {
+//         id: true,
+//         isRejected: true,
+//         rejectedAt: true,
+//         rejectionReason: true,
+//         isWithdrawn: true,
+//         withdrawnAt: true,
+//         withdrawnReason: true,
+//         isOnHold: true,
+//         onHoldAt: true,
+//         onHoldReason: true,
+//         stageUpdatedAt: true,
+//         submittedAt: true,
+//         submissionNote: true,
+//         offeredCtc: true,
+//         salaryCurrency: true,
+//         salaryType: true,
+//         offeredAt: true,
+//         offerStatus: true,
+//         expectedJoiningDate: true,
+//         actualJoiningDate: true,
+//         createdAt: true,
+//         updatedAt: true,
 
-        currentStage: {
-          select: { id: true, code: true, label: true, order: true },
-        },
-        stageUpdatedBy: {
-          select: { id: true, firstName: true, lastName: true },
-        },
+//         currentStage: {
+//           select: { id: true, code: true, label: true, order: true },
+//         },
+//         stageUpdatedBy: {
+//           select: { id: true, firstName: true, lastName: true },
+//         },
 
-        stageHistory: {
-          select: {
-            id: true,
-            wasSkipped: true,
-            skipReason: true,
-            timeInPrevStageMins: true,
-            note: true,
-            createdAt: true,
-            fromStage: {
-              select: { id: true, code: true, label: true, order: true },
-            },
-            toStage: {
-              select: { id: true, code: true, label: true, order: true },
-            },
-            changedBy: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-          },
-          orderBy: { createdAt: "asc" },
-        },
+//         stageHistory: {
+//           select: {
+//             id: true,
+//             wasSkipped: true,
+//             skipReason: true,
+//             timeInPrevStageMins: true,
+//             note: true,
+//             createdAt: true,
+//             fromStage: {
+//               select: { id: true, code: true, label: true, order: true },
+//             },
+//             toStage: {
+//               select: { id: true, code: true, label: true, order: true },
+//             },
+//             changedBy: {
+//               select: { id: true, firstName: true, lastName: true },
+//             },
+//           },
+//           orderBy: { createdAt: "asc" },
+//         },
 
-        snapshot: {
-          select: {
-            id: true,
-            candidateServiceId: true,
-            snapshotAt: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            currentTitle: true,
-            currentCompany: true,
-            totalExpYears: true,
-            topSkills: true,
-            resumeUrl: true,
-            rawSnapshot: true,
-          },
-        },
+//         snapshot: {
+//           select: {
+//             id: true,
+//             candidateServiceId: true,
+//             snapshotAt: true,
+//             fullName: true,
+//             email: true,
+//             phone: true,
+//             currentTitle: true,
+//             currentCompany: true,
+//             totalExpYears: true,
+//             topSkills: true,
+//             resumeUrl: true,
+//             rawSnapshot: true,
+//           },
+//         },
 
-        assignment: {
-          select: {
-            id: true,
-            depth: true,
-            assignedTo: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                employeeId: true,
-              },
-            },
-          },
-        },
-        recruiter: { select: { id: true, firstName: true, lastName: true } },
-        submittedBy: { select: { id: true, firstName: true, lastName: true } },
-        offeredBy: { select: { id: true, firstName: true, lastName: true } },
-        rejectedBy: { select: { id: true, firstName: true, lastName: true } },
-      },
-    });
+//         assignment: {
+//           select: {
+//             id: true,
+//             depth: true,
+//             assignedTo: {
+//               select: {
+//                 id: true,
+//                 firstName: true,
+//                 lastName: true,
+//                 employeeId: true,
+//               },
+//             },
+//           },
+//         },
+//         recruiter: { select: { id: true, firstName: true, lastName: true } },
+//         submittedBy: { select: { id: true, firstName: true, lastName: true } },
+//         offeredBy: { select: { id: true, firstName: true, lastName: true } },
+//         rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+//       },
+//     });
 
-    if (!pipeline) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Candidate pipeline not found" });
-    }
+//     if (!pipeline) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "Candidate pipeline not found" });
+//     }
 
-    return res.json({
-      success: true,
-      data: {
-        ...pipeline,
-        aging: computeAging(pipeline.stageUpdatedAt),
-      },
-    });
-  } catch (err) {
-    console.error("getCandidateDetail:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch candidate detail" });
-  }
-};
+//     return res.json({
+//       success: true,
+//       data: {
+//         ...pipeline,
+//         aging: computeAging(pipeline.stageUpdatedAt),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getCandidateDetail:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch candidate detail" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALL EXISTING CONTROLLERS BELOW — UNTOUCHED
@@ -1258,41 +1258,41 @@ import { PermissionScope } from "@prisma/client";
  * Build the set of recruiter IDs visible to `userId` based on their canViewScope.
  * Returns null when no recruiter filter should be applied (ALL / superAdmin).
  */
-async function getVisibleRecruiterIds(
-  userId: string,
-  isSuperAdmin: boolean,
-  canViewScope: PermissionScope
-): Promise<string[] | null> {
-  // superAdmin or ALL scope → no recruiter filter
-  if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
+// async function getVisibleRecruiterIds(
+//   userId: string,
+//   isSuperAdmin: boolean,
+//   canViewScope: PermissionScope
+// ): Promise<string[] | null> {
+//   // superAdmin or ALL scope → no recruiter filter
+//   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
 
-  if (canViewScope === PermissionScope.OWN) return [userId];
+//   if (canViewScope === PermissionScope.OWN) return [userId];
 
-  if (canViewScope === PermissionScope.TEAM) {
-    // self + everyone whose teamLeadId = userId
-    const teamMembers = await prisma.user.findMany({
-      where: { teamLeadId: userId, isActive: true },
-      select: { id: true },
-    });
-    return [userId, ...teamMembers.map((u) => u.id)];
-  }
+//   if (canViewScope === PermissionScope.TEAM) {
+//     // self + everyone whose teamLeadId = userId
+//     const teamMembers = await prisma.user.findMany({
+//       where: { teamLeadId: userId, isActive: true },
+//       select: { id: true },
+//     });
+//     return [userId, ...teamMembers.map((u) => u.id)];
+//   }
 
-  if (canViewScope === PermissionScope.REPORTING) {
-    // self + everyone whose reportingToId = userId (direct reportees — recruiters under DM)
-    const reportees = await prisma.user.findMany({
-      where: { reportingToId: userId, isActive: true },
-      select: { id: true },
-    });
-    return [userId, ...reportees.map((u) => u.id)];
-  }
+//   if (canViewScope === PermissionScope.REPORTING) {
+//     // self + everyone whose reportingToId = userId (direct reportees — recruiters under DM)
+//     const reportees = await prisma.user.findMany({
+//       where: { reportingToId: userId, isActive: true },
+//       select: { id: true },
+//     });
+//     return [userId, ...reportees.map((u) => u.id)];
+//   }
 
-  // DEPARTMENT / BU fallback — treat same as REPORTING for now
-  const reportees = await prisma.user.findMany({
-    where: { reportingToId: userId, isActive: true },
-    select: { id: true },
-  });
-  return [userId, ...reportees.map((u) => u.id)];
-}
+//   // DEPARTMENT / BU fallback — treat same as REPORTING for now
+//   const reportees = await prisma.user.findMany({
+//     where: { reportingToId: userId, isActive: true },
+//     select: { id: true },
+//   });
+//   return [userId, ...reportees.map((u) => u.id)];
+// }
 
 export const getRequirements = async (req: Request, res: Response) => {
   try {
@@ -2239,5 +2239,718 @@ export const removeAssignment = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to remove assignment" });
+  }
+};
+
+// File: requirementCandidates.controller.ts
+// Path: src/controllers/requirementCandidates.controller.ts
+
+// import prisma from "@/utils/prisma/client";
+// import { Request, Response } from "express";
+// import { PermissionScope } from "@prisma/client";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL
+// ─────────────────────────────────────────────────────────────────────────────
+function formatAgingLabel(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  return `${months}mo`;
+}
+
+function computeAging(from: Date): { minutes: number; label: string } {
+  const diffMs = Date.now() - new Date(from).getTime();
+  const totalMins = Math.floor(diffMs / 60000);
+  const mins = totalMins % 60;
+  const hours = Math.floor(totalMins / 60) % 24;
+  const days = Math.floor(totalMins / 1440) % 30;
+  const months = Math.floor(totalMins / 43200);
+
+  let label = "";
+  if (months > 0) label = `${months}mo ${days}d`;
+  else if (days > 0) label = `${days}d ${hours}h`;
+  else if (hours > 0) label = `${hours}h ${mins}m`;
+  else label = `${totalMins}m`;
+
+  return { minutes: totalMins, label };
+}
+
+async function getVisibleRecruiterIds(
+  userId: string,
+  isSuperAdmin: boolean,
+  canViewScope: PermissionScope
+): Promise<string[] | null> {
+  if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
+  if (canViewScope === PermissionScope.OWN) return [userId];
+  if (canViewScope === PermissionScope.TEAM) {
+    const teamMembers = await prisma.user.findMany({
+      where: { teamLeadId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...teamMembers.map((u) => u.id)];
+  }
+  if (canViewScope === PermissionScope.REPORTING) {
+    const reportees = await prisma.user.findMany({
+      where: { reportingToId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...reportees.map((u) => u.id)];
+  }
+  const reportees = await prisma.user.findMany({
+    where: { reportingToId: userId, isActive: true },
+    select: { id: true },
+  });
+  return [userId, ...reportees.map((u) => u.id)];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates
+// Paginated, scope-filtered pipeline rows for a requirement
+// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementCandidates = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId } = req.params;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
+    const {
+      stageId,
+      activeOnly,
+      search,
+      page = "1",
+      limit = "25",
+      sortBy = "stageUpdatedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, deletedAt: null },
+      select: { id: true, createdById: true },
+    });
+
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    const isCreatedByMe = requirement.createdById === userId;
+    const visibleRecruiterIds = isCreatedByMe
+      ? null
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    const where: any = { requirementId };
+
+    if (visibleRecruiterIds !== null) {
+      where.recruiterId = { in: visibleRecruiterIds };
+    }
+    if (stageId) where.currentStageId = stageId;
+    if (activeOnly === "true") {
+      where.isRejected = false;
+      where.isWithdrawn = false;
+    }
+    if (search) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+          { currentTitle: { contains: search, mode: "insensitive" } },
+          { currentCompany: { contains: search, mode: "insensitive" } },
+          { topSkills: { has: search } },
+        ],
+      };
+    }
+
+    const SORTABLE = ["stageUpdatedAt", "createdAt", "updatedAt"];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { stageUpdatedAt: "desc" as const };
+
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: {
+          id: true,
+          requirementId: true,
+          recruiterId: true,
+          currentStageId: true,
+          stageUpdatedAt: true,
+          isRejected: true,
+          isWithdrawn: true,
+          isOnHold: true,
+          onHoldReason: true,
+          rejectionReason: true,
+          withdrawnReason: true,
+          submittedAt: true,
+          submissionNote: true,
+          offeredCtc: true,
+          salaryCurrency: true,
+          salaryType: true,
+          offeredAt: true,
+          offerStatus: true,
+          expectedJoiningDate: true,
+          actualJoiningDate: true,
+          createdAt: true,
+          updatedAt: true,
+          currentStage: {
+            select: { id: true, code: true, label: true, order: true },
+          },
+          recruiter: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          snapshot: {
+            select: {
+              id: true,
+              candidateServiceId: true,
+              fullName: true,
+              email: true,
+              phone: true,
+              currentTitle: true,
+              currentCompany: true,
+              totalExpYears: true,
+              topSkills: true,
+              resumeUrl: true,
+              rawSnapshot: true,
+              snapshotAt: true,
+            },
+          },
+          stageHistory: {
+            select: {
+              id: true,
+              fromStageId: true,
+              toStageId: true,
+              timeInPrevStageMins: true,
+              createdAt: true,
+              fromStage: { select: { code: true, label: true } },
+              toStage: { select: { code: true, label: true } },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    const now = Date.now();
+    const enriched = pipelines.map((p) => {
+      const agingMins = Math.floor(
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      );
+      return {
+        ...p,
+        aging: {
+          minutes: agingMins,
+          label: formatAgingLabel(agingMins),
+        },
+      };
+    });
+
+    res.json({
+      success: true,
+      data: enriched,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidates:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidates" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates/:pipelineId
+// Full single candidate detail — snapshot + complete stage history with aging
+// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementCandidateById = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { id: requirementId, pipelineId } = req.params;
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, deletedAt: null },
+      select: { id: true, createdById: true },
+    });
+
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    const isCreatedByMe = requirement.createdById === userId;
+    const visibleRecruiterIds = isCreatedByMe
+      ? null
+      : await getVisibleRecruiterIds(userId, isSuperAdmin, canViewScope);
+
+    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+      where: {
+        id: pipelineId,
+        requirementId,
+        ...(visibleRecruiterIds !== null
+          ? { recruiterId: { in: visibleRecruiterIds } }
+          : {}),
+      },
+      select: {
+        id: true,
+        requirementId: true,
+        recruiterId: true,
+        currentStageId: true,
+        stageUpdatedAt: true,
+        isRejected: true,
+        isWithdrawn: true,
+        isOnHold: true,
+        onHoldAt: true,
+        onHoldReason: true,
+        rejectedAt: true,
+        rejectionReason: true,
+        withdrawnAt: true,
+        withdrawnReason: true,
+        submittedAt: true,
+        submissionNote: true,
+        offeredCtc: true,
+        salaryCurrency: true,
+        salaryType: true,
+        offeredAt: true,
+        offerStatus: true,
+        expectedJoiningDate: true,
+        actualJoiningDate: true,
+        createdAt: true,
+        updatedAt: true,
+        currentStage: {
+          select: { id: true, code: true, label: true, order: true },
+        },
+        recruiter: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        stageUpdatedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        submittedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        offeredBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        rejectedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        snapshot: {
+          select: {
+            id: true,
+            candidateServiceId: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+            resumeUrl: true,
+            rawSnapshot: true,
+            snapshotAt: true,
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+        stageHistory: {
+          select: {
+            id: true,
+            fromStageId: true,
+            toStageId: true,
+            timeInPrevStageMins: true,
+            wasSkipped: true,
+            skipReason: true,
+            note: true,
+            createdAt: true,
+            fromStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            toStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!pipeline) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Candidate pipeline not found" });
+    }
+
+    const agingMins = Math.floor(
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
+    );
+
+    const totalPipelineMins =
+      pipeline.stageHistory.reduce(
+        (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
+        0
+      ) + agingMins;
+
+    res.json({
+      success: true,
+      data: {
+        ...pipeline,
+        aging: {
+          minutes: agingMins,
+          label: formatAgingLabel(agingMins),
+        },
+        totalPipelineAging: {
+          minutes: totalPipelineMins,
+          label: formatAgingLabel(totalPipelineMins),
+        },
+      },
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidateById:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidate detail" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates  (getCandidates variant)
+// Paginated, filtered candidate pipeline list with aging
+// Query params:
+//   stageCode, stageId, assignmentId, recruiterId
+//   isRejected, isWithdrawn, isOnHold, activeOnly (bool)
+//   search (fullName, email, phone, currentCompany)
+//   page, limit, sortBy (stageUpdatedAt | createdAt | aging), sortDir
+// ─────────────────────────────────────────────────────────────────────────────
+export const getCandidates = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId } = req.params;
+    const {
+      stageCode,
+      stageId,
+      assignmentId,
+      recruiterId,
+      isRejected,
+      isWithdrawn,
+      isOnHold,
+      activeOnly,
+      search,
+      page = "1",
+      limit = "25",
+      sortBy = "stageUpdatedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const where: any = { requirementId };
+
+    if (assignmentId) where.assignmentId = assignmentId;
+    if (recruiterId) where.recruiterId = recruiterId;
+    if (isRejected !== undefined) where.isRejected = isRejected === "true";
+    if (isWithdrawn !== undefined) where.isWithdrawn = isWithdrawn === "true";
+    if (isOnHold !== undefined) where.isOnHold = isOnHold === "true";
+    if (activeOnly === "true") {
+      where.isRejected = false;
+      where.isWithdrawn = false;
+    }
+    if (stageId) {
+      where.currentStageId = stageId;
+    } else if (stageCode) {
+      where.currentStage = { code: stageCode };
+    }
+    if (search) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+          { phone: { contains: search, mode: "insensitive" } },
+          { currentCompany: { contains: search, mode: "insensitive" } },
+          { currentTitle: { contains: search, mode: "insensitive" } },
+        ],
+      };
+    }
+
+    const SORTABLE = ["stageUpdatedAt", "createdAt", "submittedAt"];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { stageUpdatedAt: "desc" as const };
+
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: {
+          id: true,
+          isRejected: true,
+          isWithdrawn: true,
+          isOnHold: true,
+          rejectionReason: true,
+          withdrawnReason: true,
+          onHoldReason: true,
+          stageUpdatedAt: true,
+          createdAt: true,
+          submittedAt: true,
+          submissionNote: true,
+          offeredCtc: true,
+          salaryCurrency: true,
+          salaryType: true,
+          offeredAt: true,
+          offerStatus: true,
+          expectedJoiningDate: true,
+          actualJoiningDate: true,
+          currentStage: {
+            select: { id: true, code: true, label: true, order: true },
+          },
+          stageHistory: {
+            select: {
+              id: true,
+              fromStage: { select: { id: true, code: true, label: true } },
+              toStage: { select: { id: true, code: true, label: true } },
+              changedBy: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+              wasSkipped: true,
+              skipReason: true,
+              timeInPrevStageMins: true,
+              note: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: "asc" },
+          },
+          snapshot: {
+            select: {
+              id: true,
+              candidateServiceId: true,
+              fullName: true,
+              email: true,
+              phone: true,
+              currentTitle: true,
+              currentCompany: true,
+              totalExpYears: true,
+              topSkills: true,
+              resumeUrl: true,
+              snapshotAt: true,
+              rawSnapshot: true,
+            },
+          },
+          assignment: {
+            select: {
+              id: true,
+              depth: true,
+              assignedTo: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  employeeId: true,
+                },
+              },
+            },
+          },
+          recruiter: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+            },
+          },
+          submittedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          offeredBy: { select: { id: true, firstName: true, lastName: true } },
+          rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+          stageUpdatedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    const enriched = pipelines.map((p) => ({
+      ...p,
+      aging: computeAging(p.stageUpdatedAt),
+    }));
+
+    return res.json({
+      success: true,
+      data: enriched,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getCandidates:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidates" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/candidates/:pipelineId  (getCandidateDetail variant)
+// Single candidate full detail in this requirement
+// ─────────────────────────────────────────────────────────────────────────────
+export const getCandidateDetail = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId, pipelineId } = req.params;
+
+    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+      where: { id: pipelineId, requirementId },
+      select: {
+        id: true,
+        isRejected: true,
+        rejectedAt: true,
+        rejectionReason: true,
+        isWithdrawn: true,
+        withdrawnAt: true,
+        withdrawnReason: true,
+        isOnHold: true,
+        onHoldAt: true,
+        onHoldReason: true,
+        stageUpdatedAt: true,
+        submittedAt: true,
+        submissionNote: true,
+        offeredCtc: true,
+        salaryCurrency: true,
+        salaryType: true,
+        offeredAt: true,
+        offerStatus: true,
+        expectedJoiningDate: true,
+        actualJoiningDate: true,
+        createdAt: true,
+        updatedAt: true,
+        currentStage: {
+          select: { id: true, code: true, label: true, order: true },
+        },
+        stageUpdatedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        stageHistory: {
+          select: {
+            id: true,
+            wasSkipped: true,
+            skipReason: true,
+            timeInPrevStageMins: true,
+            note: true,
+            createdAt: true,
+            fromStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            toStage: {
+              select: { id: true, code: true, label: true, order: true },
+            },
+            changedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+        snapshot: {
+          select: {
+            id: true,
+            candidateServiceId: true,
+            snapshotAt: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+            resumeUrl: true,
+            rawSnapshot: true,
+          },
+        },
+        assignment: {
+          select: {
+            id: true,
+            depth: true,
+            assignedTo: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                employeeId: true,
+              },
+            },
+          },
+        },
+        recruiter: { select: { id: true, firstName: true, lastName: true } },
+        submittedBy: { select: { id: true, firstName: true, lastName: true } },
+        offeredBy: { select: { id: true, firstName: true, lastName: true } },
+        rejectedBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!pipeline) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Candidate pipeline not found" });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...pipeline,
+        aging: computeAging(pipeline.stageUpdatedAt),
+      },
+      permissions: {
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getCandidateDetail:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidate detail" });
   }
 };

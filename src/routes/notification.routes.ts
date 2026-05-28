@@ -7,6 +7,8 @@ import {
   markAllAsRead,
   deleteNotification,
   clearReadNotifications,
+  sendNotification,
+  broadcastNotification,
 } from "@/controller/notification.controller";
 
 const router = Router();
@@ -14,8 +16,15 @@ const router = Router();
 router.use(authenticateUser);
 
 router.get("/", getNotifications);
-router.patch("/read-all", markAllAsRead);
 router.delete("/", clearReadNotifications);
+
+// ── Admin send / broadcast ────────────────────────────────────────────────────
+// POST /notifications/send     → single user
+// POST /notifications/broadcast → bulk
+router.post("/send", sendNotification);
+router.post("/broadcast", broadcastNotification);
+
+router.patch("/read-all", markAllAsRead);
 router.patch("/:id/read", markAsRead);
 router.delete("/:id", deleteNotification);
 
