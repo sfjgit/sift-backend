@@ -42,7 +42,7 @@ import {
 } from "@/controller/pipeline.controller";
 
 const router = Router();
-const scope = scopeFilter("requirements");
+const scope = scopeFilter("candidates");
 const auth = authenticateUser;
 const edit = checkPermission("canEdit");
 
