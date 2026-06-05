@@ -788,49 +788,9 @@ model RequirementDocument {
 // Only 07A / 07B have serviceLineId set
 // ─────────────────────────────────────────────────────────────────────────────
 
-// model PipelineStage {
-//   id            String  @id @default(uuid())
-//   code          String   // "01", "02", "07A", "07B", "10"
-//   label         String // "Sourced", "KaaS Review", "Joined"
-//   order         Int // 1,2,...10 — 07A and 07B both have order 7
-//   serviceLineId String? // null = all service lines, set only for 07A / 07B
-//   isMandatory   Boolean @default(true)
-//   isTerminal    Boolean @default(false) // true only for Joined
-//   isActive      Boolean @default(true)
-
-//   serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
-
-//   candidatePipelines RequirementCandidatePipeline[]
-//   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
-//   stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
-
-//   @@index([order])
-//   @@index([serviceLineId])
-// }
 
 
-model PipelineStage {
-  id            String  @id @default(uuid())
-  code          String
-  label         String
-  order         Int
-  serviceLineId String?
-  isMandatory   Boolean @default(true)
-  isTerminal    Boolean @default(false)
-  isActive      Boolean @default(true)
 
-  canonicalStage CanonicalStage?
-
-  serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
-
-  candidatePipelines RequirementCandidatePipeline[]
-  stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
-  stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
-
-  @@index([order])
-  @@index([serviceLineId])
-  @@index([canonicalStage])
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CANDIDATE SNAPSHOT
@@ -1132,11 +1092,32 @@ enum CanonicalStage {
   SOURCED
   SCREENING
   INTERVIEW
-  OFFER
+  OFFER_IN_PROGRESS
+  OFFERED
+  HIRED
   JOINED
   DROPPED
 }
 
+model PipelineStage {
+  id             String         @id @default(uuid())
+  code           String
+  label          String
+  order          Int
+  canonicalStage CanonicalStage?
+  isMandatory    Boolean        @default(true)
+  isTerminal     Boolean        @default(false)
+  isActive       Boolean        @default(true)
+
+  candidatePipelines RequirementCandidatePipeline[]
+  stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
+  stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
+
+  createdAt DateTime @default(now())
+
+  @@index([order])
+  @@index([canonicalStage])
+}
 
 
 

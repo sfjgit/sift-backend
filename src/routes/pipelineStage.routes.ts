@@ -8,85 +8,35 @@ import {
   checkPermission,
 } from "@/middleware/scopeFilter.middleware";
 import { validate } from "@/validators/validator";
-import { z } from "zod";
 import {
   getPipelineStages,
-  createPipelineStage,
   updatePipelineStage,
   reorderPipelineStages,
   deletePipelineStage,
 } from "@/controller/pipelineStage.controller";
+import {
+  reorderStagesSchema,
+  updateStageSchema,
+} from "@/validators/pipelineStage.validator";
 
 const router = Router();
 const scope = scopeFilter("pipeline_stages");
 const auth = authenticateUser;
 
-// CanonicalStage enum values mirrored from Prisma for Zod validation
-const canonicalStageEnum = z.enum([
-  "SOURCED",
-  "SCREENING",
-  "INTERVIEW",
-  "OFFER",
-  "JOINED",
-  "DROPPED",
-]);
-
-const createStageSchema = z.object({
-  code: z.string().min(1).max(10).trim(),
-  label: z.string().min(1).max(100).trim(),
-  order: z.number().int().min(1),
-  serviceLineId: z.string().optional().nullable(),
-  isMandatory: z.boolean().default(true),
-  isTerminal: z.boolean().default(false),
-  canonicalStage: canonicalStageEnum, // required on create
-});
-
-// canonicalStage intentionally excluded — not updatable after creation
-const updateStageSchema = z.object({
-  label: z.string().min(1).max(100).trim().optional(),
-  isMandatory: z.boolean().optional(),
-  isActive: z.boolean().optional(),
-  serviceLineId: z.string().optional().nullable(),
-});
-
-const reorderStageSchema = z.object({
-  serviceLineId: z.string().nullable(),
-  deletedIds: z.array(z.string()).default([]),
-  stages: z
-    .array(
-      z.object({
-        id: z.string().optional(),
-        label: z.string().min(1).max(100).trim(),
-        isMandatory: z.boolean(),
-        isTerminal: z.boolean(),
-        isActive: z.boolean(),
-        isNew: z.boolean(),
-        canonicalStage: canonicalStageEnum, // required on every stage in the array
-      })
-    )
-    .min(1),
-});
-
+// GET /pipeline-stages
 router.get("/", auth, getPipelineStages);
 
-router.post(
-  "/",
-  auth,
-  scope,
-  checkPermission("canAdd"),
-  validate.body(createStageSchema),
-  createPipelineStage
-);
-
+// PATCH /pipeline-stages/reorder — must be before /:id
 router.patch(
   "/reorder",
   auth,
   scope,
   checkPermission("canEdit"),
-  // validate.body(reorderStageSchema),
+  // validate.body(reorderStagesSchema),
   reorderPipelineStages
 );
 
+// PATCH /pipeline-stages/:id
 router.patch(
   "/:id",
   auth,
@@ -96,6 +46,7 @@ router.patch(
   updatePipelineStage
 );
 
+// DELETE /pipeline-stages/:id
 router.delete(
   "/:id",
   auth,

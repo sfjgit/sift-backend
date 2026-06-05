@@ -5,10 +5,6 @@ import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { CanonicalStage } from "@prisma/client";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// shared select — single source of truth for all queries
-// ─────────────────────────────────────────────────────────────────────────────
-
 const stageSelect = {
   id: true,
   code: true,
@@ -18,8 +14,6 @@ const stageSelect = {
   isTerminal: true,
   isActive: true,
   canonicalStage: true,
-  serviceLineId: true,
-  serviceLine: { select: { id: true, name: true } },
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,17 +22,10 @@ const stageSelect = {
 
 export const getPipelineStages = async (req: Request, res: Response) => {
   try {
-    const { serviceLineId, includeInactive } = req.query as any;
-    const where: any = {};
-    if (includeInactive !== "true") where.isActive = true;
-    if (serviceLineId === "universal") {
-      where.serviceLineId = null;
-    } else if (serviceLineId) {
-      where.serviceLineId = serviceLineId;
-    }
+    const { includeInactive } = req.query as Record<string, string | undefined>;
 
     const stages = await prisma.pipelineStage.findMany({
-      where,
+      where: includeInactive === "true" ? {} : { isActive: true },
       orderBy: { order: "asc" },
       select: stageSelect,
     });
@@ -54,25 +41,23 @@ export const getPipelineStages = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /pipeline-stages/reorder
+// full state replace — frontend sends complete ordered array
+// order derived from array index — never trusted from payload
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const reorderPipelineStages = async (req: Request, res: Response) => {
   try {
-    const {
-      stages,
-      serviceLineId,
-      deletedIds = [],
-    } = req.body as {
-      serviceLineId: string | null;
+    const { stages, deletedIds = [] } = req.body as {
       deletedIds?: string[];
       stages: {
         id?: string;
+        code: string;
         label: string;
         isMandatory: boolean;
         isTerminal: boolean;
         isActive: boolean;
         isNew: boolean;
-        canonicalStage: CanonicalStage;
+        canonicalStage: CanonicalStage | null;
       }[];
     };
 
@@ -83,15 +68,7 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
       return;
     }
 
-    const missing = stages.filter((s) => !s.canonicalStage);
-    if (missing.length > 0) {
-      res.status(400).json({
-        success: false,
-        message: `${missing.length} stage(s) are missing canonicalStage`,
-      });
-      return;
-    }
-
+    // block delete if active pipelines reference those stages
     if (deletedIds.length > 0) {
       const blocked = await prisma.requirementCandidatePipeline.count({
         where: { currentStageId: { in: deletedIds } },
@@ -105,55 +82,46 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
       }
     }
 
-    // capture for closure — serviceLineId from body is string | null
-    const scopedServiceLineId: string | null = serviceLineId;
-
     await prisma.$transaction(async (tx) => {
+      // ── Step 1: delete removed stages
       if (deletedIds.length > 0) {
         await tx.pipelineStage.deleteMany({
           where: { id: { in: deletedIds } },
         });
       }
 
-      // ── Step 2: create new stages with temp code
+      // ── Step 2: create new stages with temp order to avoid conflicts
       const createdMap = new Map<number, string>();
 
       for (let idx = 0; idx < stages.length; idx++) {
         const s = stages[idx];
+        if (!s?.isNew) continue;
 
-        if (!s) {
-          throw new Error(`Missing stage at index ${idx}`);
-        }
-
-        if (!s.isNew) continue;
         const created = await tx.pipelineStage.create({
           data: {
-            code: `Z${Date.now()}${Math.random().toString(36).slice(2, 7)}`,
+            code: `Z${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
             label: s.label,
-            order: 9999,
+            order: 99999 + idx,
             isMandatory: s.isMandatory,
             isTerminal: s.isTerminal,
             isActive: s.isActive,
-            canonicalStage: s.canonicalStage,
-            ...(scopedServiceLineId !== null
-              ? { serviceLineId: scopedServiceLineId }
-              : {}),
+            ...(s.canonicalStage ? { canonicalStage: s.canonicalStage } : {}),
           },
           select: { id: true },
         });
         createdMap.set(idx, created.id);
       }
 
-      // ── Step 3: update ALL with final order + code + canonicalStage
+      // ── Step 3: update ALL stages with final order from array position
       for (let idx = 0; idx < stages.length; idx++) {
         const s = stages[idx];
-        if (!s) {
-          throw new Error(`Missing stage at index ${idx}`);
-        }
+        if (!s) throw new Error(`Missing stage at index ${idx}`);
+
         let realId: string;
         if (s.isNew) {
           const mapped = createdMap.get(idx);
-          if (!mapped) throw new Error(`Missing created id for index ${idx}`);
+          if (!mapped)
+            throw new Error(`Missing created id for new stage at index ${idx}`);
           realId = mapped;
         } else {
           if (!s.id)
@@ -164,24 +132,19 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
         await tx.pipelineStage.update({
           where: { id: realId },
           data: {
-            order: idx + 1,
-            code: (idx + 1).toString().padStart(2, "0"),
+            code: s.code,
             label: s.label,
+            order: idx + 1,
             isMandatory: s.isMandatory,
             isTerminal: s.isTerminal,
             isActive: s.isActive,
-            canonicalStage: s.canonicalStage,
+            canonicalStage: s.canonicalStage ?? null,
           },
         });
       }
     });
 
     const result = await prisma.pipelineStage.findMany({
-      where: {
-        ...(scopedServiceLineId !== null
-          ? { serviceLineId: scopedServiceLineId }
-          : { serviceLineId: null }),
-      },
       orderBy: { order: "asc" },
       select: stageSelect,
     });
@@ -194,102 +157,17 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /pipeline-stages
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const createPipelineStage = async (req: Request, res: Response) => {
-  try {
-    const {
-      code,
-      label,
-      order,
-      serviceLineId,
-      isMandatory,
-      isTerminal,
-      canonicalStage,
-    } = req.body as {
-      code: string;
-      label: string;
-      order: number;
-      serviceLineId?: string | null;
-      isMandatory?: boolean;
-      isTerminal?: boolean;
-      canonicalStage: CanonicalStage;
-    };
-
-    const existing = await prisma.pipelineStage.findUnique({
-      where: { code: code.trim().toUpperCase() },
-      select: { id: true },
-    });
-    if (existing) {
-      res.status(409).json({
-        success: false,
-        message: `Stage code "${code}" already exists`,
-      });
-      return;
-    }
-
-    if (serviceLineId) {
-      const sl = await prisma.serviceLine.findUnique({
-        where: { id: serviceLineId },
-        select: { id: true },
-      });
-      if (!sl) {
-        res
-          .status(404)
-          .json({ success: false, message: "Service line not found" });
-        return;
-      }
-    }
-
-    await prisma.pipelineStage.updateMany({
-      where: {
-        order: { gte: order },
-        ...(serviceLineId != null
-          ? { serviceLineId }
-          : { serviceLineId: null }),
-      },
-      data: { order: { increment: 1 } },
-    });
-
-    const stage = await prisma.pipelineStage.create({
-      data: {
-        code: code.trim().toUpperCase(),
-        label: label.trim(),
-        order,
-        isMandatory: isMandatory ?? true,
-        isTerminal: isTerminal ?? false,
-        isActive: true,
-        canonicalStage,
-        ...(serviceLineId != null ? { serviceLineId } : {}),
-      },
-      select: stageSelect,
-    });
-
-    res
-      .status(201)
-      .json({ success: true, message: "Stage created", data: stage });
-  } catch (err) {
-    console.error("createPipelineStage:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to create pipeline stage" });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PATCH /pipeline-stages/:id
-// canonicalStage intentionally NOT updatable — changing it corrupts historical logs
+// label, isMandatory, isActive only — canonicalStage via reorder only
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updatePipelineStage = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { label, isMandatory, isActive, serviceLineId } = req.body as {
+    const { label, isMandatory, isActive } = req.body as {
       label?: string;
       isMandatory?: boolean;
       isActive?: boolean;
-      serviceLineId?: string | null;
     };
 
     const existing = await prisma.pipelineStage.findUnique({
@@ -307,9 +185,6 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
         ...(label !== undefined && { label: label.trim() }),
         ...(isMandatory !== undefined && { isMandatory }),
         ...(isActive !== undefined && { isActive }),
-        ...(serviceLineId !== undefined && {
-          serviceLineId: serviceLineId ?? null,
-        }),
       },
       select: stageSelect,
     });
@@ -331,51 +206,30 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
 
     const existing = await prisma.pipelineStage.findUnique({
       where: { id },
-      select: { id: true, code: true, label: true, serviceLineId: true },
+      select: { id: true, label: true },
     });
     if (!existing) {
       res.status(404).json({ success: false, message: "Stage not found" });
       return;
     }
 
-    const activePipelineCount = await prisma.requirementCandidatePipeline.count(
-      {
-        where: { currentStageId: id },
-      }
-    );
-    if (activePipelineCount > 0) {
+    const blocked = await prisma.requirementCandidatePipeline.count({
+      where: { currentStageId: id },
+    });
+    if (blocked > 0) {
       res.status(409).json({
         success: false,
-        message: `Cannot delete "${existing.label}" — ${activePipelineCount} active pipeline(s) are at this stage`,
+        message: `Cannot delete "${existing.label}" — ${blocked} active pipeline(s) are at this stage`,
       });
       return;
     }
 
     await prisma.pipelineStage.delete({ where: { id } });
 
-    const remaining = await prisma.pipelineStage.findMany({
-      where: {
-        ...(existing.serviceLineId != null
-          ? { serviceLineId: existing.serviceLineId }
-          : { serviceLineId: null }),
-      },
-      orderBy: { order: "asc" },
-      select: { id: true },
+    res.json({
+      success: true,
+      message: `Stage "${existing.label}" deleted`,
     });
-
-    await prisma.$transaction(
-      remaining.map((s, idx) =>
-        prisma.pipelineStage.update({
-          where: { id: s.id },
-          data: {
-            order: idx + 1,
-            code: (idx + 1).toString().padStart(2, "0"),
-          },
-        })
-      )
-    );
-
-    res.json({ success: true, message: `Stage "${existing.label}" deleted` });
   } catch (err) {
     console.error("deletePipelineStage:", err);
     res
