@@ -149,7 +149,7 @@ export const getBusinessUnitById = async (req: Request, res: Response) => {
             status: true,
             priority: true,
             totalOpenings: true,
-            filledOpenings: true,
+            // filledOpenings: true,
             respondBy: true,
             isRespondByBreached: true,
             client: { select: { id: true, name: true } },

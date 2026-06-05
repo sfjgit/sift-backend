@@ -4,6 +4,7 @@
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import { getRequirementScopeWhere } from "@/services/requirementService";
+import { UpdateDispositionInput } from "@/validators/requirement.validators";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
@@ -422,12 +423,10 @@ export const pushCandidate = async (req: Request, res: Response) => {
       return;
     }
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Cannot add candidates to a requirement that is not active",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Cannot add candidates to a requirement that is not active",
+      });
       return;
     }
 
@@ -441,12 +440,10 @@ export const pushCandidate = async (req: Request, res: Response) => {
       select: { id: true },
     });
     if (duplicate) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: "Candidate already in pipeline for this requirement",
-        });
+      res.status(409).json({
+        success: false,
+        message: "Candidate already in pipeline for this requirement",
+      });
       return;
     }
 
@@ -455,13 +452,11 @@ export const pushCandidate = async (req: Request, res: Response) => {
       select: { id: true },
     });
     if (!sourced) {
-      res
-        .status(500)
-        .json({
-          success: false,
-          message:
-            "Pipeline stage configuration missing. Seed PipelineStage first.",
-        });
+      res.status(500).json({
+        success: false,
+        message:
+          "Pipeline stage configuration missing. Seed PipelineStage first.",
+      });
       return;
     }
 
@@ -555,21 +550,17 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Cannot move stage on a rejected or withdrawn candidate",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Cannot move stage on a rejected or withdrawn candidate",
+      });
       return;
     }
     if (pipeline.currentStage.isTerminal) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate has already reached a terminal stage",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate has already reached a terminal stage",
+      });
       return;
     }
 
@@ -591,12 +582,10 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
     if (targetStage.order <= pipeline.currentStage.order) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Stage must move forward in sequence",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Stage must move forward in sequence",
+      });
       return;
     }
 
@@ -607,13 +596,11 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
     const targetIdx = stages.findIndex((s) => s.id === stageId);
 
     if (targetIdx === -1) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Target stage is not valid for this requirement's service line",
-        });
+      res.status(400).json({
+        success: false,
+        message:
+          "Target stage is not valid for this requirement's service line",
+      });
       return;
     }
 
@@ -722,12 +709,10 @@ export const submitCandidate = async (req: Request, res: Response) => {
       return;
     }
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
 
@@ -804,12 +789,10 @@ export const rollOffer = async (req: Request, res: Response) => {
       return;
     }
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
 
@@ -1087,12 +1070,10 @@ export const holdCandidate = async (req: Request, res: Response) => {
       return;
     }
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is rejected or withdrawn",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is rejected or withdrawn",
+      });
       return;
     }
     if (pipeline.isOnHold) {
@@ -1167,12 +1148,10 @@ export const createPipelineStage = async (req: Request, res: Response) => {
       select: { id: true },
     });
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: `Stage with code "${code}" already exists`,
-        });
+      res.status(409).json({
+        success: false,
+        message: `Stage with code "${code}" already exists`,
+      });
       return;
     }
 
@@ -1252,12 +1231,10 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
         select: { id: true },
       });
       if (codeTaken) {
-        res
-          .status(409)
-          .json({
-            success: false,
-            message: `Stage code "${code.toUpperCase()}" is already used`,
-          });
+        res.status(409).json({
+          success: false,
+          message: `Stage code "${code.toUpperCase()}" is already used`,
+        });
         return;
       }
     }
@@ -1339,12 +1316,10 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
       { where: { currentStageId: stageId } }
     );
     if (activePipelineCount > 0) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message: `Cannot delete stage "${existing.label}" — ${activePipelineCount} active pipeline(s) are at this stage`,
-        });
+      res.status(409).json({
+        success: false,
+        message: `Cannot delete stage "${existing.label}" — ${activePipelineCount} active pipeline(s) are at this stage`,
+      });
       return;
     }
 
@@ -1362,12 +1337,10 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
       "10",
     ];
     if (SEEDED_CODES.includes(existing.code)) {
-      res
-        .status(403)
-        .json({
-          success: false,
-          message: `Stage "${existing.code}" is a core seeded stage and cannot be deleted. Use isActive = false instead.`,
-        });
+      res.status(403).json({
+        success: false,
+        message: `Stage "${existing.code}" is a core seeded stage and cannot be deleted. Use isActive = false instead.`,
+      });
       return;
     }
 
@@ -1378,5 +1351,147 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to delete pipeline stage" });
+  }
+};
+
+export const updateDisposition = async (req: Request, res: Response) => {
+  try {
+    const { pipelineId } = req.params as { pipelineId: string };
+    const { disposition, dropReason, dropNote, holdNote, actualJoiningDate } =
+      req.body as UpdateDispositionInput;
+    const actorId = req.user!.id;
+
+    const pipeline = await prisma.requirementCandidatePipeline.findUnique({
+      where: { id: pipelineId },
+      select: {
+        id: true,
+        requirementId: true,
+        assignmentId: true,
+        disposition: true,
+      },
+    });
+
+    if (!pipeline) {
+      res
+        .status(404)
+        .json({ success: false, message: "Pipeline entry not found" });
+      return;
+    }
+
+    // already terminal — can't move out of PLACED or DROPPED
+    if (pipeline.disposition === "PLACED") {
+      res
+        .status(400)
+        .json({ success: false, message: "Candidate is already placed" });
+      return;
+    }
+    if (pipeline.disposition === "DROPPED") {
+      res
+        .status(400)
+        .json({ success: false, message: "Candidate is already dropped" });
+      return;
+    }
+
+    // ── PLACED
+    if (disposition === "PLACED") {
+      await prisma.$transaction(async (tx) => {
+        // 1. mark placed
+        await tx.requirementCandidatePipeline.update({
+          where: { id: pipelineId },
+          data: {
+            disposition: "PLACED",
+            dispositionAt: new Date(),
+            actualJoiningDate: actualJoiningDate
+              ? new Date(actualJoiningDate)
+              : null,
+          },
+        });
+
+        // 2. bump assignment filledOpenings
+        if (pipeline.assignmentId) {
+          await tx.requirementAssignment.update({
+            where: { id: pipeline.assignmentId },
+            data: { filledOpenings: { increment: 1 } },
+          });
+        }
+
+        // 3. count total PLACED for requirement
+        const placedCount = await tx.requirementCandidatePipeline.count({
+          where: {
+            requirementId: pipeline.requirementId,
+            disposition: "PLACED",
+          },
+        });
+
+        const requirement = await tx.requirement.findUnique({
+          where: { id: pipeline.requirementId },
+          select: { totalOpenings: true, status: true },
+        });
+
+        // 4. auto-close if fully filled
+        if (
+          requirement &&
+          requirement.status !== "CLOSED" &&
+          placedCount >= requirement.totalOpenings
+        ) {
+          await tx.requirement.update({
+            where: { id: pipeline.requirementId },
+            data: {
+              status: "CLOSED",
+              closureReason: "FILLED",
+              closedAt: new Date(),
+              closedById: actorId,
+            },
+          });
+
+          await tx.requirementAssignment.updateMany({
+            where: {
+              requirementId: pipeline.requirementId,
+              status: "ACTIVE",
+            },
+            data: { status: "FILLED" },
+          });
+        }
+      });
+
+      res.json({ success: true, message: "Candidate placed" });
+      return;
+    }
+
+    // ── DROPPED
+    if (disposition === "DROPPED") {
+      await prisma.requirementCandidatePipeline.update({
+        where: { id: pipelineId },
+        data: {
+          disposition: "DROPPED",
+          dispositionAt: new Date(),
+          dropReason,
+          dropNote: dropNote ?? null,
+        },
+      });
+
+      res.json({ success: true, message: "Candidate dropped" });
+      return;
+    }
+
+    // ── ON_HOLD
+    if (disposition === "ON_HOLD") {
+      await prisma.requirementCandidatePipeline.update({
+        where: { id: pipelineId },
+        data: {
+          disposition: "ON_HOLD",
+          dispositionAt: new Date(),
+          dropNote: holdNote ?? null,
+        },
+      });
+
+      res.json({ success: true, message: "Candidate on hold" });
+      return;
+    }
+  } catch (err) {
+    console.error("updateDisposition:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update disposition" });
   }
 };

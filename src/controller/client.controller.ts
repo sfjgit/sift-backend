@@ -270,7 +270,7 @@ export const getClientById = async (req: Request, res: Response) => {
             status: true,
             priority: true,
             totalOpenings: true,
-            filledOpenings: true,
+            // filledOpenings: true,
             createdAt: true,
           },
           orderBy: { createdAt: "desc" },

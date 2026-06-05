@@ -16,6 +16,7 @@ import {
   rejectCandidateSchema,
   withdrawCandidateSchema,
   holdCandidateSchema,
+  updateDispositionSchema,
 } from "@/validators/requirement.validators";
 import {
   // Pipeline list + stats
@@ -39,6 +40,7 @@ import {
   rejectCandidate,
   withdrawCandidate,
   holdCandidate,
+  updateDisposition,
 } from "@/controller/pipeline.controller";
 
 const router = Router();
@@ -71,6 +73,16 @@ router.get("/stats", auth, scope, getPipelineStats);
 // ─────────────────────────────────────────────────────────────────────────────
 
 router.get("/:pipelineId", auth, scope, getPipelineById);
+
+router.patch(
+  "/:pipelineId/disposition",
+  auth,
+  scope,
+  edit,
+  validate.body(updateDispositionSchema),
+  updateDisposition
+);
+
 router.get("/:pipelineId/timeline", auth, scope, getPipelineTimeline);
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ enum AssignmentStatus {
   ACTIVE
   REMOVED
   REPLACED
+  FILLED      // ← their allocated openings are done
+  EXPIRED     // ← deadline passed, never filled
 }
 
 enum RequirementType {
@@ -258,6 +260,8 @@ model User {
   updatedAt          DateTime            @updatedAt
   userAppCredentials UserAppCredential[]
 
+jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
+
   @@index([email])
   @@index([isActive])
   @@index([roleId])
@@ -453,25 +457,57 @@ model Requirement {
   id      String @id @default(uuid())
   reqCode String @unique
 
-  title         String
-  description   String?
-  jobType       RequirementType
-  remoteType    RemoteType
-  priority      Priority        @default(MEDIUM)
-  location      String?
-  country       String?
+  // ── Core ──────────────────────────────────────────────────────────────────
+  title       String
+  description String?
+  jobType     RequirementType
+  remoteType  RemoteType
+  priority    Priority        @default(MEDIUM)
+  jobOpenFor  JobOpenFor      @default(EXTERNAL)  // EXTERNAL / INTERNAL / BOTH
+
+  // ── Skills ────────────────────────────────────────────────────────────────
+  primarySkills String[]  // top 3-5 must-have — replaces flat skills[]
+  keySkills     String[]  // all other required skills
+
+  // ── Location ──────────────────────────────────────────────────────────────
+  city     String?
+  state    String?
+  country  String?
+
+  // ── Experience ────────────────────────────────────────────────────────────
   experienceMin Float?
   experienceMax Float?
-  salaryMin     Float?
-  salaryMax     Float?
-  salaryType    SalaryType?
-  skills        String[]
 
+  // ── Compensation ──────────────────────────────────────────────────────────
+  salaryMin               Float?
+  salaryMax               Float?
+  salaryType              SalaryType?
+  salaryCurrency          String?   @default("INR")
+  bonusAmount             Float?
+  hideSalaryFromCandidate Boolean   @default(false)
+  showMedianSalary        Boolean   @default(false)
+
+  // ── Employment details ────────────────────────────────────────────────────
+  education       String?   // "B.Tech / B.E. in CS"
+  functionalArea  String?   // "Engineering", "Sales"
+  shift           String?   // "Morning" / "Night" / "Flexible"
+
+  // ── Sourcing strategy ─────────────────────────────────────────────────────
+  targetCompanies  String[]  // companies to target
+  noPoachCompanies String[]  // companies not to poach from
+
+  // ── JD file ───────────────────────────────────────────────────────────────
   jdFileKey    String?
   jdFileName   String?
   jdFileType   String?
   jdUploadedAt DateTime?
 
+  // ── JD parse metadata (set after /jd/parse, cleared on manual override) ──
+  jdParsedAt     DateTime?
+  jdParseStatus  JDParseStatus?  // PARSED / FAILED / MANUALLY_OVERRIDDEN
+  jdParsedFields String[]        // which fields were autofilled from JD
+
+  // ── Relations ─────────────────────────────────────────────────────────────
   clientSpocId String?
   clientSpoc   ClientSpoc? @relation(fields: [clientSpocId], references: [id])
 
@@ -484,34 +520,44 @@ model Requirement {
   serviceLineId String?
   serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
 
-  // counters — bumped by pipeline stage transition service
-  totalOpenings       Int @default(1)
-  filledOpenings      Int @default(0)
-  activeApplications  Int @default(0)
-  interviewsScheduled Int @default(0)
-  offersRolledOut     Int @default(0)
+  // ── Openings ──────────────────────────────────────────────────────────────
+  // filledOpenings, activeApplications, interviewsScheduled, offersRolledOut
+  // are all DROPPED — computed from pipeline rows on demand, never stored
+  totalOpenings Int @default(1)
 
+  // ── Dates ─────────────────────────────────────────────────────────────────
   startDate      DateTime?
-  endDate        DateTime?
+  targetDate     DateTime?  // expected onboarding date — was endDate, renamed
   respondBy      DateTime?
   turnaroundDays Int?
 
-  status   RequirementStatus @default(DRAFT)
-  closedAt DateTime?
+  // ── Status & closure ──────────────────────────────────────────────────────
+  status        RequirementStatus @default(DRAFT)
+  closureReason ClosureReason?    // FILLED / CANCELLED / CLIENT_WITHDREW / ON_HOLD
+  closedAt      DateTime?
 
   isRespondByBreached  Boolean @default(false)
   isTurnaroundBreached Boolean @default(false)
 
+  // ── Audit ─────────────────────────────────────────────────────────────────
   createdById  String
-  createdBy    User      @relation("RequirementCreatedBy", fields: [createdById], references: [id])
+  createdBy    User   @relation("RequirementCreatedBy", fields: [createdById], references: [id])
+
   approvedById String?
   approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
   approvedAt   DateTime?
-  closedById   String?
-  closedBy     User?     @relation("RequirementClosedBy", fields: [closedById], references: [id])
+
+  closedById String?
+  closedBy   User?     @relation("RequirementClosedBy", fields: [closedById], references: [id])
 
   deletedAt DateTime?
 
+  parsedJDId String?
+  parsedJD   ParsedJDLibrary? @relation(fields: [parsedJDId], references: [id])
+
+@@index([parsedJDId])
+
+  // ── Child relations ───────────────────────────────────────────────────────
   assignments        RequirementAssignment[]
   candidateSnapshots CandidateSnapshot[]
   pipelines          RequirementCandidatePipeline[]
@@ -532,6 +578,73 @@ model Requirement {
   @@index([isRespondByBreached])
   @@index([isTurnaroundBreached])
   @@index([deletedAt])
+  @@index([closureReason])
+  @@index([targetDate])
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARSED JD LIBRARY
+// AI parses once — stored here forever. Anyone can search and reuse.
+// No AI call needed on reuse — just clone the parsed fields into the form.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ParsedJDLibrary {
+  id String @id @default(uuid())
+
+  // searchable identifier — auto-generated from parsed title
+  title String  // "Senior React Developer" — indexed for search
+
+  // raw parsed output from GPT — everything stored flat for easy cloning
+  parsedData Json  // full ParsedJD object
+
+  // the original JD file that was parsed
+  jdFileKey  String?
+  jdFileName String?
+  jdFileType String?
+
+  // who parsed it and when
+  parsedById String
+  parsedBy   User   @relation("JDParsedBy", fields: [parsedById], references: [id])
+  parsedAt   DateTime @default(now())
+
+  // usage tracking — who used this and how many times
+  usageCount Int @default(0)
+  usedByIds  String[]  // array of userIds who cloned this — for "used by X people" display
+
+  // requirements created from this parsed JD
+  requirements Requirement[]
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([title])
+  @@index([isActive])
+  @@index([usageCount])
+  @@index([parsedById])
+}
+
+// ── New enums to add ──────────────────────────────────────────────────────────
+
+enum JobOpenFor {
+  EXTERNAL
+  INTERNAL
+  BOTH
+}
+
+enum ClosureReason {
+  FILLED
+  CANCELLED
+  CLIENT_WITHDREW
+  ON_HOLD
+}
+
+enum JDParseStatus {
+  PARSED
+  FAILED
+  MANUALLY_OVERRIDDEN
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -675,15 +788,38 @@ model RequirementDocument {
 // Only 07A / 07B have serviceLineId set
 // ─────────────────────────────────────────────────────────────────────────────
 
+// model PipelineStage {
+//   id            String  @id @default(uuid())
+//   code          String   // "01", "02", "07A", "07B", "10"
+//   label         String // "Sourced", "KaaS Review", "Joined"
+//   order         Int // 1,2,...10 — 07A and 07B both have order 7
+//   serviceLineId String? // null = all service lines, set only for 07A / 07B
+//   isMandatory   Boolean @default(true)
+//   isTerminal    Boolean @default(false) // true only for Joined
+//   isActive      Boolean @default(true)
+
+//   serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
+
+//   candidatePipelines RequirementCandidatePipeline[]
+//   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
+//   stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
+
+//   @@index([order])
+//   @@index([serviceLineId])
+// }
+
+
 model PipelineStage {
   id            String  @id @default(uuid())
-  code          String  @unique // "01", "02", "07A", "07B", "10"
-  label         String // "Sourced", "KaaS Review", "Joined"
-  order         Int // 1,2,...10 — 07A and 07B both have order 7
-  serviceLineId String? // null = all service lines, set only for 07A / 07B
+  code          String
+  label         String
+  order         Int
+  serviceLineId String?
   isMandatory   Boolean @default(true)
-  isTerminal    Boolean @default(false) // true only for Joined
+  isTerminal    Boolean @default(false)
   isActive      Boolean @default(true)
+
+  canonicalStage CanonicalStage?
 
   serviceLine ServiceLine? @relation(fields: [serviceLineId], references: [id])
 
@@ -693,6 +829,7 @@ model PipelineStage {
 
   @@index([order])
   @@index([serviceLineId])
+  @@index([canonicalStage])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -743,6 +880,27 @@ model CandidateSnapshot {
 // Stage pointer updates in place. History written to CandidatePipelineStageLog.
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+enum CandidateDisposition {
+  ACTIVE       // in pipeline, being worked
+  PLACED       // joined — counts as fill
+  DROPPED      // out — reason in dropReason field
+  DUPLICATE    // ignored
+  ON_HOLD
+}
+
+enum DropReason {
+  CLIENT_REJECTED
+  CANDIDATE_DECLINED
+  OFFER_EXPIRED
+  NO_SHOW
+  UNRESPONSIVE
+  OVERQUALIFIED
+  BUDGET_MISMATCH
+  OTHER
+}
+
+
 model RequirementCandidatePipeline {
   id String @id @default(uuid())
 
@@ -758,19 +916,23 @@ model RequirementCandidatePipeline {
   recruiterId String
   recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
 
-  currentStageId   String
-  currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
-  stageUpdatedAt   DateTime      @default(now())
-  stageUpdatedById String
-  stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
+  currentStageId        String
+  currentStage          PipelineStage  @relation(fields: [currentStageId], references: [id])
+  currentCanonicalStage CanonicalStage?
+  stageUpdatedAt        DateTime       @default(now())
+  stageUpdatedById      String
+  stageUpdatedBy        User           @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
 
-  // submission to client
+  disposition   CandidateDisposition @default(ACTIVE)
+  dispositionAt DateTime?
+  dropReason    String?
+  dropNote      String?
+
   submissionNote String?
   submittedAt    DateTime?
   submittedById  String?
   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
 
-  // offer
   offeredCtc          Float?
   salaryCurrency      String?      @default("INR")
   salaryType          SalaryType?
@@ -781,7 +943,6 @@ model RequirementCandidatePipeline {
   expectedJoiningDate DateTime?
   actualJoiningDate   DateTime?
 
-  // terminal states — can happen from any stage
   isRejected      Boolean   @default(false)
   rejectedAt      DateTime?
   rejectedById    String?
@@ -802,10 +963,81 @@ model RequirementCandidatePipeline {
   updatedAt DateTime @updatedAt
 
   @@index([requirementId, currentStageId])
+  @@index([requirementId, currentCanonicalStage])
   @@index([recruiterId])
   @@index([assignmentId])
   @@index([stageUpdatedAt])
 }
+
+// model RequirementCandidatePipeline {
+//   id String @id @default(uuid())
+
+//   snapshotId String            @unique
+//   snapshot   CandidateSnapshot @relation(fields: [snapshotId], references: [id])
+
+//   requirementId String
+//   requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+//   assignmentId String?
+//   assignment   RequirementAssignment? @relation(fields: [assignmentId], references: [id])
+
+//   recruiterId String
+//   recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
+
+//   currentStageId   String
+//   currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
+//   stageUpdatedAt   DateTime      @default(now())
+//   stageUpdatedById String
+//   stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
+
+//   disposition       CandidateDisposition  @default(ACTIVE)
+// dispositionAt     DateTime?
+// dropReason  String?   // free text — "client rejected", whatever they type
+// dropNote    String?
+//   // submission to client
+//   submissionNote String?
+//   submittedAt    DateTime?
+//   submittedById  String?
+//   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
+
+//   // offer
+//   offeredCtc          Float?
+//   salaryCurrency      String?      @default("INR")
+//   salaryType          SalaryType?
+//   offeredAt           DateTime?
+//   offeredById         String?
+//   offeredBy           User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
+//   offerStatus         OfferStatus?
+//   expectedJoiningDate DateTime?
+//   actualJoiningDate   DateTime?
+
+//   // terminal states — can happen from any stage
+//   isRejected      Boolean   @default(false)
+//   rejectedAt      DateTime?
+//   rejectedById    String?
+//   rejectedBy      User?     @relation("PipelineRejectedBy", fields: [rejectedById], references: [id])
+//   rejectionReason String?
+
+//   isWithdrawn     Boolean   @default(false)
+//   withdrawnAt     DateTime?
+//   withdrawnReason String?
+
+//   isOnHold     Boolean   @default(false)
+//   onHoldAt     DateTime?
+//   onHoldReason String?
+
+//   stageHistory CandidatePipelineStageLog[]
+
+//   createdAt DateTime @default(now())
+//   updatedAt DateTime @updatedAt
+
+
+
+//   @@index([requirementId, currentStageId])
+//   @@index([recruiterId])
+//   @@index([assignmentId])
+//   @@index([stageUpdatedAt])
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE LOG
@@ -825,13 +1057,15 @@ model CandidatePipelineStageLog {
   toStageId String
   toStage   PipelineStage @relation("StageLogTo", fields: [toStageId], references: [id])
 
+  fromCanonicalStage CanonicalStage?
+  toCanonicalStage   CanonicalStage?
+
   changedById String
   changedBy   User   @relation("StageLogChangedBy", fields: [changedById], references: [id])
 
-  wasSkipped Boolean @default(false)
+  wasSkipped Boolean   @default(false)
   skipReason String?
 
-  // how long candidate sat in the previous stage before this transition
   timeInPrevStageMins Int?
 
   note      String?
@@ -839,6 +1073,7 @@ model CandidatePipelineStageLog {
 
   @@index([pipelineId, createdAt])
   @@index([toStageId])
+  @@index([toCanonicalStage])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -890,3 +1125,24 @@ model AuditLog {
   @@index([actorId])
   @@index([createdAt])
 }
+
+
+
+enum CanonicalStage {
+  SOURCED
+  SCREENING
+  INTERVIEW
+  OFFER
+  JOINED
+  DROPPED
+}
+
+
+
+
+
+
+
+
+
+

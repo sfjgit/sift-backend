@@ -58,33 +58,67 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         priority: true,
         jobType: true,
         remoteType: true,
-        location: true,
+        jobOpenFor: true,
+
+        // location — split fields
+        city: true,
+        state: true,
         country: true,
-        skills: true,
+
+        // skills — split
+        primarySkills: true,
+        keySkills: true,
+
         experienceMin: true,
         experienceMax: true,
+
+        // compensation
         salaryMin: true,
         salaryMax: true,
         salaryType: true,
+        salaryCurrency: true,
+        bonusAmount: true,
+        hideSalaryFromCandidate: true,
+        showMedianSalary: true,
+
+        // employment
+        education: true,
+        functionalArea: true,
+        shift: true,
+
+        // sourcing
+        targetCompanies: true,
+        noPoachCompanies: true,
+
         totalOpenings: true,
-        filledOpenings: true,
-        activeApplications: true,
-        interviewsScheduled: true,
-        offersRolledOut: true,
+
+        // dates
         startDate: true,
-        endDate: true,
+        targetDate: true,
         respondBy: true,
         turnaroundDays: true,
         closedAt: true,
+        closureReason: true,
+
         isRespondByBreached: true,
         isTurnaroundBreached: true,
+
+        // JD file
         jdFileKey: true,
         jdFileName: true,
         jdFileType: true,
         jdUploadedAt: true,
+
+        // JD parse
+        jdParsedAt: true,
+        jdParseStatus: true,
+        jdParsedFields: true,
+        parsedJDId: true,
+
         createdAt: true,
         updatedAt: true,
         approvedAt: true,
+
         client: {
           select: {
             id: true,
@@ -111,6 +145,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         createdBy: { select: { id: true, firstName: true, lastName: true } },
         approvedBy: { select: { id: true, firstName: true, lastName: true } },
         closedBy: { select: { id: true, firstName: true, lastName: true } },
+
         assignments: {
           where: { status: "ACTIVE" },
           select: {
@@ -136,6 +171,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { depth: "asc" },
         },
+
         statusHistory: {
           select: {
             id: true,
@@ -149,6 +185,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { changedAt: "desc" },
         },
+
         notes: {
           select: {
             id: true,
@@ -158,6 +195,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
           },
           orderBy: { createdAt: "desc" },
         },
+
         documents: {
           select: {
             id: true,
@@ -1361,13 +1399,22 @@ export const getRequirements = async (req: Request, res: Response) => {
           priority: true,
           jobType: true,
           remoteType: true,
-          location: true,
-          skills: true,
+          // location: true,
+          // skills: true,
           totalOpenings: true,
-          filledOpenings: true,
-          activeApplications: true,
-          interviewsScheduled: true,
-          offersRolledOut: true,
+          city: true,
+          state: true,
+          country: true,
+          primarySkills: true,
+          keySkills: true,
+          jobOpenFor: true,
+          targetDate: true,
+          closureReason: true,
+          jdParseStatus: true,
+          // filledOpenings: true,
+          // activeApplications: true,
+          // interviewsScheduled: true,
+          // offersRolledOut: true,
           respondBy: true,
           isRespondByBreached: true,
           isTurnaroundBreached: true,
@@ -1718,10 +1765,10 @@ export const getRequirementTree = async (req: Request, res: Response) => {
         title: true,
         status: true,
         totalOpenings: true,
-        filledOpenings: true,
-        activeApplications: true,
-        interviewsScheduled: true,
-        offersRolledOut: true,
+        // filledOpenings: true,
+        // activeApplications: true,
+        // interviewsScheduled: true,
+        // offersRolledOut: true,
       },
     });
 
@@ -1847,28 +1894,51 @@ export const createRequirement = async (req: Request, res: Response) => {
         jobType: body.jobType,
         remoteType: body.remoteType,
         priority: body.priority ?? "MEDIUM",
-        location: body.location ?? null,
+        jobOpenFor: body.jobOpenFor ?? "EXTERNAL",
+        totalOpenings: body.totalOpenings ?? 1,
+
+        city: body.city ?? null,
+        state: body.state ?? null,
         country: body.country ?? null,
+
         experienceMin: body.experienceMin ?? null,
         experienceMax: body.experienceMax ?? null,
+
         salaryMin: body.salaryMin ?? null,
         salaryMax: body.salaryMax ?? null,
         salaryType: body.salaryType ?? null,
-        skills: body.skills ?? [],
-        totalOpenings: body.totalOpenings ?? 1,
+        salaryCurrency: body.salaryCurrency ?? "INR",
+        bonusAmount: body.bonusAmount ?? null,
+        hideSalaryFromCandidate: body.hideSalaryFromCandidate ?? false,
+        showMedianSalary: body.showMedianSalary ?? false,
+
+        primarySkills: body.primarySkills ?? [],
+        keySkills: body.keySkills ?? [],
+        targetCompanies: body.targetCompanies ?? [],
+        noPoachCompanies: body.noPoachCompanies ?? [],
+
+        education: body.education ?? null,
+        functionalArea: body.functionalArea ?? null,
+        shift: body.shift ?? null,
+
         startDate: body.startDate ? new Date(body.startDate) : null,
-        endDate: body.endDate ? new Date(body.endDate) : null,
+        targetDate: body.targetDate ? new Date(body.targetDate) : null,
         respondBy: body.respondBy ? new Date(body.respondBy) : null,
         turnaroundDays: body.turnaroundDays ?? null,
+
         jdFileKey: body.jdFileKey ?? null,
         jdFileName: body.jdFileName ?? null,
         jdFileType: body.jdFileType ?? null,
         jdUploadedAt: body.jdFileKey ? new Date() : null,
+        jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
+        jdParseStatus: body.jdParseStatus ?? null,
+        jdParsedFields: body.jdParsedFields ?? [],
+
         clientSpocId: body.clientSpocId,
         clientId: spoc.clientId,
         businessUnitId: spoc.businessUnitId,
         serviceLineId: spoc.serviceLineId,
-        status: "DRAFT",
+        status: "ACTIVE",
         createdById: actorId,
       },
       select: {
@@ -1934,26 +2004,60 @@ export const updateRequirement = async (req: Request, res: Response) => {
         ...(body.jobType !== undefined && { jobType: body.jobType }),
         ...(body.remoteType !== undefined && { remoteType: body.remoteType }),
         ...(body.priority !== undefined && { priority: body.priority }),
-        ...(body.location !== undefined && { location: body.location }),
+        ...(body.jobOpenFor !== undefined && { jobOpenFor: body.jobOpenFor }),
+        ...(body.totalOpenings !== undefined && {
+          totalOpenings: body.totalOpenings,
+        }),
+
+        ...(body.city !== undefined && { city: body.city }),
+        ...(body.state !== undefined && { state: body.state }),
         ...(body.country !== undefined && { country: body.country }),
+
         ...(body.experienceMin !== undefined && {
           experienceMin: body.experienceMin,
         }),
         ...(body.experienceMax !== undefined && {
           experienceMax: body.experienceMax,
         }),
+
         ...(body.salaryMin !== undefined && { salaryMin: body.salaryMin }),
         ...(body.salaryMax !== undefined && { salaryMax: body.salaryMax }),
         ...(body.salaryType !== undefined && { salaryType: body.salaryType }),
-        ...(body.skills !== undefined && { skills: body.skills }),
-        ...(body.totalOpenings !== undefined && {
-          totalOpenings: body.totalOpenings,
+        ...(body.salaryCurrency !== undefined && {
+          salaryCurrency: body.salaryCurrency,
         }),
+        ...(body.bonusAmount !== undefined && {
+          bonusAmount: body.bonusAmount,
+        }),
+        ...(body.hideSalaryFromCandidate !== undefined && {
+          hideSalaryFromCandidate: body.hideSalaryFromCandidate,
+        }),
+        ...(body.showMedianSalary !== undefined && {
+          showMedianSalary: body.showMedianSalary,
+        }),
+
+        ...(body.primarySkills !== undefined && {
+          primarySkills: body.primarySkills,
+        }),
+        ...(body.keySkills !== undefined && { keySkills: body.keySkills }),
+        ...(body.targetCompanies !== undefined && {
+          targetCompanies: body.targetCompanies,
+        }),
+        ...(body.noPoachCompanies !== undefined && {
+          noPoachCompanies: body.noPoachCompanies,
+        }),
+
+        ...(body.education !== undefined && { education: body.education }),
+        ...(body.functionalArea !== undefined && {
+          functionalArea: body.functionalArea,
+        }),
+        ...(body.shift !== undefined && { shift: body.shift }),
+
         ...(body.startDate !== undefined && {
           startDate: body.startDate ? new Date(body.startDate) : null,
         }),
-        ...(body.endDate !== undefined && {
-          endDate: body.endDate ? new Date(body.endDate) : null,
+        ...(body.targetDate !== undefined && {
+          targetDate: body.targetDate ? new Date(body.targetDate) : null,
         }),
         ...(body.respondBy !== undefined && {
           respondBy: body.respondBy ? new Date(body.respondBy) : null,
@@ -1961,12 +2065,23 @@ export const updateRequirement = async (req: Request, res: Response) => {
         ...(body.turnaroundDays !== undefined && {
           turnaroundDays: body.turnaroundDays,
         }),
+
         ...(body.jdFileKey !== undefined && {
           jdFileKey: body.jdFileKey,
           jdUploadedAt: new Date(),
         }),
         ...(body.jdFileName !== undefined && { jdFileName: body.jdFileName }),
         ...(body.jdFileType !== undefined && { jdFileType: body.jdFileType }),
+
+        ...(body.jdParsedAt !== undefined && {
+          jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
+        }),
+        ...(body.jdParseStatus !== undefined && {
+          jdParseStatus: body.jdParseStatus,
+        }),
+        ...(body.jdParsedFields !== undefined && {
+          jdParsedFields: body.jdParsedFields,
+        }),
       },
       select: {
         id: true,
@@ -2101,43 +2216,32 @@ export const deleteRequirement = async (req: Request, res: Response) => {
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
-    const { assignedToId, allocatedOpenings, deadline, parentAssignmentId } =
+    const { assignedToId, assignedToIds, deadline, parentAssignmentId } =
       req.body;
     const actorId = req.user!.id;
 
+    // ── Normalise to array — works for both single and bulk ──────────────────
+    const ids: string[] = assignedToIds?.length
+      ? assignedToIds
+      : [assignedToId];
+
+    // ── 1. Validate requirement ───────────────────────────────────────────────
     const requirement = await prisma.requirement.findFirst({
       where: { id: requirementId, deletedAt: null },
       select: { id: true, status: true, clientId: true, reqCode: true },
     });
-
     if (!requirement)
       return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
-    if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
+
+    if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status))
       return res.status(400).json({
         success: false,
         message: "Can only assign on active requirements",
       });
-    }
 
-    const subordinateIds = await getSubordinateIds(actorId);
-    if (!subordinateIds.includes(assignedToId) && !req.user!.isSuperAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "You can only assign to people in your reporting tree",
-      });
-    }
-
-    const duplicate = await prisma.requirementAssignment.findFirst({
-      where: { requirementId, assignedToId, status: "ACTIVE" },
-    });
-    if (duplicate)
-      return res.status(409).json({
-        success: false,
-        message: "Already actively assigned to this person",
-      });
-
+    // ── 2. Validate parent once ───────────────────────────────────────────────
     let depth = 0;
     if (parentAssignmentId) {
       const parent = await prisma.requirementAssignment.findUnique({
@@ -2151,49 +2255,142 @@ export const createAssignment = async (req: Request, res: Response) => {
       depth = parent.depth + 1;
     }
 
-    const assignee = await prisma.user.findUnique({
-      where: { id: assignedToId },
-      select: { departmentId: true },
-    });
-    const assignment = await prisma.$transaction(async (tx) => {
-      const a = await tx.requirementAssignment.create({
-        data: {
-          requirementId,
-          assignedToId,
-          assignedById: actorId,
-          assigneeDepartmentId: assignee?.departmentId ?? null,
-          clientId: requirement.clientId,
-          depth,
-          parentAssignmentId: parentAssignmentId ?? null,
-          allocatedOpenings: allocatedOpenings ?? null,
-          deadline: deadline ? new Date(deadline) : null,
-          status: "ACTIVE",
-        },
-        select: {
-          id: true,
-          depth: true,
-          status: true,
-          allocatedOpenings: true,
-          deadline: true,
-          assignedAt: true,
-          assignedTo: { select: { id: true, firstName: true, lastName: true } },
-          assignedBy: { select: { id: true, firstName: true, lastName: true } },
-        },
-      });
-      await tx.requirementActivity.create({
-        data: {
-          requirementId,
-          actorId,
-          type: "RECRUITER_ASSIGNED",
-          summary: `Assigned to ${a.assignedTo.firstName} ${a.assignedTo.lastName}`,
-        },
-      });
-      return a;
-    });
+    // ── 3. Fetch subordinate tree once ────────────────────────────────────────
+    const subordinateIds = await getSubordinateIds(actorId);
+    const isSuperAdmin = req.user!.isSuperAdmin;
 
-    return res
-      .status(201)
-      .json({ success: true, message: "Assignment created", data: assignment });
+    // ── 4. Fetch existing active assignments in one query ─────────────────────
+    const existingActive = await prisma.requirementAssignment.findMany({
+      where: { requirementId, assignedToId: { in: ids }, status: "ACTIVE" },
+      select: { assignedToId: true },
+    });
+    const alreadyAssigned = new Set(existingActive.map((e) => e.assignedToId));
+
+    // ── 5. Fetch assignee metadata in one query ───────────────────────────────
+    const assigneeUsers = await prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, departmentId: true, firstName: true, lastName: true },
+    });
+    const assigneeMap = new Map(assigneeUsers.map((u) => [u.id, u]));
+
+    // ── 6. Process each id ────────────────────────────────────────────────────
+    type ItemResult =
+      | { assignedToId: string; status: "created"; assignment: object }
+      | { assignedToId: string; status: "skipped"; reason: string };
+
+    const results: ItemResult[] = [];
+
+    for (const id of ids) {
+      if (!isSuperAdmin && !subordinateIds.includes(id)) {
+        results.push({
+          assignedToId: id,
+          status: "skipped",
+          reason: "Not in your reporting tree",
+        });
+        continue;
+      }
+      if (alreadyAssigned.has(id)) {
+        results.push({
+          assignedToId: id,
+          status: "skipped",
+          reason: "Already actively assigned",
+        });
+        continue;
+      }
+      const assignee = assigneeMap.get(id);
+      if (!assignee) {
+        results.push({
+          assignedToId: id,
+          status: "skipped",
+          reason: "User not found",
+        });
+        continue;
+      }
+
+      try {
+        const assignment = await prisma.$transaction(async (tx) => {
+          const a = await tx.requirementAssignment.create({
+            data: {
+              requirementId,
+              assignedToId: id,
+              assignedById: actorId,
+              assigneeDepartmentId: assignee.departmentId ?? null,
+              clientId: requirement.clientId,
+              depth,
+              parentAssignmentId: parentAssignmentId ?? null,
+              deadline: deadline ? new Date(deadline) : null,
+              status: "ACTIVE",
+            },
+            select: {
+              id: true,
+              depth: true,
+              status: true,
+              deadline: true,
+              assignedAt: true,
+              assignedTo: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+              assignedBy: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+            },
+          });
+          await tx.requirementActivity.create({
+            data: {
+              requirementId,
+              actorId,
+              type: "RECRUITER_ASSIGNED",
+              summary: `Assigned to ${a.assignedTo.firstName} ${a.assignedTo.lastName}`,
+            },
+          });
+          return a;
+        });
+
+        results.push({ assignedToId: id, status: "created", assignment });
+        alreadyAssigned.add(id); // prevent same-batch duplicate
+      } catch (err) {
+        console.error(`createAssignment — failed for ${id}:`, err);
+        results.push({
+          assignedToId: id,
+          status: "skipped",
+          reason: "Internal error",
+        });
+      }
+    }
+
+    const created = results.filter((r) => r.status === "created");
+    const skipped = results.filter((r) => r.status === "skipped");
+
+    // ── 7. Response — single returns flat object, bulk returns array ──────────
+    if (ids.length === 1) {
+      if (created.length === 1) {
+        return res.status(201).json({
+          success: true,
+          message: "Assignment created",
+          data: (created[0] as any).assignment,
+        });
+      } else {
+        const reason = (skipped[0] as any)?.reason ?? "Failed";
+        const statusCode =
+          reason === "Already actively assigned"
+            ? 409
+            : reason === "Not in your reporting tree"
+            ? 403
+            : reason === "User not found"
+            ? 404
+            : 400;
+        return res.status(statusCode).json({ success: false, message: reason });
+      }
+    }
+
+    // Bulk response
+    return res.status(201).json({
+      success: true,
+      message: `${created.length} assignment(s) created${
+        skipped.length > 0 ? `, ${skipped.length} skipped` : ""
+      }`,
+      data: { created, skipped },
+    });
   } catch (err) {
     console.error("createAssignment:", err);
     return res

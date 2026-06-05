@@ -1,4 +1,5 @@
 // validators/requirement.validators.ts
+import { CandidateDisposition } from "@prisma/client";
 import { z } from "zod";
 
 export const addNoteSchema = z.object({
@@ -12,25 +13,55 @@ export const createRequirementSchema = z.object({
   jobType: z.enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"]),
   remoteType: z.enum(["ONSITE", "REMOTE", "HYBRID"]),
   priority: z.enum(["LOW", "MEDIUM", "HIGH"]).default("MEDIUM"),
-  location: z.string().max(200).optional().nullable(),
+  jobOpenFor: z.enum(["EXTERNAL", "INTERNAL", "BOTH"]).default("EXTERNAL"),
+  totalOpenings: z.number().min(1).default(1),
+
+  // location — split
+  city: z.string().max(100).optional().nullable(),
+  state: z.string().max(100).optional().nullable(),
   country: z.string().max(100).optional().nullable(),
+
   experienceMin: z.number().min(0).optional().nullable(),
   experienceMax: z.number().min(0).optional().nullable(),
+
   salaryMin: z.number().min(0).optional().nullable(),
   salaryMax: z.number().min(0).optional().nullable(),
   salaryType: z
     .enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"])
     .optional()
     .nullable(),
-  skills: z.array(z.string().trim()).default([]),
-  totalOpenings: z.number().min(1).default(1),
+  salaryCurrency: z.string().max(10).default("INR"),
+  bonusAmount: z.number().min(0).optional().nullable(),
+  hideSalaryFromCandidate: z.boolean().default(false),
+  showMedianSalary: z.boolean().default(false),
+
+  // skills — split
+  primarySkills: z.array(z.string().trim()).default([]),
+  keySkills: z.array(z.string().trim()).default([]),
+
+  education: z.string().max(300).optional().nullable(),
+  functionalArea: z.string().max(200).optional().nullable(),
+  shift: z.string().max(100).optional().nullable(),
+
+  targetCompanies: z.array(z.string().trim()).default([]),
+  noPoachCompanies: z.array(z.string().trim()).default([]),
+
   startDate: z.string().datetime().optional().nullable(),
-  endDate: z.string().datetime().optional().nullable(),
+  targetDate: z.string().datetime().optional().nullable(), // renamed from endDate
   respondBy: z.string().datetime().optional().nullable(),
   turnaroundDays: z.number().min(1).optional().nullable(),
+
   jdFileKey: z.string().optional().nullable(),
   jdFileName: z.string().optional().nullable(),
   jdFileType: z.string().optional().nullable(),
+
+  // JD parse metadata — set by parser, passed through from frontend
+  jdParsedAt: z.string().datetime().optional().nullable(),
+  jdParseStatus: z
+    .enum(["PARSED", "FAILED", "MANUALLY_OVERRIDDEN"])
+    .optional()
+    .nullable(),
+  jdParsedFields: z.array(z.string()).default([]),
 });
 
 export const updateRequirementSchema = createRequirementSchema
@@ -49,12 +80,23 @@ export const updateRequirementStatusSchema = z.object({
   reason: z.string().max(500).optional().nullable(),
 });
 
-export const createAssignmentSchema = z.object({
-  assignedToId: z.string().min(1, "Assignee is required"),
-  allocatedOpenings: z.number().min(1).optional().nullable(),
-  deadline: z.string().datetime().optional().nullable(),
-  parentAssignmentId: z.string().optional().nullable(),
-});
+export const createAssignmentSchema = z
+  .object({
+    assignedToId: z.string().min(1).optional(),
+    assignedToIds: z.array(z.string().min(1)).min(1).max(50).optional(),
+    deadline: z.string().datetime({ offset: true }).optional().nullable(),
+    parentAssignmentId: z.string().optional().nullable(),
+  })
+  .refine(
+    (data) =>
+      data.assignedToId ||
+      (data.assignedToIds && data.assignedToIds.length > 0),
+    {
+      message: "assignedToId or assignedToIds is required",
+    }
+  );
+
+// export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
 
 // ── Candidate snapshot push — called by Candidate Service after ingest
 // Core receives this and creates CandidateSnapshot + RequirementCandidatePipeline
@@ -128,3 +170,35 @@ export type UpdatePipelineStageInput = z.infer<
   typeof updatePipelineStageSchema
 >;
 export type RollOfferInput = z.infer<typeof rollOfferSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VALIDATOR
+// add to: src/validators/requirement.validators.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateDispositionSchema = z
+  .object({
+    disposition: z.nativeEnum(CandidateDisposition),
+    dropReason: z.string().max(500).optional().nullable(),
+    dropNote: z.string().max(500).optional().nullable(),
+    holdNote: z.string().max(500).optional().nullable(),
+    actualJoiningDate: z.string().datetime().optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.disposition === CandidateDisposition.DROPPED && !data.dropReason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dropReason"],
+        message: "dropReason is required when disposition is DROPPED",
+      });
+    }
+    if (data.disposition === CandidateDisposition.ON_HOLD && !data.holdNote) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["holdNote"],
+        message: "holdNote is required when disposition is ON_HOLD",
+      });
+    }
+  });
+
+export type UpdateDispositionInput = z.infer<typeof updateDispositionSchema>;
