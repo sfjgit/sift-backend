@@ -15,6 +15,7 @@ import notificationRoutes from "./notification.routes";
 import internalRoutes from "@/routes/internal.routes";
 import moduleRoutes from "./module.routes";
 import jdRoutes from "./jd.routes";
+import assignmentRoutes from "./assignment.routes";
 
 const router = Router();
 
@@ -33,5 +34,6 @@ router.use("/service-lines", serviceLineRoutes);
 router.use("/requirements", requirementRoutes);
 router.use("/pipeline", pipelineRoutes);
 router.use("/pipeline-stages", pipelineStageRoutes);
+router.use("/assignments", assignmentRoutes);
 
 export default router;

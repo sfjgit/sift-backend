@@ -12,6 +12,8 @@
     "seed-r": "tsx src/seed-requirements.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "fetch": "node prisma/fetchIds.js",
+    "rrr": "tsx src/scripts/backfill-pipeline-assignment-id.ts",
+    "wipe": "tsx src/scripts/wipe-business-data.ts",
     "migrate:deploy": "npx prisma migrate deploy"
   },
   "prisma": {

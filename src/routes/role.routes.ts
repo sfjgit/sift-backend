@@ -17,6 +17,7 @@ import {
   updateRole,
   deleteRole,
   getModules,
+  getScopes,
 } from "@/controller/role.controller";
 import { validate } from "@/validators/validator";
 
@@ -27,7 +28,7 @@ router.use(scopeFilter("roles")); // roles live under settings module
 
 // ── Utility — before /:id ────────────────────────────────────────────────────
 router.get("/modules", getModules);
-
+router.get("/scopes", getScopes); // ← NEW: returns all PermissionScope enum values
 // ── List ─────────────────────────────────────────────────────────────────────
 router.get("/", listRoles);
 

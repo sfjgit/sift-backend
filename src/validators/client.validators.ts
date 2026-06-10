@@ -56,3 +56,22 @@ export type CreateClientInput = z.infer<typeof createClientSchema>;
 export type UpdateClientInput = z.infer<typeof updateClientSchema>;
 export type AddSpocInput = z.infer<typeof addSpocSchema>;
 export type UpdateSpocInput = z.infer<typeof updateSpocSchema>;
+
+// File: client.validators.ts  (append to existing file)
+// Path: src/validators/client.validators.ts
+
+// import { z } from "zod";
+
+// ── Add to client.validators.ts ───────────────────────────────────────────────
+
+export const addSpocDMSchema = z
+  .object({
+    // Accept either a single ID or a bulk array — at least one must be present
+    dmId: z.string().uuid("Invalid user ID").optional(),
+    dmIds: z.array(z.string().uuid("Invalid user ID")).min(1).optional(),
+  })
+  .refine((d) => d.dmId || (d.dmIds && d.dmIds.length > 0), {
+    message: "Provide dmId (single) or dmIds (array)",
+  });
+
+export type AddSpocDMInput = z.infer<typeof addSpocDMSchema>;

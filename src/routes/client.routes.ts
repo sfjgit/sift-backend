@@ -13,6 +13,7 @@ import {
   addClientNoteSchema,
   addSpocSchema,
   updateSpocSchema,
+  addSpocDMSchema,
 } from "@/validators/client.validators";
 import {
   getClients,
@@ -28,6 +29,9 @@ import {
   updateSpoc,
   removeSpoc,
   getClientSpocs,
+  addSpocDMs,
+  getSpocDMs,
+  removeSpocDM,
 } from "@/controller/client.controller";
 
 const router = Router();
@@ -47,6 +51,7 @@ router.post(
 
 // single
 router.get("/:id", authenticateUser, scope, getClientById);
+
 router.put(
   "/:id",
   authenticateUser,
@@ -55,6 +60,26 @@ router.put(
   validate.body(updateClientSchema),
   updateClient
 );
+
+router.get("/:id/spocs/:spocId/dms", authenticateUser, scope, getSpocDMs);
+
+router.post(
+  "/:id/spocs/:spocId/dms",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  validate.body(addSpocDMSchema),
+  addSpocDMs
+);
+
+router.delete(
+  "/:id/spocs/:spocId/dms/:spocDmId",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  removeSpocDM
+);
+
 router.patch(
   "/:id/status",
   authenticateUser,

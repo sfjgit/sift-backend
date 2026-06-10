@@ -1,18 +1,22 @@
+// File: role.controller.ts
+// Path: src/controller/role.controller.ts
+
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
+import { PermissionScope, Prisma } from "@prisma/client";
 import type {
   CreateRoleInput,
   UpdateRoleInput,
 } from "@/validators/role.validator";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ALL modules in the system — hardcoded, not derived from DB
-// This is the source of truth for what modules exist.
-// Adding a new module here makes it appear in the permissions matrix immediately.
+// SYSTEM MODULES — source of truth for what modules exist in the app
+// Add a new module here → it appears in the permissions matrix immediately
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const SYSTEM_MODULES = [
   "requirements",
+  "assignments",
   "clients",
   "candidates",
   "users",
@@ -20,16 +24,15 @@ export const SYSTEM_MODULES = [
   "business-units",
   "departments",
   "service-lines",
+  "pipeline-stages",
   "audit-logs",
   "reports",
   "settings",
-  "pipeline-stages",
+  // "assignments",
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /roles/modules
-// Always returns the full system module list.
-// No longer depends on what permissions exist in DB.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getModules = async (_req: Request, res: Response) => {
@@ -37,10 +40,59 @@ export const getModules = async (_req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /roles/scopes
+// Reads PermissionScope enum values directly from Prisma client —
+// always in sync with schema.prisma, zero manual maintenance
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCOPE_DESCRIPTIONS: Record<string, string> = {
+  OWN: "Only records I created or own",
+  TEAM: "My team members (via team lead assignment)",
+  REPORTING: "My direct reports (one level down)",
+  REPORTING_LINE: "My entire reporting hierarchy (all levels below me)",
+  DEPARTMENT: "Everyone in my department",
+  BU: "Everyone in my business unit subtree",
+  ALL: "All records across the organization",
+};
+
+export const getScopes = async (_req: Request, res: Response) => {
+  const scopeValues = Object.values(PermissionScope);
+  const data = scopeValues.map((value) => ({
+    value,
+    label: value.replace(/_/g, " "),
+    desc: SCOPE_DESCRIPTIONS[value] ?? value,
+  }));
+  res.json({ success: true, data });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER — build a permission create/upsert data object
+// Casts scope strings to PermissionScope enum so Prisma doesn't complain
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toPermissionData(
+  p: CreateRoleInput["permissions"][number],
+  roleId?: string
+) {
+  return {
+    ...(roleId ? { roleId } : {}),
+    module: p.module,
+    canView: p.canView,
+    canAdd: p.canAdd,
+    canEdit: p.canEdit,
+    canDelete: p.canDelete,
+    canViewScope: p.canViewScope as PermissionScope,
+    canAddScope: p.canAddScope as PermissionScope,
+    canEditScope: p.canEditScope as PermissionScope,
+    canDeleteScope: p.canDeleteScope as PermissionScope,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /roles
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const listRoles = async (req: Request, res: Response) => {
+export const listRoles = async (_req: Request, res: Response) => {
   try {
     const roles = await prisma.role.findMany({
       orderBy: [{ isSystem: "desc" }, { name: "asc" }],
@@ -128,8 +180,8 @@ export const getRoleById = async (req: Request, res: Response) => {
       return;
     }
 
-    // Merge DB permissions with full module list so frontend always gets all modules.
-    // Modules with no saved permission get default "no access" values.
+    // Merge DB permissions with full module list — modules with no saved
+    // permission get default "no access" values so the matrix always has all rows
     const permissionsByModule = Object.fromEntries(
       role.permissions.map((p) => [p.module, p])
     );
@@ -140,10 +192,10 @@ export const getRoleById = async (req: Request, res: Response) => {
       canAdd: false,
       canEdit: false,
       canDelete: false,
-      canViewScope: "OWN" as const,
-      canAddScope: "OWN" as const,
-      canEditScope: "OWN" as const,
-      canDeleteScope: "OWN" as const,
+      canViewScope: "OWN" as PermissionScope,
+      canAddScope: "OWN" as PermissionScope,
+      canEditScope: "OWN" as PermissionScope,
+      canDeleteScope: "OWN" as PermissionScope,
       ...(permissionsByModule[module] ?? {}),
     }));
 
@@ -180,7 +232,7 @@ export const createRole = async (req: Request, res: Response) => {
       return;
     }
 
-    // Only save permissions where at least one action is enabled
+    // Only persist rows where at least one action is enabled
     const activePermissions = (body.permissions ?? []).filter(
       (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
     );
@@ -191,17 +243,7 @@ export const createRole = async (req: Request, res: Response) => {
         description: body.description ?? null,
         isSystem: false,
         permissions: {
-          create: activePermissions.map((p) => ({
-            module: p.module,
-            canView: p.canView,
-            canAdd: p.canAdd,
-            canEdit: p.canEdit,
-            canDelete: p.canDelete,
-            canViewScope: p.canViewScope,
-            canAddScope: p.canAddScope,
-            canEditScope: p.canEditScope,
-            canDeleteScope: p.canDeleteScope,
-          })),
+          create: activePermissions.map((p) => toPermissionData(p)),
         },
       },
       select: {
@@ -235,8 +277,7 @@ export const createRole = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUT /roles/:id
-// Wipes and recreates only the active permissions.
+// PUT /roles/:id — wipes and recreates active permissions
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updateRole = async (req: Request, res: Response) => {
@@ -271,7 +312,6 @@ export const updateRole = async (req: Request, res: Response) => {
       }
     }
 
-    // Only persist permissions with at least one action enabled
     const activePermissions = (body.permissions ?? []).filter(
       (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
     );
@@ -293,18 +333,7 @@ export const updateRole = async (req: Request, res: Response) => {
         await tx.rolePermission.deleteMany({ where: { roleId: id } });
         if (activePermissions.length > 0) {
           await tx.rolePermission.createMany({
-            data: activePermissions.map((p) => ({
-              roleId: id,
-              module: p.module,
-              canView: p.canView,
-              canAdd: p.canAdd,
-              canEdit: p.canEdit,
-              canDelete: p.canDelete,
-              canViewScope: p.canViewScope,
-              canAddScope: p.canAddScope,
-              canEditScope: p.canEditScope,
-              canDeleteScope: p.canDeleteScope,
-            })),
+            data: activePermissions.map((p) => toPermissionData(p, id)),
           });
         }
       }

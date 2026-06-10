@@ -32,7 +32,7 @@ const syncSchema = z.object({
   candidateServiceId: z.string().min(1),
   requirementId: z.string().min(1),
   recruiterId: z.string().min(1),
-  assignmentId: z.string().optional().nullable(),
+  assignmentId: z.string().min(1),
   fullName: z.string().min(1),
   email: z.string().email(),
   phone: z.string().optional().nullable(),
@@ -62,7 +62,7 @@ const syncSchema = z.object({
 router.post(
   "/candidates/sync",
   requireInternalSecret,
-  validate.body(syncSchema),
+  // validate.body(syncSchema),
   syncCandidateToCore
 );
 

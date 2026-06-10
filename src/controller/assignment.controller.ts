@@ -1,0 +1,1201 @@
+// File: assignment.controller.ts
+// Path: src/controller/assignment.controller.ts
+
+import { Request, Response } from "express";
+import prisma from "@/utils/prisma/client";
+import { assignmentScopeWhere } from "@/middleware/scopeFilter.middleware";
+import type {
+  CreateAssignmentInput,
+  SubAssignInput,
+  UpdateAssignmentInput,
+} from "@/validators/assignment.validator";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPELINE SELECT FOR STATS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PIPELINE_SELECT_FOR_STATS = {
+  id: true,
+  disposition: true,
+  currentCanonicalStage: true,
+  isRejected: true,
+  isWithdrawn: true,
+  isOnHold: true,
+  submittedAt: true,
+  offeredAt: true,
+  offerStatus: true,
+  actualJoiningDate: true,
+  stageUpdatedAt: true,
+  createdAt: true,
+  currentStage: {
+    select: {
+      id: true,
+      code: true,
+      label: true,
+      order: true,
+      canonicalStage: true,
+    },
+  },
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FULL PIPELINE ROW SELECT — mirrors requirement candidates API
+// Used in getAssignmentPipeline so the frontend has everything it needs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FULL_PIPELINE_SELECT = {
+  id: true,
+  disposition: true,
+  currentCanonicalStage: true,
+  dropReason: true,
+  dropNote: true,
+  isRejected: true,
+  isWithdrawn: true,
+  isOnHold: true,
+  submittedAt: true,
+  offeredAt: true,
+  offerStatus: true,
+  offeredCtc: true,
+  expectedJoiningDate: true,
+  actualJoiningDate: true,
+  stageUpdatedAt: true,
+  createdAt: true,
+  // Full stage object — NOT just canonical, so label/code/order are all present
+  currentStage: {
+    select: {
+      id: true,
+      label: true,
+      code: true,
+      order: true,
+      canonicalStage: true, // ← this is what feeds currentCanonicalStage display
+    },
+  },
+  recruiter: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      role: { select: { name: true } },
+    },
+  },
+  snapshot: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      currentTitle: true,
+      currentCompany: true,
+      totalExpYears: true,
+      topSkills: true,
+      resumeUrl: true,
+    },
+  },
+  // Last 10 history entries — enough for the drawer timeline
+  stageHistory: {
+    select: {
+      id: true,
+      fromCanonicalStage: true,
+      toCanonicalStage: true,
+      timeInPrevStageMins: true,
+      createdAt: true,
+      changedBy: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+    },
+    orderBy: { createdAt: "desc" as const },
+    take: 10,
+  },
+  // Assignment context (who owns this candidate row)
+  assignment: {
+    select: {
+      id: true,
+      depth: true,
+      assignedTo: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          employeeId: true,
+        },
+      },
+    },
+  },
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ASSIGNMENT SELECT
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ASSIGNMENT_SELECT = {
+  id: true,
+  depth: true,
+  status: true,
+  allocatedOpenings: true,
+  deadline: true,
+  deadlineMet: true,
+  breachedAt: true,
+  assignedAt: true,
+  removedAt: true,
+  removedReason: true,
+
+  assignedBy: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      employeeId: true,
+      role: { select: { id: true, name: true } },
+    },
+  },
+
+  assignedTo: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      employeeId: true,
+      role: { select: { id: true, name: true } },
+      department: { select: { id: true, name: true } },
+    },
+  },
+
+  assigneeDepartment: { select: { id: true, name: true } },
+  assigneeBU: { select: { id: true, name: true } },
+
+  requirement: {
+    select: {
+      id: true,
+      reqCode: true,
+      title: true,
+      status: true,
+      priority: true,
+      jobType: true,
+      remoteType: true,
+      totalOpenings: true,
+      respondBy: true,
+      targetDate: true,
+      primarySkills: true,
+      isRespondByBreached: true,
+      isTurnaroundBreached: true,
+      client: { select: { id: true, name: true, industry: true } },
+      serviceLine: { select: { id: true, name: true } },
+      businessUnit: { select: { id: true, name: true } },
+      clientSpoc: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          isPrimary: true,
+          handler: { select: { id: true, firstName: true, lastName: true } },
+        },
+      },
+    },
+  },
+
+  parentAssignment: {
+    select: {
+      id: true,
+      depth: true,
+      assignedTo: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          role: { select: { id: true, name: true } },
+        },
+      },
+    },
+  },
+
+  childAssignments: {
+    select: {
+      id: true,
+      depth: true,
+      status: true,
+      allocatedOpenings: true,
+      deadline: true,
+      breachedAt: true,
+      assignedAt: true,
+      assignedTo: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          employeeId: true,
+          role: { select: { id: true, name: true } },
+        },
+      },
+      assignedBy: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      pipelines: { select: PIPELINE_SELECT_FOR_STATS },
+      childAssignments: {
+        select: {
+          id: true,
+          depth: true,
+          status: true,
+          allocatedOpenings: true,
+          deadline: true,
+          breachedAt: true,
+          assignedAt: true,
+          assignedTo: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              role: { select: { id: true, name: true } },
+            },
+          },
+          assignedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          pipelines: { select: PIPELINE_SELECT_FOR_STATS },
+        },
+        where: { status: "ACTIVE" },
+        orderBy: { assignedAt: "asc" as const },
+      },
+    },
+    where: { status: "ACTIVE" },
+    orderBy: { assignedAt: "asc" as const },
+  },
+
+  pipelines: { select: PIPELINE_SELECT_FOR_STATS },
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPUTE PIPELINE STATS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computePipelineStats(pipelines: any[]) {
+  const now = Date.now();
+
+  const total = pipelines.length;
+  const active = pipelines.filter((p) => p.disposition === "ACTIVE").length;
+  const placed = pipelines.filter((p) => p.disposition === "PLACED").length;
+  const dropped = pipelines.filter((p) => p.disposition === "DROPPED").length;
+  const onHold = pipelines.filter((p) => p.disposition === "ON_HOLD").length;
+  const rejected = pipelines.filter((p) => p.isRejected).length;
+  const withdrawn = pipelines.filter((p) => p.isWithdrawn).length;
+  const submitted = pipelines.filter((p) => p.submittedAt !== null).length;
+  const offered = pipelines.filter((p) => p.offeredAt !== null).length;
+  const joined = pipelines.filter((p) => p.actualJoiningDate !== null).length;
+
+  const offerAccepted = pipelines.filter(
+    (p) => p.offerStatus === "ACCEPTED"
+  ).length;
+  const offerPending = pipelines.filter(
+    (p) => p.offerStatus === "PENDING"
+  ).length;
+  const offerDeclined = pipelines.filter(
+    (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED"
+  ).length;
+
+  const byCanonicalStage: Record<string, number> = {};
+  for (const p of pipelines) {
+    const stage = p.currentCanonicalStage ?? "UNKNOWN";
+    byCanonicalStage[stage] = (byCanonicalStage[stage] ?? 0) + 1;
+  }
+
+  const activeByCanonicalStage: Record<string, number> = {};
+  const activeRows = pipelines.filter((p) => p.disposition === "ACTIVE");
+  for (const p of activeRows) {
+    const stage = p.currentCanonicalStage ?? "UNKNOWN";
+    activeByCanonicalStage[stage] = (activeByCanonicalStage[stage] ?? 0) + 1;
+  }
+
+  const stageMap: Record<
+    string,
+    {
+      id: string;
+      code: string;
+      label: string;
+      order: number;
+      canonicalStage: string | null;
+      count: number;
+    }
+  > = {};
+  for (const p of pipelines) {
+    if (!p.currentStage) continue;
+    const { id, code, label, order, canonicalStage } = p.currentStage;
+    if (!stageMap[id]) {
+      stageMap[id] = {
+        id,
+        code,
+        label,
+        order,
+        canonicalStage: canonicalStage ?? null,
+        count: 0,
+      };
+    }
+    stageMap[id].count++;
+  }
+  const byPipelineStage = Object.values(stageMap).sort(
+    (a, b) => a.order - b.order
+  );
+
+  const activeStageMap: Record<
+    string,
+    {
+      id: string;
+      code: string;
+      label: string;
+      order: number;
+      canonicalStage: string | null;
+      count: number;
+    }
+  > = {};
+  for (const p of activeRows) {
+    if (!p.currentStage) continue;
+    const { id, code, label, order, canonicalStage } = p.currentStage;
+    if (!activeStageMap[id]) {
+      activeStageMap[id] = {
+        id,
+        code,
+        label,
+        order,
+        canonicalStage: canonicalStage ?? null,
+        count: 0,
+      };
+    }
+    activeStageMap[id].count++;
+  }
+  const activeByPipelineStage = Object.values(activeStageMap).sort(
+    (a, b) => a.order - b.order
+  );
+
+  const agingBuckets = { fresh: 0, normal: 0, stale: 0, critical: 0 };
+  for (const p of activeRows) {
+    if (!p.stageUpdatedAt) continue;
+    const ageDays = (now - new Date(p.stageUpdatedAt).getTime()) / 86_400_000;
+    if (ageDays < 3) agingBuckets.fresh++;
+    else if (ageDays < 7) agingBuckets.normal++;
+    else if (ageDays < 14) agingBuckets.stale++;
+    else agingBuckets.critical++;
+  }
+
+  const submissionRate = total > 0 ? Math.round((submitted / total) * 100) : 0;
+  const offerRate = submitted > 0 ? Math.round((offered / submitted) * 100) : 0;
+  const joiningRate = offered > 0 ? Math.round((joined / offered) * 100) : 0;
+
+  return {
+    total,
+    active,
+    placed,
+    dropped,
+    onHold,
+    rejected,
+    withdrawn,
+    submitted,
+    offered,
+    offerAccepted,
+    offerPending,
+    offerDeclined,
+    joined,
+    byCanonicalStage,
+    activeByCanonicalStage,
+    byPipelineStage,
+    activeByPipelineStage,
+    agingBuckets,
+    rates: {
+      submission: submissionRate,
+      offer: offerRate,
+      joining: joiningRate,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHAPE ASSIGNMENT
+// ─────────────────────────────────────────────────────────────────────────────
+
+function shapeAssignment(a: any) {
+  const candidateStats = computePipelineStats(a.pipelines ?? []);
+
+  const shapedGrandchild = (g: any) => ({
+    ...g,
+    candidateStats: computePipelineStats(g.pipelines ?? []),
+    pipelines: undefined,
+  });
+
+  const shapedChildren = (a.childAssignments ?? []).map((c: any) => ({
+    ...c,
+    candidateStats: computePipelineStats(c.pipelines ?? []),
+    pipelines: undefined,
+    childAssignments: (c.childAssignments ?? []).map(shapedGrandchild),
+  }));
+
+  return {
+    ...a,
+    candidateStats,
+    pipelines: undefined,
+    childAssignments: shapedChildren,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPUTE AGING for a single pipeline row
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeAging(stageUpdatedAt: string | null) {
+  if (!stageUpdatedAt) return { minutes: 0, label: "—" };
+  const mins = Math.floor(
+    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000
+  );
+  if (mins < 60) return { minutes: mins, label: `${mins}m` };
+  const h = Math.floor(mins / 60);
+  if (h < 24) return { minutes: mins, label: `${h}h` };
+  const d = Math.floor(h / 24);
+  if (d < 30) return { minutes: mins, label: `${d}d` };
+  return { minutes: mins, label: `${Math.floor(d / 30)}mo` };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHAPE PIPELINE ROW
+// Attaches computed aging, normalises currentCanonicalStage from currentStage
+// if the stored field is null (root cause of "Stage N/A")
+// ─────────────────────────────────────────────────────────────────────────────
+
+function shapePipelineRow(p: any) {
+  // FIX: if currentCanonicalStage is null but currentStage.canonicalStage exists, use it
+  const resolvedCanonicalStage =
+    p.currentCanonicalStage ?? p.currentStage?.canonicalStage ?? null;
+
+  return {
+    ...p,
+    currentCanonicalStage: resolvedCanonicalStage,
+    aging: computeAging(p.stageUpdatedAt),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignments = async (req: Request, res: Response) => {
+  try {
+    const {
+      requirementId,
+      assignedToId,
+      status,
+      depth,
+      page = "1",
+      limit = "25",
+      sortBy = "assignedAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const scopeWhere = assignmentScopeWhere(req.scopeFilter!);
+    const filterWhere: any = { ...scopeWhere };
+
+    if (requirementId) filterWhere.requirementId = requirementId;
+    if (assignedToId) filterWhere.assignedToId = assignedToId;
+    if (status) filterWhere.status = status;
+    if (depth !== undefined) filterWhere.depth = parseInt(depth);
+
+    const SORTABLE = ["assignedAt", "deadline"];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { assignedAt: "desc" as const };
+
+    const [total, assignments] = await Promise.all([
+      prisma.requirementAssignment.count({ where: filterWhere }),
+      prisma.requirementAssignment.findMany({
+        where: filterWhere,
+        select: ASSIGNMENT_SELECT,
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: assignments.map(shapeAssignment),
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      permissions: {
+        canAdd: req.modulePermission?.canAdd,
+        canEdit: req.modulePermission?.canEdit,
+        canDelete: req.modulePermission?.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getAssignments:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch assignments" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignmentById = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const assignment = await prisma.requirementAssignment.findUnique({
+      where: { id },
+      select: ASSIGNMENT_SELECT,
+    });
+    if (!assignment) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
+    }
+    res.json({
+      success: true,
+      data: shapeAssignment(assignment),
+      permissions: {
+        canEdit: req.modulePermission?.canEdit,
+        canDelete: req.modulePermission?.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getAssignmentById:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/requirement/:requirementId
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignmentsByRequirement = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { requirementId } = req.params;
+
+    const assignments = await prisma.requirementAssignment.findMany({
+      where: {
+        requirementId,
+        depth: 0,
+        ...assignmentScopeWhere(req.scopeFilter!),
+      },
+      select: ASSIGNMENT_SELECT,
+      orderBy: { assignedAt: "asc" },
+    });
+
+    const requirement = await prisma.requirement.findUnique({
+      where: { id: requirementId },
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        totalOpenings: true,
+        respondBy: true,
+        client: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
+      },
+    });
+
+    if (!requirement) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
+    }
+
+    const shaped = assignments.map(shapeAssignment);
+
+    const allPipelines = assignments.flatMap((a) => [
+      ...(a.pipelines ?? []),
+      ...(a.childAssignments ?? []).flatMap((c: any) => [
+        ...(c.pipelines ?? []),
+        ...(c.childAssignments ?? []).flatMap((g: any) => g.pipelines ?? []),
+      ]),
+    ]);
+    const totalCandidateStats = computePipelineStats(allPipelines);
+
+    res.json({
+      success: true,
+      data: { requirement, totalCandidateStats, assignments: shaped },
+    });
+  } catch (err) {
+    console.error("getAssignmentsByRequirement:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch assignments" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/my
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getMyAssignments = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const {
+      status,
+      page = "1",
+      limit = "25",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    const where: any = { assignedToId: userId };
+    if (status) where.status = status;
+
+    const [total, assignments] = await Promise.all([
+      prisma.requirementAssignment.count({ where }),
+      prisma.requirementAssignment.findMany({
+        where,
+        select: ASSIGNMENT_SELECT,
+        orderBy: { assignedAt: sortDir as "asc" | "desc" },
+        skip,
+        take,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: assignments.map(shapeAssignment),
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+    });
+  } catch (err) {
+    console.error("getMyAssignments:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch my assignments" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/assignable-targets
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignableTargets = async (req: Request, res: Response) => {
+  try {
+    const { requirementId, parentAssignmentId } = req.query as Record<
+      string,
+      string
+    >;
+
+    if (!requirementId) {
+      res
+        .status(400)
+        .json({ success: false, message: "requirementId is required" });
+      return;
+    }
+
+    const existing = await prisma.requirementAssignment.findMany({
+      where: { requirementId, status: "ACTIVE" },
+      select: { assignedToId: true },
+    });
+    const alreadyAssignedIds = existing.map((a) => a.assignedToId);
+
+    let whereClause: any = {
+      isActive: true,
+      id: { notIn: [req.user!.id, ...alreadyAssignedIds] },
+    };
+
+    if (parentAssignmentId) {
+      const parent = await prisma.requirementAssignment.findUnique({
+        where: { id: parentAssignmentId },
+        select: { assignedToId: true, depth: true },
+      });
+      if (!parent) {
+        res
+          .status(404)
+          .json({ success: false, message: "Parent assignment not found" });
+        return;
+      }
+      if (parent.depth >= 2) {
+        res.json({ success: true, data: [] });
+        return;
+      }
+      whereClause = {
+        ...whereClause,
+        OR: [
+          { reportingToId: parent.assignedToId },
+          { teamLeadId: parent.assignedToId },
+        ],
+      };
+    }
+
+    const users = await prisma.user.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        employeeId: true,
+        role: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true } },
+      },
+      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+      take: 100,
+    });
+
+    res.json({ success: true, data: users });
+  } catch (err) {
+    console.error("getAssignableTargets:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch assignable targets" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assignments
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createAssignment = async (req: Request, res: Response) => {
+  try {
+    const actorId = req.user!.id;
+    const body = req.body as CreateAssignmentInput;
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: body.requirementId, deletedAt: null },
+      select: {
+        id: true,
+        status: true,
+        clientId: true,
+        businessUnitId: true,
+        serviceLineId: true,
+      },
+    });
+    if (!requirement) {
+      res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+      return;
+    }
+    if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
+      res.status(400).json({
+        success: false,
+        message: `Cannot assign a requirement in ${requirement.status} status`,
+      });
+      return;
+    }
+
+    const existing = await prisma.requirementAssignment.findFirst({
+      where: {
+        requirementId: body.requirementId,
+        assignedToId: body.assignedToId,
+        depth: 0,
+        status: "ACTIVE",
+      },
+    });
+    if (existing) {
+      res.status(409).json({
+        success: false,
+        message:
+          "This user already has an active assignment for this requirement",
+      });
+      return;
+    }
+
+    const assignee = await prisma.user.findUnique({
+      where: { id: body.assignedToId },
+      select: { id: true, departmentId: true },
+    });
+    if (!assignee) {
+      res
+        .status(404)
+        .json({ success: false, message: "Assignee user not found" });
+      return;
+    }
+
+    const assignment = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: body.requirementId,
+        assignedToId: body.assignedToId,
+        assignedById: actorId,
+        depth: 0,
+        status: "ACTIVE",
+        allocatedOpenings: body.allocatedOpenings ?? null,
+        deadline: body.deadline ? new Date(body.deadline) : null,
+        clientId: requirement.clientId,
+        assigneeBUId: requirement.businessUnitId ?? null,
+        assigneeDepartmentId: assignee.departmentId ?? null,
+      },
+      select: ASSIGNMENT_SELECT,
+    });
+
+    res
+      .status(201)
+      .json({
+        success: true,
+        message: "Assignment created",
+        data: shapeAssignment(assignment),
+      });
+  } catch (err) {
+    console.error("createAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to create assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /assignments/:id/sub-assign
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const subAssign = async (req: Request, res: Response) => {
+  try {
+    const actorId = req.user!.id;
+    const { id: parentId } = req.params;
+    const body = req.body as SubAssignInput;
+
+    const parent = await prisma.requirementAssignment.findUnique({
+      where: { id: parentId },
+      select: {
+        id: true,
+        depth: true,
+        status: true,
+        requirementId: true,
+        clientId: true,
+        assigneeBUId: true,
+        assignedToId: true,
+      },
+    });
+    if (!parent) {
+      res
+        .status(404)
+        .json({ success: false, message: "Parent assignment not found" });
+      return;
+    }
+    if (parent.status !== "ACTIVE") {
+      res
+        .status(400)
+        .json({ success: false, message: "Parent assignment is not active" });
+      return;
+    }
+    if (parent.depth >= 2) {
+      res
+        .status(400)
+        .json({ success: false, message: "Cannot sub-assign beyond depth 2" });
+      return;
+    }
+    if (parent.assignedToId !== actorId && !req.user!.isSuperAdmin) {
+      res.status(403).json({
+        success: false,
+        message: "Only the assignee of the parent assignment can sub-assign",
+      });
+      return;
+    }
+
+    const existing = await prisma.requirementAssignment.findFirst({
+      where: {
+        requirementId: parent.requirementId,
+        assignedToId: body.assignedToId,
+        parentAssignmentId: parentId,
+        status: "ACTIVE",
+      },
+    });
+    if (existing) {
+      res.status(409).json({
+        success: false,
+        message:
+          "This user already has an active sub-assignment under this assignment",
+      });
+      return;
+    }
+
+    const assignee = await prisma.user.findUnique({
+      where: { id: body.assignedToId },
+      select: { id: true, departmentId: true },
+    });
+    if (!assignee) {
+      res.status(404).json({ success: false, message: "Assignee not found" });
+      return;
+    }
+
+    const child = await prisma.requirementAssignment.create({
+      data: {
+        requirementId: parent.requirementId,
+        assignedToId: body.assignedToId,
+        assignedById: actorId,
+        parentAssignmentId: parentId,
+        depth: parent.depth + 1,
+        status: "ACTIVE",
+        allocatedOpenings: body.allocatedOpenings ?? null,
+        deadline: body.deadline ? new Date(body.deadline) : null,
+        clientId: parent.clientId,
+        assigneeBUId: parent.assigneeBUId ?? null,
+        assigneeDepartmentId: assignee.departmentId ?? null,
+      },
+      select: ASSIGNMENT_SELECT,
+    });
+
+    res
+      .status(201)
+      .json({
+        success: true,
+        message: "Sub-assignment created",
+        data: shapeAssignment(child),
+      });
+  } catch (err) {
+    console.error("subAssign:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to create sub-assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /assignments/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateAssignment = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const body = req.body as UpdateAssignmentInput;
+
+    const existing = await prisma.requirementAssignment.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    });
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
+    }
+
+    const data: any = {};
+    if (body.allocatedOpenings !== undefined)
+      data.allocatedOpenings = body.allocatedOpenings;
+    if (body.deadline !== undefined)
+      data.deadline = body.deadline ? new Date(body.deadline) : null;
+    if (body.status !== undefined) {
+      data.status = body.status;
+      if (body.status === "REMOVED") {
+        data.removedAt = new Date();
+        data.removedReason = body.removedReason ?? null;
+      }
+    }
+
+    const updated = await prisma.requirementAssignment.update({
+      where: { id },
+      data,
+      select: ASSIGNMENT_SELECT,
+    });
+
+    res.json({
+      success: true,
+      message: "Assignment updated",
+      data: shapeAssignment(updated),
+    });
+  } catch (err) {
+    console.error("updateAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /assignments/:id — soft remove, cascade active children
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const removeAssignment = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body as { reason?: string };
+
+    const existing = await prisma.requirementAssignment.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        childAssignments: { select: { id: true, status: true } },
+      },
+    });
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
+    }
+    if (existing.status === "REMOVED") {
+      res
+        .status(400)
+        .json({ success: false, message: "Assignment already removed" });
+      return;
+    }
+
+    const activeChildIds = existing.childAssignments
+      .filter((c) => c.status === "ACTIVE")
+      .map((c) => c.id);
+
+    await prisma.$transaction([
+      ...(activeChildIds.length > 0
+        ? [
+            prisma.requirementAssignment.updateMany({
+              where: { id: { in: activeChildIds } },
+              data: {
+                status: "REMOVED",
+                removedAt: new Date(),
+                removedReason: "Parent removed",
+              },
+            }),
+          ]
+        : []),
+      prisma.requirementAssignment.update({
+        where: { id },
+        data: {
+          status: "REMOVED",
+          removedAt: new Date(),
+          removedReason: reason ?? null,
+        },
+      }),
+    ]);
+
+    res.json({ success: true, message: "Assignment removed" });
+  } catch (err) {
+    console.error("removeAssignment:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to remove assignment" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/:id/pipeline
+// Full-fat candidate rows — same richness as requirement candidates endpoint.
+// Supports: stageId filter, disposition filter, activeOnly, search, pagination.
+// Returns candidateStats summary (from stored PIPELINE_SELECT_FOR_STATS data)
+// and pipelineStages list so the frontend can render the stage sidebar.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignmentPipeline = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const {
+      disposition,
+      stageId, // filter by actual pipeline stage id
+      activeOnly,
+      search,
+      page = "1",
+      limit = "25",
+    } = req.query as Record<string, string>;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    // Verify assignment exists and pull stats data in one shot
+    const assignment = await prisma.requirementAssignment.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        requirementId: true,
+        requirement: {
+          select: {
+            id: true,
+            reqCode: true,
+            title: true,
+            serviceLine: { select: { id: true, name: true } },
+          },
+        },
+        // fetch ALL pipelines under this assignment for stats computation
+        pipelines: { select: PIPELINE_SELECT_FOR_STATS },
+      },
+    });
+
+    if (!assignment) {
+      res.status(404).json({ success: false, message: "Assignment not found" });
+      return;
+    }
+
+    // ── Build candidate filter ─────────────────────────────────────────────
+    const where: any = { assignmentId: id };
+
+    if (disposition) where.disposition = disposition;
+    if (stageId) where.currentStageId = stageId;
+
+    if (activeOnly === "true") {
+      where.disposition = "ACTIVE";
+    }
+
+    if (search?.trim()) {
+      where.snapshot = {
+        OR: [
+          { fullName: { contains: search.trim(), mode: "insensitive" } },
+          { email: { contains: search.trim(), mode: "insensitive" } },
+          { phone: { contains: search.trim(), mode: "insensitive" } },
+          { currentTitle: { contains: search.trim(), mode: "insensitive" } },
+          { currentCompany: { contains: search.trim(), mode: "insensitive" } },
+        ],
+      };
+    }
+
+    // ── Fetch paginated candidates + total ─────────────────────────────────
+    const [total, pipelines] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: FULL_PIPELINE_SELECT,
+        orderBy: { stageUpdatedAt: "desc" },
+        skip,
+        take,
+      }),
+    ]);
+
+    // ── Fetch all pipeline stages for this service line (for sidebar) ──────
+    const serviceLineId = assignment.requirement?.serviceLine?.id;
+    const pipelineStages = await prisma.pipelineStage.findMany({
+      where: {
+        ...(serviceLineId ? { serviceLineId } : {}),
+        isActive: true,
+      },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        isMandatory: true,
+        isTerminal: true,
+        canonicalStage: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // ── Compute stats from stored pipeline rows ────────────────────────────
+    const candidateStats = computePipelineStats(assignment.pipelines ?? []);
+
+    // ── Shape rows (fix Stage N/A, attach aging) ───────────────────────────
+    const shaped = pipelines.map(shapePipelineRow);
+
+    res.json({
+      success: true,
+      data: shaped,
+      candidateStats,
+      pipelineStages,
+      requirement: assignment.requirement,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      permissions: {
+        canEdit: req.modulePermission?.canEdit,
+        canDelete: req.modulePermission?.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getAssignmentPipeline:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline" });
+  }
+};

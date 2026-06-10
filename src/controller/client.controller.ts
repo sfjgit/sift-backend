@@ -207,6 +207,13 @@ export const getMyClients = async (req: Request, res: Response) => {
 };
 
 // ── GET /clients/:id
+// File: client.controller.ts
+// Path: src/controller/client.controller.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getClientById — add clientSpocDms inside spocs select
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const getClientById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -250,6 +257,25 @@ export const getClientById = async (req: Request, res: Response) => {
             addedBy: { select: { id: true, firstName: true, lastName: true } },
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
+            // ── DM tags ───────────────────────────────────────────────────
+            clientSpocDms: {
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                spocId: true,
+                createdAt: true,
+                dm: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    displayName: true,
+                    email: true,
+                    role: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
           },
         },
         notes: {
@@ -270,7 +296,6 @@ export const getClientById = async (req: Request, res: Response) => {
             status: true,
             priority: true,
             totalOpenings: true,
-            // filledOpenings: true,
             createdAt: true,
           },
           orderBy: { createdAt: "desc" },
@@ -299,7 +324,12 @@ export const getClientById = async (req: Request, res: Response) => {
   }
 };
 
-// ── GET /clients/:id/spocs
+// ─────────────────────────────────────────────────────────────────────────────
+// getClientSpocs — add clientSpocDms so the standalone spocs endpoint
+// also returns DM tags (used by requirement forms / other places that call
+// GET /clients/:id/spocs directly)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const getClientSpocs = async (req: Request, res: Response) => {
   try {
     const { id: clientId } = req.params;
@@ -319,7 +349,6 @@ export const getClientSpocs = async (req: Request, res: Response) => {
 
     const where: any = { clientId, isActive: true };
 
-    // mine=true OR not superadmin → only spocs I handle
     if (mine === "true" || !isSuperAdmin) {
       where.handlerId = userId;
     }
@@ -339,6 +368,25 @@ export const getClientSpocs = async (req: Request, res: Response) => {
         handler: { select: { id: true, firstName: true, lastName: true } },
         serviceLine: { select: { id: true, name: true } },
         businessUnit: { select: { id: true, name: true } },
+        // ── DM tags ─────────────────────────────────────────────────────────
+        clientSpocDms: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            spocId: true,
+            createdAt: true,
+            dm: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                displayName: true,
+                email: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
     });
@@ -730,5 +778,197 @@ export const removeSpoc = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("removeSpoc:", err);
     res.status(500).json({ success: false, message: "Failed to remove SPOC" });
+  }
+};
+
+// File: client.controller.ts  (append these functions)
+// Path: src/controller/client.controller.ts
+
+// import prisma from "@/utils/prisma/client";
+// import { Request, Response } from "express";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPOC DM MANAGEMENT
+// ClientSpocDM — junction between ClientSpoc and User (the delivery manager)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /clients/:id/spocs/:spocId/dms
+// Returns all DMs currently tagged on this SPOC
+export const getSpocDMs = async (req: Request, res: Response) => {
+  try {
+    const { id: clientId, spocId } = req.params;
+
+    const spoc = await prisma.clientSpoc.findFirst({
+      where: { id: spocId, clientId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!spoc) {
+      res.status(404).json({ success: false, message: "SPOC not found" });
+      return;
+    }
+
+    const dms = await prisma.clientSpocDM.findMany({
+      where: { spocId },
+      select: {
+        id: true,
+        spocId: true,
+        createdAt: true,
+        dm: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            displayName: true,
+            email: true,
+            employeeId: true,
+            role: { select: { id: true, name: true } },
+            department: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    res.json({ success: true, data: dms });
+  } catch (err) {
+    console.error("getSpocDMs:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch SPOC DMs" });
+  }
+};
+
+// ── POST /clients/:id/spocs/:spocId/dms
+// Tag one or more DMs on a SPOC (idempotent — skips duplicates)
+export const addSpocDMs = async (req: Request, res: Response) => {
+  try {
+    const { id: clientId, spocId } = req.params;
+    // Accept a single dmId or an array for bulk tagging
+    const { dmId, dmIds } = req.body as { dmId?: string; dmIds?: string[] };
+
+    const spoc = await prisma.clientSpoc.findFirst({
+      where: { id: spocId, clientId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!spoc) {
+      res.status(404).json({ success: false, message: "SPOC not found" });
+      return;
+    }
+
+    // Normalise to array — accept single dmId or dmIds[]
+    const ids: string[] = dmIds?.length ? dmIds : dmId ? [dmId] : [];
+
+    if (!ids.length) {
+      res
+        .status(400)
+        .json({ success: false, message: "dmId or dmIds required" });
+      return;
+    }
+
+    // Verify all provided IDs are real, active users
+    const users = await prisma.user.findMany({
+      where: { id: { in: ids }, isActive: true },
+      select: { id: true },
+    });
+
+    if (users.length !== ids.length) {
+      res.status(400).json({
+        success: false,
+        message: "One or more user IDs are invalid or inactive",
+      });
+      return;
+    }
+
+    // Find already-tagged DMs to skip duplicates without an error
+    const existing = await prisma.clientSpocDM.findMany({
+      where: { spocId, dmId: { in: ids } },
+      select: { dmId: true },
+    });
+    const existingSet = new Set(existing.map((e) => e.dmId));
+    const toInsert = ids.filter((id) => !existingSet.has(id));
+
+    let created: { id: string; dmId: string }[] = [];
+    if (toInsert.length) {
+      // createMany doesn't return records in Prisma by default — use a transaction
+      await prisma.$transaction(
+        toInsert.map((id) =>
+          prisma.clientSpocDM.create({
+            data: { spocId, dmId: id },
+            select: { id: true, dmId: true },
+          })
+        )
+      );
+
+      // Re-fetch to return full shape
+      created = await prisma.clientSpocDM
+        .findMany({
+          where: { spocId, dmId: { in: toInsert } },
+          select: {
+            id: true,
+            dmId: true,
+            createdAt: true,
+            dm: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                displayName: true,
+                email: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+          },
+        })
+        .then((rows) => rows as any[]);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: toInsert.length
+        ? `${toInsert.length} DM(s) tagged`
+        : "All DMs already tagged — no changes made",
+      data: created,
+      skipped: existing.map((e) => e.dmId),
+    });
+  } catch (err) {
+    console.error("addSpocDMs:", err);
+    res.status(500).json({ success: false, message: "Failed to tag DM(s)" });
+  }
+};
+
+// ── DELETE /clients/:id/spocs/:spocId/dms/:spocDmId
+// Remove a single DM tag by the ClientSpocDM row id (not the dmId)
+export const removeSpocDM = async (req: Request, res: Response) => {
+  try {
+    const { id: clientId, spocId, spocDmId } = req.params;
+
+    // Confirm SPOC belongs to this client
+    const spoc = await prisma.clientSpoc.findFirst({
+      where: { id: spocId, clientId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!spoc) {
+      res.status(404).json({ success: false, message: "SPOC not found" });
+      return;
+    }
+
+    const entry = await prisma.clientSpocDM.findFirst({
+      where: { id: spocDmId, spocId },
+    });
+
+    if (!entry) {
+      res.status(404).json({ success: false, message: "DM tag not found" });
+      return;
+    }
+
+    await prisma.clientSpocDM.delete({ where: { id: spocDmId } });
+
+    res.json({ success: true, message: "DM untagged from SPOC" });
+  } catch (err) {
+    console.error("removeSpocDM:", err);
+    res.status(500).json({ success: false, message: "Failed to untag DM" });
   }
 };

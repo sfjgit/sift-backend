@@ -15,6 +15,7 @@ enum PermissionScope {
   OWN
   TEAM
   REPORTING
+  REPORTING_LINE
   DEPARTMENT
   BU
   ALL
@@ -24,8 +25,8 @@ enum AssignmentStatus {
   ACTIVE
   REMOVED
   REPLACED
-  FILLED      // ← their allocated openings are done
-  EXPIRED     // ← deadline passed, never filled
+  FILLED // ← their allocated openings are done
+  EXPIRED // ← deadline passed, never filled
 }
 
 enum RequirementType {
@@ -207,9 +208,7 @@ model User {
   reportingToId String?
   reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
 
-
-  
-  subordinates  User[]  @relation("ReportsTo")
+  subordinates User[] @relation("ReportsTo")
 
   teamLeadId  String?
   teamLead    User?   @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
@@ -256,11 +255,13 @@ model User {
   notifications Notification[] @relation("UserNotifications")
   auditLogs     AuditLog[]     @relation("AuditLogActor")
 
+  SpocDM ClientSpocDM[] @relation("SpocDM")
+
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   userAppCredentials UserAppCredential[]
 
-jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
+  jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
 
   @@index([email])
   @@index([isActive])
@@ -314,11 +315,10 @@ model Role {
   updatedAt DateTime @updatedAt
 }
 
-
 model Module {
   id       String  @id @default(uuid())
-  name     String  @unique  // "users", "clients", "requirements"
-  label    String           // "Users", "Clients", "Requirements"
+  name     String  @unique // "users", "clients", "requirements"
+  label    String // "Users", "Clients", "Requirements"
   order    Int?
   isActive Boolean @default(true)
 
@@ -334,8 +334,8 @@ model RolePermission {
 
   module String
 
-   moduleId String?
-  modules   Module? @relation(fields: [moduleId], references: [id])
+  moduleId String?
+  modules  Module? @relation(fields: [moduleId], references: [id])
 
   canView   Boolean @default(false)
   canAdd    Boolean @default(false)
@@ -425,6 +425,8 @@ model ClientSpoc {
 
   requirements Requirement[]
 
+  clientSpocDms ClientSpocDM[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -433,6 +435,19 @@ model ClientSpoc {
   @@index([handlerId, isActive])
   @@index([businessUnitId])
   @@index([serviceLineId])
+}
+
+model ClientSpocDM {
+  id String @id @default(uuid())
+
+  spocId String
+  spoc   ClientSpoc @relation(fields: [spocId], references: [id])
+
+  dmId String
+  dm   User   @relation("SpocDM", fields: [dmId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model ClientNote {
@@ -463,16 +478,16 @@ model Requirement {
   jobType     RequirementType
   remoteType  RemoteType
   priority    Priority        @default(MEDIUM)
-  jobOpenFor  JobOpenFor      @default(EXTERNAL)  // EXTERNAL / INTERNAL / BOTH
+  jobOpenFor  JobOpenFor      @default(EXTERNAL) // EXTERNAL / INTERNAL / BOTH
 
   // ── Skills ────────────────────────────────────────────────────────────────
-  primarySkills String[]  // top 3-5 must-have — replaces flat skills[]
-  keySkills     String[]  // all other required skills
+  primarySkills String[] // top 3-5 must-have — replaces flat skills[]
+  keySkills     String[] // all other required skills
 
   // ── Location ──────────────────────────────────────────────────────────────
-  city     String?
-  state    String?
-  country  String?
+  city    String?
+  state   String?
+  country String?
 
   // ── Experience ────────────────────────────────────────────────────────────
   experienceMin Float?
@@ -482,19 +497,19 @@ model Requirement {
   salaryMin               Float?
   salaryMax               Float?
   salaryType              SalaryType?
-  salaryCurrency          String?   @default("INR")
+  salaryCurrency          String?     @default("INR")
   bonusAmount             Float?
-  hideSalaryFromCandidate Boolean   @default(false)
-  showMedianSalary        Boolean   @default(false)
+  hideSalaryFromCandidate Boolean     @default(false)
+  showMedianSalary        Boolean     @default(false)
 
   // ── Employment details ────────────────────────────────────────────────────
-  education       String?   // "B.Tech / B.E. in CS"
-  functionalArea  String?   // "Engineering", "Sales"
-  shift           String?   // "Morning" / "Night" / "Flexible"
+  education      String? // "B.Tech / B.E. in CS"
+  functionalArea String? // "Engineering", "Sales"
+  shift          String? // "Morning" / "Night" / "Flexible"
 
   // ── Sourcing strategy ─────────────────────────────────────────────────────
-  targetCompanies  String[]  // companies to target
-  noPoachCompanies String[]  // companies not to poach from
+  targetCompanies  String[] // companies to target
+  noPoachCompanies String[] // companies not to poach from
 
   // ── JD file ───────────────────────────────────────────────────────────────
   jdFileKey    String?
@@ -504,8 +519,8 @@ model Requirement {
 
   // ── JD parse metadata (set after /jd/parse, cleared on manual override) ──
   jdParsedAt     DateTime?
-  jdParseStatus  JDParseStatus?  // PARSED / FAILED / MANUALLY_OVERRIDDEN
-  jdParsedFields String[]        // which fields were autofilled from JD
+  jdParseStatus  JDParseStatus? // PARSED / FAILED / MANUALLY_OVERRIDDEN
+  jdParsedFields String[] // which fields were autofilled from JD
 
   // ── Relations ─────────────────────────────────────────────────────────────
   clientSpocId String?
@@ -527,35 +542,33 @@ model Requirement {
 
   // ── Dates ─────────────────────────────────────────────────────────────────
   startDate      DateTime?
-  targetDate     DateTime?  // expected onboarding date — was endDate, renamed
+  targetDate     DateTime? // expected onboarding date — was endDate, renamed
   respondBy      DateTime?
   turnaroundDays Int?
 
   // ── Status & closure ──────────────────────────────────────────────────────
   status        RequirementStatus @default(DRAFT)
-  closureReason ClosureReason?    // FILLED / CANCELLED / CLIENT_WITHDREW / ON_HOLD
+  closureReason ClosureReason? // FILLED / CANCELLED / CLIENT_WITHDREW / ON_HOLD
   closedAt      DateTime?
 
   isRespondByBreached  Boolean @default(false)
   isTurnaroundBreached Boolean @default(false)
 
   // ── Audit ─────────────────────────────────────────────────────────────────
-  createdById  String
-  createdBy    User   @relation("RequirementCreatedBy", fields: [createdById], references: [id])
+  createdById String
+  createdBy   User   @relation("RequirementCreatedBy", fields: [createdById], references: [id])
 
   approvedById String?
   approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
   approvedAt   DateTime?
 
   closedById String?
-  closedBy   User?     @relation("RequirementClosedBy", fields: [closedById], references: [id])
+  closedBy   User?   @relation("RequirementClosedBy", fields: [closedById], references: [id])
 
   deletedAt DateTime?
 
   parsedJDId String?
   parsedJD   ParsedJDLibrary? @relation(fields: [parsedJDId], references: [id])
-
-@@index([parsedJDId])
 
   // ── Child relations ───────────────────────────────────────────────────────
   assignments        RequirementAssignment[]
@@ -569,6 +582,7 @@ model Requirement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([parsedJDId])
   @@index([status])
   @@index([clientId])
   @@index([businessUnitId])
@@ -582,7 +596,6 @@ model Requirement {
   @@index([targetDate])
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // PARSED JD LIBRARY
 // AI parses once — stored here forever. Anyone can search and reuse.
@@ -593,10 +606,10 @@ model ParsedJDLibrary {
   id String @id @default(uuid())
 
   // searchable identifier — auto-generated from parsed title
-  title String  // "Senior React Developer" — indexed for search
+  title String // "Senior React Developer" — indexed for search
 
   // raw parsed output from GPT — everything stored flat for easy cloning
-  parsedData Json  // full ParsedJD object
+  parsedData Json // full ParsedJD object
 
   // the original JD file that was parsed
   jdFileKey  String?
@@ -605,12 +618,12 @@ model ParsedJDLibrary {
 
   // who parsed it and when
   parsedById String
-  parsedBy   User   @relation("JDParsedBy", fields: [parsedById], references: [id])
+  parsedBy   User     @relation("JDParsedBy", fields: [parsedById], references: [id])
   parsedAt   DateTime @default(now())
 
   // usage tracking — who used this and how many times
-  usageCount Int @default(0)
-  usedByIds  String[]  // array of userIds who cloned this — for "used by X people" display
+  usageCount Int      @default(0)
+  usedByIds  String[] // array of userIds who cloned this — for "used by X people" display
 
   // requirements created from this parsed JD
   requirements Requirement[]
@@ -788,10 +801,6 @@ model RequirementDocument {
 // Only 07A / 07B have serviceLineId set
 // ─────────────────────────────────────────────────────────────────────────────
 
-
-
-
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CANDIDATE SNAPSHOT
 // Written once when recruiter links a candidate to a requirement.
@@ -840,12 +849,11 @@ model CandidateSnapshot {
 // Stage pointer updates in place. History written to CandidatePipelineStageLog.
 // ─────────────────────────────────────────────────────────────────────────────
 
-
 enum CandidateDisposition {
-  ACTIVE       // in pipeline, being worked
-  PLACED       // joined — counts as fill
-  DROPPED      // out — reason in dropReason field
-  DUPLICATE    // ignored
+  ACTIVE // in pipeline, being worked
+  PLACED // joined — counts as fill
+  DROPPED // out — reason in dropReason field
+  DUPLICATE // ignored
   ON_HOLD
 }
 
@@ -859,7 +867,6 @@ enum DropReason {
   BUDGET_MISMATCH
   OTHER
 }
-
 
 model RequirementCandidatePipeline {
   id String @id @default(uuid())
@@ -877,11 +884,11 @@ model RequirementCandidatePipeline {
   recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
 
   currentStageId        String
-  currentStage          PipelineStage  @relation(fields: [currentStageId], references: [id])
+  currentStage          PipelineStage   @relation(fields: [currentStageId], references: [id])
   currentCanonicalStage CanonicalStage?
-  stageUpdatedAt        DateTime       @default(now())
+  stageUpdatedAt        DateTime        @default(now())
   stageUpdatedById      String
-  stageUpdatedBy        User           @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
+  stageUpdatedBy        User            @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
 
   disposition   CandidateDisposition @default(ACTIVE)
   dispositionAt DateTime?
@@ -991,8 +998,6 @@ model RequirementCandidatePipeline {
 //   createdAt DateTime @default(now())
 //   updatedAt DateTime @updatedAt
 
-
-
 //   @@index([requirementId, currentStageId])
 //   @@index([recruiterId])
 //   @@index([assignmentId])
@@ -1023,7 +1028,7 @@ model CandidatePipelineStageLog {
   changedById String
   changedBy   User   @relation("StageLogChangedBy", fields: [changedById], references: [id])
 
-  wasSkipped Boolean   @default(false)
+  wasSkipped Boolean @default(false)
   skipReason String?
 
   timeInPrevStageMins Int?
@@ -1086,8 +1091,6 @@ model AuditLog {
   @@index([createdAt])
 }
 
-
-
 enum CanonicalStage {
   SOURCED
   SCREENING
@@ -1100,30 +1103,23 @@ enum CanonicalStage {
 }
 
 model PipelineStage {
-  id             String         @id @default(uuid())
+  id             String          @id @default(uuid())
   code           String
   label          String
   order          Int
   canonicalStage CanonicalStage?
-  isMandatory    Boolean        @default(true)
-  isTerminal     Boolean        @default(false)
-  isActive       Boolean        @default(true)
+  isMandatory    Boolean         @default(true)
+  isTerminal     Boolean         @default(false)
+  isActive       Boolean         @default(true)
 
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
   stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
 
-  createdAt DateTime @default(now())
+  createdAt     DateTime     @default(now())
+  serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
+  serviceLineId String?
 
   @@index([order])
   @@index([canonicalStage])
 }
-
-
-
-
-
-
-
-
-

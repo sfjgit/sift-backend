@@ -8,13 +8,10 @@ import prisma from "@/utils/prisma/client";
 export const syncCandidateToCore = async (req: Request, res: Response) => {
   try {
     const {
-      // who
-      candidateServiceId, // Candidate Service UUID
+      candidateServiceId,
       requirementId,
       recruiterId,
       assignmentId,
-
-      // snapshot display fields
       fullName,
       email,
       phone,
@@ -23,10 +20,10 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       totalExpYears,
       topSkills,
       resumeUrl,
-
-      // full profile blob
       rawSnapshot,
     } = req.body;
+
+    console.log("[syncCandidateToCore] Body:", req.body);
 
     // ── validate required fields
     if (
@@ -36,6 +33,13 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       !fullName ||
       !email
     ) {
+      console.error("[syncCandidateToCore] MISSING_FIELDS:", {
+        candidateServiceId: candidateServiceId ?? "MISSING",
+        requirementId: requirementId ?? "MISSING",
+        recruiterId: recruiterId ?? "MISSING",
+        fullName: fullName ?? "MISSING",
+        email: email ?? "MISSING",
+      });
       res.status(400).json({
         success: false,
         code: "MISSING_FIELDS",
@@ -52,17 +56,22 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
     });
 
     if (!requirement) {
-      res
-        .status(404)
-        .json({
-          success: false,
-          code: "REQUIREMENT_NOT_FOUND",
-          message: "Requirement not found",
-        });
+      console.error("[syncCandidateToCore] REQUIREMENT_NOT_FOUND:", {
+        requirementId,
+      });
+      res.status(404).json({
+        success: false,
+        code: "REQUIREMENT_NOT_FOUND",
+        message: "Requirement not found",
+      });
       return;
     }
 
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
+      console.error("[syncCandidateToCore] REQUIREMENT_NOT_ACTIVE:", {
+        requirementId,
+        status: requirement.status,
+      });
       res.status(400).json({
         success: false,
         code: "REQUIREMENT_NOT_ACTIVE",
@@ -78,17 +87,18 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
     });
 
     if (!recruiter) {
-      res
-        .status(404)
-        .json({
-          success: false,
-          code: "RECRUITER_NOT_FOUND",
-          message: "Recruiter not found",
-        });
+      console.error("[syncCandidateToCore] RECRUITER_NOT_FOUND:", {
+        recruiterId,
+      });
+      res.status(404).json({
+        success: false,
+        code: "RECRUITER_NOT_FOUND",
+        message: "Recruiter not found",
+      });
       return;
     }
 
-    // ── check duplicate — same candidate already linked to this requirement
+    // ── check duplicate
     const existingSnapshot = await prisma.candidateSnapshot.findUnique({
       where: {
         candidateServiceId_requirementId: { candidateServiceId, requirementId },
@@ -97,7 +107,6 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
     });
 
     if (existingSnapshot) {
-      // already synced — return existing pipeline id, not an error
       res.status(200).json({
         success: true,
         alreadyExisted: true,
@@ -109,13 +118,16 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       return;
     }
 
-    // ── resolve starting stage — code "01"
+    // ── resolve starting stage
     const sourcedStage = await prisma.pipelineStage.findFirst({
       where: { code: "01", isActive: true },
       select: { id: true },
     });
 
     if (!sourcedStage) {
+      console.error(
+        "[syncCandidateToCore] STAGE_NOT_CONFIGURED: Pipeline stage code '01' not found. Run seed."
+      );
       res.status(500).json({
         success: false,
         code: "STAGE_NOT_CONFIGURED",
@@ -124,9 +136,8 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       return;
     }
 
-    // ── transaction: snapshot + pipeline row + stage log + counter bump
+    // ── transaction
     const result = await prisma.$transaction(async (tx) => {
-      // 1. create snapshot — frozen at this moment
       const snapshot = await tx.candidateSnapshot.create({
         data: {
           candidateServiceId,
@@ -144,7 +155,6 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
         },
       });
 
-      // 2. create pipeline row at stage 01
       const pipeline = await tx.requirementCandidatePipeline.create({
         data: {
           snapshotId: snapshot.id,
@@ -157,7 +167,6 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
         },
       });
 
-      // 3. append initial stage log
       await tx.candidatePipelineStageLog.create({
         data: {
           pipelineId: pipeline.id,
@@ -169,11 +178,10 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
         },
       });
 
-      // 4. bump activeApplications on requirement
-      await tx.requirement.update({
-        where: { id: requirementId },
-        data: { activeApplications: { increment: 1 } },
-      });
+      // await tx.requirement.update({
+      //   where: { id: requirementId },
+      //   data: {  },
+      // });
 
       return { snapshot, pipeline };
     });
@@ -187,7 +195,7 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
-    console.error("syncCandidateToCore:", err);
+    console.error("[syncCandidateToCore] INTERNAL_ERROR:", err);
     res.status(500).json({
       success: false,
       code: "INTERNAL_ERROR",

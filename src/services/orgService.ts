@@ -55,3 +55,29 @@ export async function getFullOrgTree(rootUserId: string) {
     `;
   return rows;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getReportingLineIds — NEW
+// Returns ALL user IDs in the full reporting hierarchy under userId
+// (recursive BFS through reportingToId — same as above but explicit name)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getReportingLineIds(userId: string): Promise<string[]> {
+  const visited = new Set<string>();
+  const queue = [userId];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const children = await prisma.user.findMany({
+      where: { reportingToId: current, isActive: true },
+      select: { id: true },
+    });
+    children.forEach((c) => queue.push(c.id));
+  }
+
+  visited.delete(userId); // exclude self, caller adds it
+  return Array.from(visited);
+}
