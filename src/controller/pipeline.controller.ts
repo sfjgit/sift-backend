@@ -653,7 +653,7 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       if (interviewCodes.includes(targetStage.code)) {
         await tx.requirement.update({
           where: { id: pipeline.requirementId },
-          data: { interviewsScheduled: { increment: 1 } },
+          data: {},
         });
         await tx.requirementAssignment.updateMany({
           where: {

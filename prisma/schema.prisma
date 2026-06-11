@@ -885,7 +885,6 @@ model RequirementCandidatePipeline {
 
   currentStageId        String
   currentStage          PipelineStage   @relation(fields: [currentStageId], references: [id])
-  currentCanonicalStage CanonicalStage?
   stageUpdatedAt        DateTime        @default(now())
   stageUpdatedById      String
   stageUpdatedBy        User            @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
@@ -930,7 +929,7 @@ model RequirementCandidatePipeline {
   updatedAt DateTime @updatedAt
 
   @@index([requirementId, currentStageId])
-  @@index([requirementId, currentCanonicalStage])
+  // @@index([requirementId, currentCanonicalStage])
   @@index([recruiterId])
   @@index([assignmentId])
   @@index([stageUpdatedAt])
@@ -1094,6 +1093,10 @@ model AuditLog {
 enum CanonicalStage {
   SOURCED
   SCREENING
+  SUBMMITED
+  SHORTLISTED
+  REJECTED
+  DECLINED
   INTERVIEW
   OFFER_IN_PROGRESS
   OFFERED

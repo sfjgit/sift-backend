@@ -12,12 +12,13 @@ import type {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE SELECT FOR STATS
+// currentCanonicalStage removed from schema — read via currentStage.canonicalStage
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PIPELINE_SELECT_FOR_STATS = {
   id: true,
   disposition: true,
-  currentCanonicalStage: true,
+  // currentCanonicalStage REMOVED — use currentStage.canonicalStage instead
   isRejected: true,
   isWithdrawn: true,
   isOnHold: true,
@@ -39,14 +40,13 @@ const PIPELINE_SELECT_FOR_STATS = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FULL PIPELINE ROW SELECT — mirrors requirement candidates API
-// Used in getAssignmentPipeline so the frontend has everything it needs
+// FULL PIPELINE ROW SELECT — used in getAssignmentPipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
 const FULL_PIPELINE_SELECT = {
   id: true,
   disposition: true,
-  currentCanonicalStage: true,
+  // currentCanonicalStage REMOVED from schema
   dropReason: true,
   dropNote: true,
   isRejected: true,
@@ -60,14 +60,13 @@ const FULL_PIPELINE_SELECT = {
   actualJoiningDate: true,
   stageUpdatedAt: true,
   createdAt: true,
-  // Full stage object — NOT just canonical, so label/code/order are all present
   currentStage: {
     select: {
       id: true,
       label: true,
       code: true,
       order: true,
-      canonicalStage: true, // ← this is what feeds currentCanonicalStage display
+      canonicalStage: true, // ← canonical lives here now, always
     },
   },
   recruiter: {
@@ -91,7 +90,6 @@ const FULL_PIPELINE_SELECT = {
       resumeUrl: true,
     },
   },
-  // Last 10 history entries — enough for the drawer timeline
   stageHistory: {
     select: {
       id: true,
@@ -106,7 +104,6 @@ const FULL_PIPELINE_SELECT = {
     orderBy: { createdAt: "desc" as const },
     take: 10,
   },
-  // Assignment context (who owns this candidate row)
   assignment: {
     select: {
       id: true,
@@ -266,6 +263,8 @@ const ASSIGNMENT_SELECT = {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPUTE PIPELINE STATS
+// All canonical stage reads go through currentStage.canonicalStage
+// — no stored string field on the pipeline row anymore
 // ─────────────────────────────────────────────────────────────────────────────
 
 function computePipelineStats(pipelines: any[]) {
@@ -292,19 +291,22 @@ function computePipelineStats(pipelines: any[]) {
     (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED"
   ).length;
 
+  // ── byCanonicalStage — read from currentStage.canonicalStage (single source of truth)
   const byCanonicalStage: Record<string, number> = {};
   for (const p of pipelines) {
-    const stage = p.currentCanonicalStage ?? "UNKNOWN";
+    const stage = p.currentStage?.canonicalStage ?? "UNKNOWN";
     byCanonicalStage[stage] = (byCanonicalStage[stage] ?? 0) + 1;
   }
 
-  const activeByCanonicalStage: Record<string, number> = {};
+  // ── activeByCanonicalStage — active candidates only
   const activeRows = pipelines.filter((p) => p.disposition === "ACTIVE");
+  const activeByCanonicalStage: Record<string, number> = {};
   for (const p of activeRows) {
-    const stage = p.currentCanonicalStage ?? "UNKNOWN";
+    const stage = p.currentStage?.canonicalStage ?? "UNKNOWN";
     activeByCanonicalStage[stage] = (activeByCanonicalStage[stage] ?? 0) + 1;
   }
 
+  // ── byPipelineStage — actual stage breakdown with counts
   const stageMap: Record<
     string,
     {
@@ -319,7 +321,7 @@ function computePipelineStats(pipelines: any[]) {
   for (const p of pipelines) {
     if (!p.currentStage) continue;
     const { id, code, label, order, canonicalStage } = p.currentStage;
-    if (!stageMap[id]) {
+    if (!stageMap[id])
       stageMap[id] = {
         id,
         code,
@@ -328,13 +330,13 @@ function computePipelineStats(pipelines: any[]) {
         canonicalStage: canonicalStage ?? null,
         count: 0,
       };
-    }
     stageMap[id].count++;
   }
   const byPipelineStage = Object.values(stageMap).sort(
     (a, b) => a.order - b.order
   );
 
+  // ── activeByPipelineStage — same but active only
   const activeStageMap: Record<
     string,
     {
@@ -349,7 +351,7 @@ function computePipelineStats(pipelines: any[]) {
   for (const p of activeRows) {
     if (!p.currentStage) continue;
     const { id, code, label, order, canonicalStage } = p.currentStage;
-    if (!activeStageMap[id]) {
+    if (!activeStageMap[id])
       activeStageMap[id] = {
         id,
         code,
@@ -358,13 +360,13 @@ function computePipelineStats(pipelines: any[]) {
         canonicalStage: canonicalStage ?? null,
         count: 0,
       };
-    }
     activeStageMap[id].count++;
   }
   const activeByPipelineStage = Object.values(activeStageMap).sort(
     (a, b) => a.order - b.order
   );
 
+  // ── Aging buckets for active candidates
   const agingBuckets = { fresh: 0, normal: 0, stale: 0, critical: 0 };
   for (const p of activeRows) {
     if (!p.stageUpdatedAt) continue;
@@ -374,10 +376,6 @@ function computePipelineStats(pipelines: any[]) {
     else if (ageDays < 14) agingBuckets.stale++;
     else agingBuckets.critical++;
   }
-
-  const submissionRate = total > 0 ? Math.round((submitted / total) * 100) : 0;
-  const offerRate = submitted > 0 ? Math.round((offered / submitted) * 100) : 0;
-  const joiningRate = offered > 0 ? Math.round((joined / offered) * 100) : 0;
 
   return {
     total,
@@ -399,9 +397,9 @@ function computePipelineStats(pipelines: any[]) {
     activeByPipelineStage,
     agingBuckets,
     rates: {
-      submission: submissionRate,
-      offer: offerRate,
-      joining: joiningRate,
+      submission: total > 0 ? Math.round((submitted / total) * 100) : 0,
+      offer: submitted > 0 ? Math.round((offered / submitted) * 100) : 0,
+      joining: offered > 0 ? Math.round((joined / offered) * 100) : 0,
     },
   };
 }
@@ -435,7 +433,7 @@ function shapeAssignment(a: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPUTE AGING for a single pipeline row
+// COMPUTE AGING
 // ─────────────────────────────────────────────────────────────────────────────
 
 function computeAging(stageUpdatedAt: string | null) {
@@ -453,18 +451,15 @@ function computeAging(stageUpdatedAt: string | null) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHAPE PIPELINE ROW
-// Attaches computed aging, normalises currentCanonicalStage from currentStage
-// if the stored field is null (root cause of "Stage N/A")
+// canonical stage comes from currentStage.canonicalStage — not a stored field
 // ─────────────────────────────────────────────────────────────────────────────
 
 function shapePipelineRow(p: any) {
-  // FIX: if currentCanonicalStage is null but currentStage.canonicalStage exists, use it
-  const resolvedCanonicalStage =
-    p.currentCanonicalStage ?? p.currentStage?.canonicalStage ?? null;
-
   return {
     ...p,
-    currentCanonicalStage: resolvedCanonicalStage,
+    // expose canonicalStage at top level for frontend convenience
+    // but it's sourced from currentStage.canonicalStage — single source of truth
+    currentCanonicalStage: p.currentStage?.canonicalStage ?? null,
     aging: computeAging(p.stageUpdatedAt),
   };
 }
@@ -783,10 +778,12 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
-      res.status(400).json({
-        success: false,
-        message: `Cannot assign a requirement in ${requirement.status} status`,
-      });
+      res
+        .status(400)
+        .json({
+          success: false,
+          message: `Cannot assign a requirement in ${requirement.status} status`,
+        });
       return;
     }
 
@@ -799,11 +796,13 @@ export const createAssignment = async (req: Request, res: Response) => {
       },
     });
     if (existing) {
-      res.status(409).json({
-        success: false,
-        message:
-          "This user already has an active assignment for this requirement",
-      });
+      res
+        .status(409)
+        .json({
+          success: false,
+          message:
+            "This user already has an active assignment for this requirement",
+        });
       return;
     }
 
@@ -890,10 +889,12 @@ export const subAssign = async (req: Request, res: Response) => {
       return;
     }
     if (parent.assignedToId !== actorId && !req.user!.isSuperAdmin) {
-      res.status(403).json({
-        success: false,
-        message: "Only the assignee of the parent assignment can sub-assign",
-      });
+      res
+        .status(403)
+        .json({
+          success: false,
+          message: "Only the assignee of the parent assignment can sub-assign",
+        });
       return;
     }
 
@@ -906,11 +907,13 @@ export const subAssign = async (req: Request, res: Response) => {
       },
     });
     if (existing) {
-      res.status(409).json({
-        success: false,
-        message:
-          "This user already has an active sub-assignment under this assignment",
-      });
+      res
+        .status(409)
+        .json({
+          success: false,
+          message:
+            "This user already has an active sub-assignment under this assignment",
+        });
       return;
     }
 
@@ -1071,10 +1074,6 @@ export const removeAssignment = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /assignments/:id/pipeline
-// Full-fat candidate rows — same richness as requirement candidates endpoint.
-// Supports: stageId filter, disposition filter, activeOnly, search, pagination.
-// Returns candidateStats summary (from stored PIPELINE_SELECT_FOR_STATS data)
-// and pipelineStages list so the frontend can render the stage sidebar.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getAssignmentPipeline = async (req: Request, res: Response) => {
@@ -1082,7 +1081,7 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
     const { id } = req.params;
     const {
       disposition,
-      stageId, // filter by actual pipeline stage id
+      stageId,
       activeOnly,
       search,
       page = "1",
@@ -1092,7 +1091,6 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    // Verify assignment exists and pull stats data in one shot
     const assignment = await prisma.requirementAssignment.findUnique({
       where: { id },
       select: {
@@ -1106,7 +1104,6 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
             serviceLine: { select: { id: true, name: true } },
           },
         },
-        // fetch ALL pipelines under this assignment for stats computation
         pipelines: { select: PIPELINE_SELECT_FOR_STATS },
       },
     });
@@ -1116,15 +1113,10 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Build candidate filter ─────────────────────────────────────────────
     const where: any = { assignmentId: id };
-
     if (disposition) where.disposition = disposition;
     if (stageId) where.currentStageId = stageId;
-
-    if (activeOnly === "true") {
-      where.disposition = "ACTIVE";
-    }
+    if (activeOnly === "true") where.disposition = "ACTIVE";
 
     if (search?.trim()) {
       where.snapshot = {
@@ -1138,7 +1130,6 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
       };
     }
 
-    // ── Fetch paginated candidates + total ─────────────────────────────────
     const [total, pipelines] = await Promise.all([
       prisma.requirementCandidatePipeline.count({ where }),
       prisma.requirementCandidatePipeline.findMany({
@@ -1150,13 +1141,8 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
       }),
     ]);
 
-    // ── Fetch all pipeline stages for this service line (for sidebar) ──────
-    const serviceLineId = assignment.requirement?.serviceLine?.id;
     const pipelineStages = await prisma.pipelineStage.findMany({
-      where: {
-        ...(serviceLineId ? { serviceLineId } : {}),
-        isActive: true,
-      },
+      where: { isActive: true },
       select: {
         id: true,
         code: true,
@@ -1169,15 +1155,11 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
 
-    // ── Compute stats from stored pipeline rows ────────────────────────────
     const candidateStats = computePipelineStats(assignment.pipelines ?? []);
-
-    // ── Shape rows (fix Stage N/A, attach aging) ───────────────────────────
-    const shaped = pipelines.map(shapePipelineRow);
 
     res.json({
       success: true,
-      data: shaped,
+      data: pipelines.map(shapePipelineRow),
       candidateStats,
       pipelineStages,
       requirement: assignment.requirement,

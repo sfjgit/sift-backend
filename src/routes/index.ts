@@ -16,6 +16,7 @@ import internalRoutes from "@/routes/internal.routes";
 import moduleRoutes from "./module.routes";
 import jdRoutes from "./jd.routes";
 import assignmentRoutes from "./assignment.routes";
+import candidateRoutes from "./candidate.routes";
 
 const router = Router();
 
@@ -35,5 +36,6 @@ router.use("/requirements", requirementRoutes);
 router.use("/pipeline", pipelineRoutes);
 router.use("/pipeline-stages", pipelineStageRoutes);
 router.use("/assignments", assignmentRoutes);
+router.use("/candidates", candidateRoutes); // ← new, clean, no nesting
 
 export default router;
