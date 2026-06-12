@@ -15,6 +15,100 @@ import type {
   SetDispositionInput,
 } from "@/validators/candidate.validator";
 
+// File: candidate.controller.ts (addition)
+// Path: src/controller/candidate.controller.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /candidates/meta
+// Returns dynamic metadata for the candidates module:
+//   - canonicalStages: distinct canonical stage keys that have at least one
+//     active PipelineStage mapped to them, with aggregated display info
+//   - pipelineStages: all active PipelineStage rows (flat list, ordered)
+// Frontend must NEVER hardcode canonical stage keys — always pull from here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// File: candidate.controller.ts
+// Path: src/controller/candidate.controller.ts
+
+// File: candidate.controller.ts (addition)
+// Path: src/controller/candidate.controller.ts
+
+import { CanonicalStage } from "@prisma/client";
+
+// GET /candidates/canonical-stages
+// Reads directly from Prisma's generated enum — zero DB query.
+export const getCanonicalStages = async (_req: Request, res: Response) => {
+  try {
+    const values = Object.values(CanonicalStage);
+    res.json({ success: true, data: values });
+  } catch (err) {
+    console.error("getCanonicalStages:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch canonical stages" });
+  }
+};
+
+export const getCandidateMeta = async (req: Request, res: Response) => {
+  try {
+    const pipelineStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        canonicalStage: true,
+        isMandatory: true,
+        isTerminal: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // Group pipeline stage IDs by their canonicalStage key
+    type CanonicalEntry = { key: string; pipelineStageIds: string[] };
+    const canonicalMap = new Map<string, CanonicalEntry>();
+
+    for (const stage of pipelineStages) {
+      if (!stage.canonicalStage) continue;
+      if (!canonicalMap.has(stage.canonicalStage)) {
+        canonicalMap.set(stage.canonicalStage, {
+          key: stage.canonicalStage,
+          pipelineStageIds: [],
+        });
+      }
+      canonicalMap.get(stage.canonicalStage)!.pipelineStageIds.push(stage.id);
+    }
+
+    const { requirementId } = req.query as { requirementId?: string };
+
+    const canonicalStages = await Promise.all(
+      Array.from(canonicalMap.values()).map(async (entry) => {
+        if (!requirementId) return entry;
+
+        const count = await prisma.requirementCandidatePipeline.count({
+          where: {
+            requirementId,
+            currentStageId: { in: entry.pipelineStageIds },
+          },
+        });
+
+        return { ...entry, count };
+      })
+    );
+
+    res.json({
+      success: true,
+      data: { canonicalStages, pipelineStages },
+    });
+  } catch (err) {
+    console.error("getCandidateMeta:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch candidate meta" });
+  }
+};
 // ─────────────────────────────────────────────────────────────────────────────
 // SELECTS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -607,12 +701,10 @@ export const moveToStage = async (req: Request, res: Response) => {
       return;
     }
     if (body.stageId === current.currentStageId) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: "Candidate is already in this stage",
-        });
+      res.status(400).json({
+        success: false,
+        message: "Candidate is already in this stage",
+      });
       return;
     }
 

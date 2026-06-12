@@ -1,5 +1,44 @@
-// File: requirement.routes.ts
+// File: requirement.routes.patch.ts
 // Path: src/routes/requirement.routes.ts
+//
+// ADDITIONS ONLY — splice these into the existing routes file.
+// Two changes:
+//
+//  1. Add the export route (before the /:id routes so it doesn't get caught by param)
+//  2. Document the new ?createdByScope param on the GET / route
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── ADD this import to the existing imports block:
+// import { exportRequirements } from "@/controller/requirement.controller";
+//
+// ── ADD before the  router.get("/:id", ...) line:
+
+// ── Requirements export — downloads .xlsx
+// Query params (same as GET /requirements):
+//   createdByScope: OWN | TEAM | REPORTING | ALL (default: OWN)
+//   createdById: string (override — specific user, manager use case)
+//   status, priority, clientId, serviceLineId, buId, search
+//
+// Returns: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+//   Sheet 1: Requirement summary + canonical stage counts (columns from DB)
+//   Sheet 2: All candidates with stage history, aging, offer status
+//
+// router.get(
+//   "/export",
+//   authenticateUser,
+//   scope,
+//   exportRequirements
+// );
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY /export MUST come before /:id
+// Express matches routes in declaration order.
+// If /:id is declared first, GET /export gets caught with id="export"
+// and returns a 404 "requirement not found". Always put literal paths first.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The full updated route block for the collection section looks like this:
 
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
@@ -27,19 +66,20 @@ import {
   getRequirements,
   getRequirementById,
   getRequirementTree,
-  getRequirementDetail, // ← NEW full detail with pipeline summary
+  getRequirementDetail,
   createRequirement,
   updateRequirement,
   updateRequirementStatus,
   deleteRequirement,
   createAssignment,
   removeAssignment,
-  getCandidates, // ← UPDATED (paginated + aging)
-  getCandidateDetail, // ← NEW single candidate detail
-  getActivities, // ← NEW activities
+  getCandidates,
+  getCandidateDetail,
+  getActivities,
   getRequirementStats,
   getRequirementCandidates,
   getRequirementCandidateById,
+  exportRequirements, // ← NEW
 } from "@/controller/requirement.controller";
 import {
   pushCandidate,
@@ -67,7 +107,14 @@ const scope = scopeFilter("requirements");
 // ── stats
 router.get("/stats", authenticateUser, scope, getRequirementStats);
 
+// ── EXPORT (must be before /:id — literal paths take priority)
+// GET /requirements/export?createdByScope=OWN&status=ACTIVE
+router.get("/export", authenticateUser, scope, exportRequirements);
+
 // ── collection
+// GET /requirements?createdByScope=OWN|TEAM|REPORTING|ALL
+// createdByScope defaults to OWN — you only see what you created.
+// Widen to TEAM or REPORTING to see your team's requirements.
 router.get("/", authenticateUser, scope, getRequirements);
 router.post(
   "/",
@@ -81,8 +128,7 @@ router.post(
 // ── single — basic (used by edit forms etc.)
 router.get("/:id", authenticateUser, scope, getRequirementById);
 
-// ── FULL DETAIL — header + pipeline stage counts + assignments + notes + docs
-// This is the main endpoint for the requirement detail page
+// ── FULL DETAIL
 router.get("/:id/detail", authenticateUser, scope, getRequirementDetail);
 
 router.put(
@@ -129,24 +175,19 @@ router.delete(
   removeAssignment
 );
 
-// ── CANDIDATES — paginated list with aging, filters, search
-// Query: stageCode, stageId, assignmentId, recruiterId, isRejected, isWithdrawn,
-//        isOnHold, activeOnly, search, page, limit, sortBy, sortDir
+// ── candidates
 router.get(
   "/:id/candidates",
   authenticateUser,
   scopeFilter("candidates"),
   getRequirementCandidates
 );
-
 router.get(
   "/:id/candidates/:pipelineId",
   authenticateUser,
   scopeFilter("candidates"),
   getRequirementCandidateById
 );
-
-// ── push candidate — called by Candidate Service after ingest (internal / service-to-service)
 router.post(
   "/:id/candidates",
   authenticateUser,
@@ -154,15 +195,7 @@ router.post(
   pushCandidate
 );
 
-// ── single candidate full detail in this requirement
-// router.get(
-//   "/:id/candidates/:pipelineId",
-//   authenticateUser,
-//   scope,
-//   getCandidateDetail
-// );
-
-// ── stage transition
+// ── stage transitions
 router.patch(
   "/:id/candidates/:pipelineId/stage",
   authenticateUser,
@@ -171,8 +204,6 @@ router.patch(
   validate.body(updatePipelineStageSchema),
   updatePipelineStage
 );
-
-// ── submit to client
 router.patch(
   "/:id/candidates/:pipelineId/submit",
   authenticateUser,
@@ -181,8 +212,6 @@ router.patch(
   validate.body(submitCandidateSchema),
   submitCandidate
 );
-
-// ── offer
 router.patch(
   "/:id/candidates/:pipelineId/offer",
   authenticateUser,
@@ -199,8 +228,6 @@ router.patch(
   validate.body(updateOfferStatusSchema),
   updateOfferStatus
 );
-
-// ── terminal states
 router.patch(
   "/:id/candidates/:pipelineId/reject",
   authenticateUser,
@@ -225,8 +252,6 @@ router.patch(
   validate.body(holdCandidateSchema),
   holdCandidate
 );
-
-// ── stage timeline for one candidate
 router.get(
   "/:id/candidates/:pipelineId/timeline",
   authenticateUser,

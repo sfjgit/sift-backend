@@ -1332,262 +1332,262 @@ import { PermissionScope } from "@prisma/client";
 //   return [userId, ...reportees.map((u) => u.id)];
 // }
 
-export const getRequirements = async (req: Request, res: Response) => {
-  try {
-    const {
-      search,
-      status,
-      buId,
-      serviceLineId,
-      clientId,
-      priority,
-      page = "1",
-      limit = "25",
-      sortBy = "createdAt",
-      sortDir = "desc",
-    } = req.query as Record<string, string>;
+// export const getRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       priority,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "createdAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
 
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope =
+//       req.modulePermission?.canViewScope ?? PermissionScope.OWN;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = Math.min(parseInt(limit), 100);
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
 
-    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-    const where: any = { ...scopeWhere, deletedAt: null };
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+//     const where: any = { ...scopeWhere, deletedAt: null };
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (clientId) where.clientId = clientId;
-    if (serviceLineId) where.serviceLineId = serviceLineId;
-    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-    if (search) {
-      where.AND = [
-        ...(where.AND ?? []),
-        {
-          OR: [
-            { title: { contains: search, mode: "insensitive" } },
-            { reqCode: { contains: search, mode: "insensitive" } },
-            { skills: { has: search } },
-          ],
-        },
-      ];
-    }
+//     if (status) where.status = status;
+//     if (priority) where.priority = priority;
+//     if (clientId) where.clientId = clientId;
+//     if (serviceLineId) where.serviceLineId = serviceLineId;
+//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+//     if (search) {
+//       where.AND = [
+//         ...(where.AND ?? []),
+//         {
+//           OR: [
+//             { title: { contains: search, mode: "insensitive" } },
+//             { reqCode: { contains: search, mode: "insensitive" } },
+//             { skills: { has: search } },
+//           ],
+//         },
+//       ];
+//     }
 
-    const SORTABLE = [
-      "createdAt",
-      "updatedAt",
-      "respondBy",
-      "priority",
-      "status",
-    ];
-    const orderBy = SORTABLE.includes(sortBy)
-      ? { [sortBy]: sortDir as "asc" | "desc" }
-      : { createdAt: "desc" as const };
+//     const SORTABLE = [
+//       "createdAt",
+//       "updatedAt",
+//       "respondBy",
+//       "priority",
+//       "status",
+//     ];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { createdAt: "desc" as const };
 
-    const [total, requirements] = await Promise.all([
-      prisma.requirement.count({ where }),
-      prisma.requirement.findMany({
-        where,
-        select: {
-          id: true,
-          reqCode: true,
-          title: true,
-          status: true,
-          priority: true,
-          jobType: true,
-          remoteType: true,
-          // location: true,
-          // skills: true,
-          totalOpenings: true,
-          city: true,
-          state: true,
-          country: true,
-          primarySkills: true,
-          keySkills: true,
-          jobOpenFor: true,
-          targetDate: true,
-          closureReason: true,
-          jdParseStatus: true,
-          // filledOpenings: true,
-          // activeApplications: true,
-          // interviewsScheduled: true,
-          // offersRolledOut: true,
-          respondBy: true,
-          isRespondByBreached: true,
-          isTurnaroundBreached: true,
-          createdAt: true,
-          serviceLineId: true,
-          client: { select: { id: true, name: true } },
-          businessUnit: { select: { id: true, name: true } },
-          serviceLine: { select: { id: true, name: true } },
-          clientSpoc: {
-            select: {
-              handler: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-            },
-          },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          assignments: {
-            where: { status: "ACTIVE" },
-            select: {
-              id: true,
-              depth: true,
-              allocatedOpenings: true,
-              deadline: true,
-              assignedTo: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-            },
-            orderBy: { depth: "asc" },
-          },
-          _count: { select: { pipelines: true, assignments: true } },
-        },
-        orderBy,
-        skip,
-        take,
-      }),
-    ]);
+//     const [total, requirements] = await Promise.all([
+//       prisma.requirement.count({ where }),
+//       prisma.requirement.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           reqCode: true,
+//           title: true,
+//           status: true,
+//           priority: true,
+//           jobType: true,
+//           remoteType: true,
+//           // location: true,
+//           // skills: true,
+//           totalOpenings: true,
+//           city: true,
+//           state: true,
+//           country: true,
+//           primarySkills: true,
+//           keySkills: true,
+//           jobOpenFor: true,
+//           targetDate: true,
+//           closureReason: true,
+//           jdParseStatus: true,
+//           // filledOpenings: true,
+//           // activeApplications: true,
+//           // interviewsScheduled: true,
+//           // offersRolledOut: true,
+//           respondBy: true,
+//           isRespondByBreached: true,
+//           isTurnaroundBreached: true,
+//           createdAt: true,
+//           serviceLineId: true,
+//           client: { select: { id: true, name: true } },
+//           businessUnit: { select: { id: true, name: true } },
+//           serviceLine: { select: { id: true, name: true } },
+//           clientSpoc: {
+//             select: {
+//               handler: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//           },
+//           createdBy: { select: { id: true, firstName: true, lastName: true } },
+//           assignments: {
+//             where: { status: "ACTIVE" },
+//             select: {
+//               id: true,
+//               depth: true,
+//               allocatedOpenings: true,
+//               deadline: true,
+//               assignedTo: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//             orderBy: { depth: "asc" },
+//           },
+//           _count: { select: { pipelines: true, assignments: true } },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
 
-    if (!requirements.length) {
-      return res.json({
-        success: true,
-        data: [],
-        meta: {
-          total,
-          page: parseInt(page),
-          limit: take,
-          pages: Math.ceil(total / take),
-        },
-        permissions: {
-          canAdd: req.modulePermission.canAdd,
-          canEdit: req.modulePermission.canEdit,
-          canDelete: req.modulePermission.canDelete,
-        },
-      });
-    }
+//     if (!requirements.length) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         meta: {
+//           total,
+//           page: parseInt(page),
+//           limit: take,
+//           pages: Math.ceil(total / take),
+//         },
+//         permissions: {
+//           canAdd: req.modulePermission.canAdd,
+//           canEdit: req.modulePermission.canEdit,
+//           canDelete: req.modulePermission.canDelete,
+//         },
+//       });
+//     }
 
-    // ── Split requirements into two buckets:
-    //    1. createdByMe  → show full pipeline counts (no recruiter filter)
-    //    2. assignedOnly → filter pipeline counts by scope-derived recruiter IDs
-    const reqIds = requirements.map((r) => r.id);
-    const createdByMeIds = new Set(
-      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
-    );
-    const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+//     // ── Split requirements into two buckets:
+//     //    1. createdByMe  → show full pipeline counts (no recruiter filter)
+//     //    2. assignedOnly → filter pipeline counts by scope-derived recruiter IDs
+//     const reqIds = requirements.map((r) => r.id);
+//     const createdByMeIds = new Set(
+//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+//     );
+//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
 
-    // ── Resolve visible recruiter IDs for scope-filtered bucket (one DB call)
-    const visibleRecruiterIds = await getVisibleRecruiterIds(
-      userId,
-      isSuperAdmin,
-      canViewScope
-    );
+//     // ── Resolve visible recruiter IDs for scope-filtered bucket (one DB call)
+//     const visibleRecruiterIds = await getVisibleRecruiterIds(
+//       userId,
+//       isSuperAdmin,
+//       canViewScope
+//     );
 
-    // ── Fetch pipeline stages lookup
-    const allStages = await prisma.pipelineStage.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        code: true,
-        label: true,
-        order: true,
-        serviceLineId: true,
-      },
-      orderBy: { order: "asc" },
-    });
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+//     // ── Fetch pipeline stages lookup
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
 
-    // ── Run both groupBy queries in parallel
-    const [fullCounts, scopedCounts] = await Promise.all([
-      // Bucket 1 — created by me: no recruiter filter, full counts
-      createdByMeIds.size > 0
-        ? prisma.requirementCandidatePipeline.groupBy({
-            by: ["requirementId", "currentStageId"],
-            where: { requirementId: { in: [...createdByMeIds] } },
-            _count: { id: true },
-          })
-        : Promise.resolve([]),
+//     // ── Run both groupBy queries in parallel
+//     const [fullCounts, scopedCounts] = await Promise.all([
+//       // Bucket 1 — created by me: no recruiter filter, full counts
+//       createdByMeIds.size > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: { requirementId: { in: [...createdByMeIds] } },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
 
-      // Bucket 2 — assigned only: recruiter-filtered counts
-      assignedOnlyIds.length > 0
-        ? prisma.requirementCandidatePipeline.groupBy({
-            by: ["requirementId", "currentStageId"],
-            where: {
-              requirementId: { in: assignedOnlyIds },
-              // null visibleRecruiterIds means ALL scope — no filter
-              ...(visibleRecruiterIds !== null
-                ? { recruiterId: { in: visibleRecruiterIds } }
-                : {}),
-            },
-            _count: { id: true },
-          })
-        : Promise.resolve([]),
-    ]);
+//       // Bucket 2 — assigned only: recruiter-filtered counts
+//       assignedOnlyIds.length > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: {
+//               requirementId: { in: assignedOnlyIds },
+//               // null visibleRecruiterIds means ALL scope — no filter
+//               ...(visibleRecruiterIds !== null
+//                 ? { recruiterId: { in: visibleRecruiterIds } }
+//                 : {}),
+//             },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//     ]);
 
-    // ── Merge both result sets into countsByReq
-    type StageCount = {
-      stageId: string;
-      code: string;
-      label: string;
-      order: number;
-      count: number;
-    };
+//     // ── Merge both result sets into countsByReq
+//     type StageCount = {
+//       stageId: string;
+//       code: string;
+//       label: string;
+//       order: number;
+//       count: number;
+//     };
 
-    const countsByReq: Record<string, StageCount[]> = {};
+//     const countsByReq: Record<string, StageCount[]> = {};
 
-    const pushToCountsByReq = (rows: typeof fullCounts) => {
-      for (const sc of rows as any[]) {
-        const stage = stageById[sc.currentStageId];
-        if (!stage) continue;
-        if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
-        countsByReq[sc.requirementId].push({
-          stageId: sc.currentStageId,
-          code: stage.code,
-          label: stage.label,
-          order: stage.order,
-          count: sc._count.id,
-        });
-      }
-    };
+//     const pushToCountsByReq = (rows: typeof fullCounts) => {
+//       for (const sc of rows as any[]) {
+//         const stage = stageById[sc.currentStageId];
+//         if (!stage) continue;
+//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+//         countsByReq[sc.requirementId].push({
+//           stageId: sc.currentStageId,
+//           code: stage.code,
+//           label: stage.label,
+//           order: stage.order,
+//           count: sc._count.id,
+//         });
+//       }
+//     };
 
-    pushToCountsByReq(fullCounts);
-    pushToCountsByReq(scopedCounts);
+//     pushToCountsByReq(fullCounts);
+//     pushToCountsByReq(scopedCounts);
 
-    // Sort each req's stages by order
-    for (const key of Object.keys(countsByReq)) {
-      countsByReq[key].sort((a, b) => a.order - b.order);
-    }
+//     // Sort each req's stages by order
+//     for (const key of Object.keys(countsByReq)) {
+//       countsByReq[key].sort((a, b) => a.order - b.order);
+//     }
 
-    const enrichedRequirements = requirements.map((r) => ({
-      ...r,
-      pipelineStageCounts: countsByReq[r.id] ?? [],
-    }));
+//     const enrichedRequirements = requirements.map((r) => ({
+//       ...r,
+//       pipelineStageCounts: countsByReq[r.id] ?? [],
+//     }));
 
-    res.json({
-      success: true,
-      data: enrichedRequirements,
-      meta: {
-        total,
-        page: parseInt(page),
-        limit: take,
-        pages: Math.ceil(total / take),
-      },
-      permissions: {
-        canAdd: req.modulePermission.canAdd,
-        canEdit: req.modulePermission.canEdit,
-        canDelete: req.modulePermission.canDelete,
-      },
-    });
-  } catch (err) {
-    console.error("getRequirements:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch requirements" });
-  }
-};
+//     res.json({
+//       success: true,
+//       data: enrichedRequirements,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//       permissions: {
+//         canAdd: req.modulePermission.canAdd,
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirements:", err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch requirements" });
+//   }
+// };
 
 // File: requirements.controller.ts
 // Path: src/controllers/requirements.controller.ts
@@ -2476,33 +2476,33 @@ function computeAging(from: Date): { minutes: number; label: string } {
   return { minutes: totalMins, label };
 }
 
-async function getVisibleRecruiterIds(
-  userId: string,
-  isSuperAdmin: boolean,
-  canViewScope: PermissionScope
-): Promise<string[] | null> {
-  if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
-  if (canViewScope === PermissionScope.OWN) return [userId];
-  if (canViewScope === PermissionScope.TEAM) {
-    const teamMembers = await prisma.user.findMany({
-      where: { teamLeadId: userId, isActive: true },
-      select: { id: true },
-    });
-    return [userId, ...teamMembers.map((u) => u.id)];
-  }
-  if (canViewScope === PermissionScope.REPORTING) {
-    const reportees = await prisma.user.findMany({
-      where: { reportingToId: userId, isActive: true },
-      select: { id: true },
-    });
-    return [userId, ...reportees.map((u) => u.id)];
-  }
-  const reportees = await prisma.user.findMany({
-    where: { reportingToId: userId, isActive: true },
-    select: { id: true },
-  });
-  return [userId, ...reportees.map((u) => u.id)];
-}
+// async function getVisibleRecruiterIds(
+//   userId: string,
+//   isSuperAdmin: boolean,
+//   canViewScope: PermissionScope
+// ): Promise<string[] | null> {
+//   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
+//   if (canViewScope === PermissionScope.OWN) return [userId];
+//   if (canViewScope === PermissionScope.TEAM) {
+//     const teamMembers = await prisma.user.findMany({
+//       where: { teamLeadId: userId, isActive: true },
+//       select: { id: true },
+//     });
+//     return [userId, ...teamMembers.map((u) => u.id)];
+//   }
+//   if (canViewScope === PermissionScope.REPORTING) {
+//     const reportees = await prisma.user.findMany({
+//       where: { reportingToId: userId, isActive: true },
+//       select: { id: true },
+//     });
+//     return [userId, ...reportees.map((u) => u.id)];
+//   }
+//   const reportees = await prisma.user.findMany({
+//     where: { reportingToId: userId, isActive: true },
+//     select: { id: true },
+//   });
+//   return [userId, ...reportees.map((u) => u.id)];
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /requirements/:id/candidates
@@ -3151,3 +3151,1023 @@ export const getCandidateDetail = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch candidate detail" });
   }
 };
+
+// File: requirement.controller.ts
+// Path: src/controller/requirement.controller.ts
+//
+// CHANGES IN THIS PATCH:
+//
+// 1. getRequirements — scope default changed from "assigned to me" view to
+//    "created by me + my reporting line" view. New query param `createdByScope`
+//    controls this:
+//      - "OWN"       → only requirements I created (default)
+//      - "TEAM"      → mine + team members I lead
+//      - "REPORTING" → mine + direct reportees
+//      - "ALL"       → superAdmin only
+//
+// 2. exportRequirements — new controller. Returns:
+//      - Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+//      - Sheet 1: Requirements summary with canonical stage counts
+//      - Sheet 2: All candidates across those requirements with full history + aging
+//
+// 3. Canonical stages are NEVER hardcoded. All stage labels/codes come from
+//    prisma.pipelineStage and CanonicalStage enum from @prisma/client.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+// import prisma from "@/utils/prisma/client";
+// import { Request, Response } from "express";
+// import { PermissionScope, CanonicalStage } from "@prisma/client";
+// import {
+//   generateReqCode,
+//   getRequirementScopeWhere,
+// } from "@/services/requirementService";
+// import { getSubordinateIds } from "@/services/orgService";
+import ExcelJS from "exceljs";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL: getVisibleRecruiterIds (scope filter for pipeline counts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/export
+//
+// Downloads an Excel workbook (.xlsx) with two sheets:
+//
+// Sheet 1 — Requirements summary
+//   Columns: Req Code | Title | Status | Priority | Client | BU | Service Line |
+//            City | Country | Job Type | Remote | Total Openings | Created By |
+//            Created At | Days Open | Respond By | Breached? |
+//            + one column per canonical stage (from DB, never hardcoded)
+//
+// Sheet 2 — Candidates
+//   Columns: Req Code | Req Title | Candidate Name | Email | Phone |
+//            Current Title | Current Company | Exp (yrs) | Top Skills |
+//            Current Stage | Canonical Stage | Recruiter |
+//            Added On | Days in Current Stage | Total Pipeline Days |
+//            Is Rejected | Is Withdrawn | Is On Hold |
+//            Submitted At | Offer Status | Actual Joining Date
+//
+// Respects the same createdByScope + filters as getRequirements.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getVisibleRecruiterIds(
+  userId: string,
+  isSuperAdmin: boolean,
+  canViewScope: PermissionScope
+): Promise<string[] | null> {
+  if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
+  if (canViewScope === PermissionScope.OWN) return [userId];
+  if (canViewScope === PermissionScope.TEAM) {
+    const teamMembers = await prisma.user.findMany({
+      where: { teamLeadId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...teamMembers.map((u) => u.id)];
+  }
+  if (canViewScope === PermissionScope.REPORTING) {
+    const reportees = await prisma.user.findMany({
+      where: { reportingToId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...reportees.map((u) => u.id)];
+  }
+  const reportees = await prisma.user.findMany({
+    where: { reportingToId: userId, isActive: true },
+    select: { id: true },
+  });
+  return [userId, ...reportees.map((u) => u.id)];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL: getCreatorScopeUserIds
+//
+// Controls WHICH requirements are visible based on who created them.
+// This is the new "creator scope" — separate from the pipeline count scope.
+//
+//   "OWN"       → [userId]
+//   "TEAM"      → userId + users whose teamLeadId = userId
+//   "REPORTING" → userId + direct reportees (reportingToId = userId)
+//   "ALL"       → null (no filter — superAdmin only)
+//
+// Returns null when no filter should be applied.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getCreatorScopeUserIds(
+  userId: string,
+  isSuperAdmin: boolean,
+  createdByScope: string
+): Promise<string[] | null> {
+  // Only ALL scope (explicit opt-in) removes the creator filter entirely.
+  // isSuperAdmin does NOT auto-bypass — even a superAdmin clicking "Mine"
+  // should only see requirements they personally created.
+  if (createdByScope === "ALL") return null;
+
+  if (createdByScope === "OWN") {
+    return [userId];
+  }
+
+  if (createdByScope === "TEAM") {
+    const teamMembers = await prisma.user.findMany({
+      where: { teamLeadId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...teamMembers.map((u) => u.id)];
+  }
+
+  if (createdByScope === "REPORTING") {
+    // Direct reportees (reportingToId = userId) — typically recruiters under a DM
+    const reportees = await prisma.user.findMany({
+      where: { reportingToId: userId, isActive: true },
+      select: { id: true },
+    });
+    return [userId, ...reportees.map((u) => u.id)];
+  }
+
+  // Default fallback: OWN
+  return [userId];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL: formatAging — minutes → human label
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatAging(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d`;
+  return `${Math.floor(d / 30)}mo`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements
+//
+// KEY CHANGE: default scope is now "requirements I created" (OWN).
+// Use query param `createdByScope` to widen:
+//   ?createdByScope=TEAM       → mine + team
+//   ?createdByScope=REPORTING  → mine + reportees
+//   ?createdByScope=ALL        → all (superAdmin only)
+//
+// The existing pipeline count scoping (canViewScope from RBAC) still controls
+// which candidate counts are shown — that has NOT changed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRequirements = async (req: Request, res: Response) => {
+  try {
+    const {
+      search,
+      status,
+      buId,
+      serviceLineId,
+      clientId,
+      priority,
+      // NEW: which creators to show requirements for (default OWN)
+      createdByScope = "OWN",
+      // NEW: filter by a specific creator userId (superAdmin or manager use case)
+      createdById,
+      page = "1",
+      limit = "25",
+      sortBy = "createdAt",
+      sortDir = "desc",
+    } = req.query as Record<string, string>;
+
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const canViewScope: PermissionScope =
+      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = Math.min(parseInt(limit), 100);
+
+    // ── Base scope: requirements accessible to this user (existing service)
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const where: any = { ...scopeWhere, deletedAt: null };
+
+    // ── Creator scope filter (NEW default behaviour)
+    // If a specific createdById is passed, use that directly.
+    // Otherwise, compute the set of userIds based on createdByScope.
+    if (createdById) {
+      // Direct filter — manager looking at a specific person's requirements
+      where.createdById = createdById;
+    } else {
+      const creatorIds = await getCreatorScopeUserIds(
+        userId,
+        isSuperAdmin,
+        createdByScope
+      );
+      if (creatorIds !== null) {
+        // Apply creator filter — only requirements made by these users
+        where.createdById = { in: creatorIds };
+      }
+      // null means no filter (ALL / superAdmin)
+    }
+
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (clientId) where.clientId = clientId;
+    if (serviceLineId) where.serviceLineId = serviceLineId;
+    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    if (search) {
+      where.AND = [
+        ...(where.AND ?? []),
+        {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { reqCode: { contains: search, mode: "insensitive" } },
+            { primarySkills: { has: search } },
+            { keySkills: { has: search } },
+          ],
+        },
+      ];
+    }
+
+    const SORTABLE = [
+      "createdAt",
+      "updatedAt",
+      "respondBy",
+      "priority",
+      "status",
+    ];
+    const orderBy = SORTABLE.includes(sortBy)
+      ? { [sortBy]: sortDir as "asc" | "desc" }
+      : { createdAt: "desc" as const };
+
+    const [total, requirements] = await Promise.all([
+      prisma.requirement.count({ where }),
+      prisma.requirement.findMany({
+        where,
+        select: {
+          id: true,
+          reqCode: true,
+          title: true,
+          status: true,
+          priority: true,
+          jobType: true,
+          remoteType: true,
+          totalOpenings: true,
+          city: true,
+          state: true,
+          country: true,
+          primarySkills: true,
+          keySkills: true,
+          jobOpenFor: true,
+          targetDate: true,
+          closureReason: true,
+          jdParseStatus: true,
+          respondBy: true,
+          isRespondByBreached: true,
+          isTurnaroundBreached: true,
+          createdAt: true,
+          serviceLineId: true,
+          client: { select: { id: true, name: true } },
+          businessUnit: { select: { id: true, name: true } },
+          serviceLine: { select: { id: true, name: true } },
+          clientSpoc: {
+            select: {
+              handler: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+            },
+          },
+          createdBy: { select: { id: true, firstName: true, lastName: true } },
+          assignments: {
+            where: { status: "ACTIVE" },
+            select: {
+              id: true,
+              depth: true,
+              allocatedOpenings: true,
+              deadline: true,
+              assignedTo: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+            },
+            orderBy: { depth: "asc" },
+          },
+          _count: { select: { pipelines: true, assignments: true } },
+        },
+        orderBy,
+        skip,
+        take,
+      }),
+    ]);
+
+    if (!requirements.length) {
+      return res.json({
+        success: true,
+        data: [],
+        meta: {
+          total,
+          page: parseInt(page),
+          limit: take,
+          pages: Math.ceil(total / take),
+        },
+        permissions: {
+          canAdd: req.modulePermission.canAdd,
+          canEdit: req.modulePermission.canEdit,
+          canDelete: req.modulePermission.canDelete,
+        },
+      });
+    }
+
+    // ── Pipeline stage counts (existing two-bucket logic, unchanged)
+    const reqIds = requirements.map((r) => r.id);
+    const createdByMeIds = new Set(
+      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+    );
+    const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+
+    const visibleRecruiterIds = await getVisibleRecruiterIds(
+      userId,
+      isSuperAdmin,
+      canViewScope
+    );
+
+    const allStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+        canonicalStage: true,
+      },
+      orderBy: { order: "asc" },
+    });
+    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+    const [fullCounts, scopedCounts] = await Promise.all([
+      createdByMeIds.size > 0
+        ? prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: { requirementId: { in: [...createdByMeIds] } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+      assignedOnlyIds.length > 0
+        ? prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: {
+              requirementId: { in: assignedOnlyIds },
+              ...(visibleRecruiterIds !== null
+                ? { recruiterId: { in: visibleRecruiterIds } }
+                : {}),
+            },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    type StageCount = {
+      stageId: string;
+      code: string;
+      label: string;
+      order: number;
+      canonicalStage: string | null;
+      count: number;
+    };
+
+    const countsByReq: Record<string, StageCount[]> = {};
+
+    const pushToCountsByReq = (rows: any[]) => {
+      for (const sc of rows) {
+        const stage = stageById[sc.currentStageId];
+        if (!stage) continue;
+        if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+        countsByReq[sc.requirementId].push({
+          stageId: sc.currentStageId,
+          code: stage.code,
+          label: stage.label,
+          order: stage.order,
+          canonicalStage: stage.canonicalStage ?? null,
+          count: sc._count.id,
+        });
+      }
+    };
+
+    pushToCountsByReq(fullCounts as any[]);
+    pushToCountsByReq(scopedCounts as any[]);
+
+    for (const key of Object.keys(countsByReq)) {
+      countsByReq[key].sort((a, b) => a.order - b.order);
+    }
+
+    // ── Aggregate canonical stage counts per requirement.
+    // All canonical stage keys from DB are included (even zeros) so the
+    // frontend table always has consistent columns regardless of candidate counts.
+    const allCanonicalKeys: string[] = await prisma.pipelineStage
+      .findMany({
+        where: { isActive: true, canonicalStage: { not: null } },
+        select: { canonicalStage: true },
+        distinct: ["canonicalStage"],
+        orderBy: { order: "asc" },
+      })
+      .then((rows) =>
+        rows
+          .map((r) => r.canonicalStage!)
+          .filter((v, i, a) => a.indexOf(v) === i)
+      );
+
+    const canonicalCountsByReq: Record<string, Record<string, number>> = {};
+
+    for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
+      // Start with all keys at zero — never hardcoded, pulled from DB
+      const canonical: Record<string, number> = Object.fromEntries(
+        allCanonicalKeys.map((k) => [k, 0])
+      );
+      for (const sc of stageCounts) {
+        if (!sc.canonicalStage) continue;
+        canonical[sc.canonicalStage] =
+          (canonical[sc.canonicalStage] ?? 0) + sc.count;
+      }
+      canonicalCountsByReq[reqId] = canonical;
+    }
+
+    // Requirements with zero candidates also get full zero-filled canonical map
+    for (const r of requirements) {
+      if (!canonicalCountsByReq[r.id]) {
+        canonicalCountsByReq[r.id] = Object.fromEntries(
+          allCanonicalKeys.map((k) => [k, 0])
+        );
+      }
+    }
+
+    const enrichedRequirements = requirements.map((r) => ({
+      ...r,
+      pipelineStageCounts: countsByReq[r.id] ?? [],
+      // Canonical stage rollup — dynamic, never hardcoded
+      canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
+    }));
+
+    return res.json({
+      success: true,
+      data: enrichedRequirements,
+      meta: {
+        total,
+        page: parseInt(page),
+        limit: take,
+        pages: Math.ceil(total / take),
+      },
+      // Echo back the active scope so the frontend scope switcher reflects
+      // the current state. isSuperAdmin is exposed separately.
+      scope: {
+        createdByScope,
+        canViewScope,
+        isSuperAdmin,
+      },
+      permissions: {
+        canAdd: req.modulePermission.canAdd,
+        canEdit: req.modulePermission.canEdit,
+        canDelete: req.modulePermission.canDelete,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirements:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch requirements" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/export
+//
+// Downloads an Excel workbook (.xlsx) with two sheets:
+//
+// Sheet 1 — Requirements summary
+//   Columns: Req Code | Title | Status | Priority | Client | BU | Service Line |
+//            City | Country | Job Type | Remote | Total Openings | Created By |
+//            Created At | Days Open | Respond By | Breached? |
+//            + one column per canonical stage (from DB, never hardcoded)
+//
+// Sheet 2 — Candidates
+//   Columns: Req Code | Req Title | Candidate Name | Email | Phone |
+//            Current Title | Current Company | Exp (yrs) | Top Skills |
+//            Current Stage | Canonical Stage | Recruiter |
+//            Added On | Days in Current Stage | Total Pipeline Days |
+//            Is Rejected | Is Withdrawn | Is On Hold |
+//            Submitted At | Offer Status | Actual Joining Date
+//
+// Respects the same createdByScope + filters as getRequirements.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const exportRequirements = async (req: Request, res: Response) => {
+  try {
+    const {
+      search,
+      status,
+      buId,
+      serviceLineId,
+      clientId,
+      priority,
+      createdByScope = "OWN",
+      createdById,
+    } = req.query as Record<string, string>;
+
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // ── Build same where clause as getRequirements (no pagination)
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const where: any = { ...scopeWhere, deletedAt: null };
+
+    if (createdById) {
+      where.createdById = createdById;
+    } else {
+      const creatorIds = await getCreatorScopeUserIds(
+        userId,
+        isSuperAdmin,
+        createdByScope
+      );
+      if (creatorIds !== null) {
+        where.createdById = { in: creatorIds };
+      }
+    }
+
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (clientId) where.clientId = clientId;
+    if (serviceLineId) where.serviceLineId = serviceLineId;
+    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    if (search) {
+      where.AND = [
+        ...(where.AND ?? []),
+        {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { reqCode: { contains: search, mode: "insensitive" } },
+          ],
+        },
+      ];
+    }
+
+    // ── Fetch requirements (no limit for export — capped at 1000 rows)
+    const requirements = await prisma.requirement.findMany({
+      where,
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        priority: true,
+        jobType: true,
+        remoteType: true,
+        totalOpenings: true,
+        city: true,
+        state: true,
+        country: true,
+        respondBy: true,
+        isRespondByBreached: true,
+        isTurnaroundBreached: true,
+        createdAt: true,
+        client: { select: { name: true } },
+        businessUnit: { select: { name: true } },
+        serviceLine: { select: { id: true, name: true } },
+        createdBy: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+    });
+
+    if (!requirements.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No requirements found to export" });
+    }
+
+    const reqIds = requirements.map((r) => r.id);
+
+    // ── Fetch all active pipeline stages from DB — no hardcoding
+    const allStages = await prisma.pipelineStage.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        canonicalStage: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // ── Fetch all canonical stage keys from DB-backed enum
+    // We read the distinct canonicalStage values that actually exist in PipelineStage
+    // so export columns match what's configured — not what's in the Prisma enum.
+    const canonicalStageKeys: string[] = await prisma.pipelineStage
+      .findMany({
+        where: { isActive: true, canonicalStage: { not: null } },
+        select: { canonicalStage: true },
+        distinct: ["canonicalStage"],
+        orderBy: { order: "asc" },
+      })
+      .then((rows) =>
+        rows
+          .map((r) => r.canonicalStage!)
+          .filter((v, i, a) => a.indexOf(v) === i)
+      );
+
+    // ── Fetch pipeline counts grouped by requirementId + currentStageId
+    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
+      by: ["requirementId", "currentStageId"],
+      where: { requirementId: { in: reqIds } },
+      _count: { id: true },
+    });
+
+    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+    // Build canonical count map per requirement
+    // { reqId: { SOURCED: 3, SCREENING: 1, ... } }
+    const canonicalByReq: Record<string, Record<string, number>> = {};
+    for (const sc of stageCounts) {
+      const stage = stageById[(sc as any).currentStageId];
+      if (!stage?.canonicalStage) continue;
+      if (!canonicalByReq[sc.requirementId])
+        canonicalByReq[sc.requirementId] = {};
+      canonicalByReq[sc.requirementId][stage.canonicalStage] =
+        (canonicalByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
+        (sc as any)._count.id;
+    }
+
+    // ── Fetch all pipeline rows for Sheet 2
+    const pipelines = await prisma.requirementCandidatePipeline.findMany({
+      where: { requirementId: { in: reqIds } },
+      select: {
+        id: true,
+        requirementId: true,
+        stageUpdatedAt: true,
+        isRejected: true,
+        isWithdrawn: true,
+        isOnHold: true,
+        submittedAt: true,
+        offerStatus: true,
+        actualJoiningDate: true,
+        createdAt: true,
+        currentStage: {
+          select: { code: true, label: true, canonicalStage: true },
+        },
+        recruiter: { select: { firstName: true, lastName: true } },
+        snapshot: {
+          select: {
+            fullName: true,
+            email: true,
+            phone: true,
+            currentTitle: true,
+            currentCompany: true,
+            totalExpYears: true,
+            topSkills: true,
+          },
+        },
+        stageHistory: {
+          select: { timeInPrevStageMins: true },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    // Build a lookup for requirement basic info
+    const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Build workbook
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "TalentOS";
+    workbook.created = new Date();
+
+    // ── Header style helpers
+    const headerFill: ExcelJS.Fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1E3A5F" },
+    };
+    const headerFont: Partial<ExcelJS.Font> = {
+      color: { argb: "FFFFFFFF" },
+      bold: true,
+      size: 11,
+    };
+    const subHeaderFill: ExcelJS.Fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF2D5986" },
+    };
+
+    const applyHeaderRow = (
+      row: ExcelJS.Row,
+      fill: ExcelJS.Fill = headerFill
+    ) => {
+      row.eachCell((cell) => {
+        cell.fill = fill;
+        cell.font = headerFont;
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: "center",
+          wrapText: true,
+        };
+        cell.border = {
+          bottom: { style: "thin", color: { argb: "FF4A90D9" } },
+        };
+      });
+      row.height = 28;
+    };
+
+    // ── Sheet 1: Requirements summary ──────────────────────────────────────
+
+    const sheet1 = workbook.addWorksheet("Requirements", {
+      views: [{ state: "frozen", ySplit: 2 }],
+    });
+
+    // Fixed columns — date columns get numFmt at column level so Excel shows them correctly
+    const fixedCols = [
+      { header: "Req Code", key: "reqCode", width: 14 },
+      { header: "Title", key: "title", width: 40 },
+      { header: "Status", key: "status", width: 16 },
+      { header: "Priority", key: "priority", width: 12 },
+      { header: "Client", key: "client", width: 24 },
+      { header: "Business Unit", key: "bu", width: 22 },
+      { header: "Service Line", key: "sl", width: 20 },
+      { header: "City", key: "city", width: 16 },
+      { header: "Country", key: "country", width: 14 },
+      { header: "Job Type", key: "jobType", width: 16 },
+      { header: "Remote", key: "remote", width: 12 },
+      { header: "Total Openings", key: "openings", width: 14 },
+      { header: "Created By", key: "createdBy", width: 22 },
+      {
+        header: "Created Date",
+        key: "createdAt",
+        width: 18,
+        numFmt: "dd-mmm-yyyy",
+      },
+      { header: "Days Open", key: "daysOpen", width: 12 },
+      {
+        header: "Respond By",
+        key: "respondBy",
+        width: 18,
+        numFmt: "dd-mmm-yyyy",
+      },
+      { header: "SLA Breached?", key: "breached", width: 14 },
+      { header: "Total Candidates", key: "total", width: 16 },
+    ];
+
+    // Dynamic canonical stage columns — come from DB, never hardcoded.
+    // Header uses title-case label (e.g. "Offer In Progress") not raw enum key.
+    const canonicalCols = canonicalStageKeys.map((key) => ({
+      header: key
+        .split("_")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" "),
+      key: `cs_${key}`,
+      width: 14,
+    }));
+
+    sheet1.columns = [...fixedCols, ...canonicalCols];
+
+    // Group header row (row 1): "Basic Info" spans fixed cols, "Pipeline Stages" spans dynamic cols
+    const basicSpan = fixedCols.length;
+    const stageSpan = canonicalCols.length;
+
+    const groupRow = sheet1.getRow(1);
+    groupRow.getCell(1).value = "Requirement Details";
+    groupRow.getCell(basicSpan + 1).value =
+      stageSpan > 0 ? "Pipeline Stages (from DB)" : "";
+    sheet1.mergeCells(1, 1, 1, basicSpan);
+    if (stageSpan > 0) {
+      sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + stageSpan);
+    }
+    applyHeaderRow(groupRow);
+    groupRow.getCell(basicSpan + 1).fill = subHeaderFill;
+
+    // Column header row (row 2)
+    const colHeaderRow = sheet1.getRow(2);
+    [...fixedCols, ...canonicalCols].forEach((col, i) => {
+      colHeaderRow.getCell(i + 1).value = col.header;
+    });
+    applyHeaderRow(colHeaderRow, subHeaderFill);
+
+    // Data rows (start at row 3)
+    const now = Date.now();
+    for (const req of requirements) {
+      const totalCandidates = Object.values(
+        canonicalByReq[req.id] ?? {}
+      ).reduce((s, n) => s + n, 0);
+      const daysOpen = Math.floor(
+        (now - new Date(req.createdAt).getTime()) / 86400000
+      );
+
+      const rowData: Record<string, any> = {
+        reqCode: req.reqCode,
+        title: req.title,
+        status: req.status,
+        priority: req.priority,
+        client: req.client?.name ?? "",
+        bu: req.businessUnit?.name ?? "",
+        sl: req.serviceLine?.name ?? "",
+        city: req.city ?? "",
+        country: req.country ?? "",
+        jobType: req.jobType,
+        remote: req.remoteType,
+        openings: req.totalOpenings,
+        createdBy: `${req.createdBy.firstName} ${req.createdBy.lastName}`,
+        createdAt: new Date(req.createdAt),
+        daysOpen,
+        respondBy: req.respondBy ? new Date(req.respondBy) : "",
+        breached:
+          req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
+        total: totalCandidates,
+      };
+
+      // Add canonical stage counts
+      for (const key of canonicalStageKeys) {
+        rowData[`cs_${key}`] = canonicalByReq[req.id]?.[key] ?? 0;
+      }
+
+      const dataRow = sheet1.addRow(rowData);
+      dataRow.height = 20;
+
+      // Colour code status cell
+      const statusCell = dataRow.getCell("status");
+      const statusColors: Record<string, string> = {
+        ACTIVE: "FF00875A",
+        CLOSED: "FFDE350B",
+        ON_HOLD: "FFFF991F",
+        PENDING_APPROVAL: "FF0052CC",
+        DRAFT: "FF6B778C",
+        CANCELLED: "FF5E6C84",
+      };
+      const statusColor = statusColors[req.status];
+      if (statusColor) {
+        statusCell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: statusColor },
+        };
+        statusCell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+      }
+
+      // Colour breach cell
+      if (req.isRespondByBreached || req.isTurnaroundBreached) {
+        dataRow.getCell("breached").fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFDE350B" },
+        };
+        dataRow.getCell("breached").font = {
+          color: { argb: "FFFFFFFF" },
+          bold: true,
+        };
+      }
+
+      // Format date cells — apply at cell level too for robustness
+      const createdAtCell = dataRow.getCell("createdAt");
+      createdAtCell.value = new Date(req.createdAt);
+      createdAtCell.numFmt = "dd-mmm-yyyy";
+      if (req.respondBy) {
+        const respondByCell = dataRow.getCell("respondBy");
+        respondByCell.value = new Date(req.respondBy);
+        respondByCell.numFmt = "dd-mmm-yyyy";
+      }
+    }
+
+    // Auto-filter on row 2
+    sheet1.autoFilter = {
+      from: { row: 2, column: 1 },
+      to: { row: 2, column: fixedCols.length + canonicalCols.length },
+    };
+
+    // ── Sheet 2: Candidates ────────────────────────────────────────────────
+
+    const sheet2 = workbook.addWorksheet("Candidates", {
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+
+    sheet2.columns = [
+      { header: "Req Code", key: "reqCode", width: 14 },
+      { header: "Requirement Title", key: "reqTitle", width: 36 },
+      { header: "Candidate Name", key: "name", width: 26 },
+      { header: "Email", key: "email", width: 30 },
+      { header: "Phone", key: "phone", width: 16 },
+      { header: "Current Title", key: "title", width: 26 },
+      { header: "Current Company", key: "company", width: 24 },
+      { header: "Exp (yrs)", key: "exp", width: 10 },
+      { header: "Top Skills", key: "skills", width: 40 },
+      { header: "Current Stage", key: "stage", width: 20 },
+      { header: "Canonical Stage", key: "canonical", width: 20 },
+      { header: "Recruiter", key: "recruiter", width: 22 },
+      { header: "Added On", key: "addedOn", width: 16, numFmt: "dd-mmm-yyyy" },
+      { header: "Days in Current Stage", key: "stageAge", width: 20 },
+      { header: "Current Stage Aging", key: "stageAgingLabel", width: 18 },
+      { header: "Total Pipeline Days", key: "totalDays", width: 18 },
+      { header: "Total Pipeline Aging", key: "totalAgingLabel", width: 18 },
+      { header: "Rejected?", key: "rejected", width: 12 },
+      { header: "Withdrawn?", key: "withdrawn", width: 12 },
+      { header: "On Hold?", key: "onHold", width: 12 },
+      {
+        header: "Submitted At",
+        key: "submittedAt",
+        width: 18,
+        numFmt: "dd-mmm-yyyy hh:mm",
+      },
+      { header: "Offer Status", key: "offerStatus", width: 14 },
+      {
+        header: "Joining Date",
+        key: "joiningDate",
+        width: 16,
+        numFmt: "dd-mmm-yyyy",
+      },
+    ];
+
+    const s2Header = sheet2.getRow(1);
+    applyHeaderRow(s2Header);
+
+    for (const p of pipelines) {
+      const req = reqLookup[p.requirementId];
+      if (!req) continue;
+
+      const stageAgeMins = Math.floor(
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      );
+      const totalPipelineMins =
+        (p.stageHistory ?? []).reduce(
+          (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
+          0
+        ) + stageAgeMins;
+
+      const dataRow = sheet2.addRow({
+        reqCode: req.reqCode,
+        reqTitle: req.title,
+        name: p.snapshot?.fullName ?? "",
+        email: p.snapshot?.email ?? "",
+        phone: p.snapshot?.phone ?? "",
+        title: p.snapshot?.currentTitle ?? "",
+        company: p.snapshot?.currentCompany ?? "",
+        exp: p.snapshot?.totalExpYears ?? "",
+        skills: (p.snapshot?.topSkills ?? []).join(", "),
+        stage: p.currentStage?.label ?? "",
+        canonical: p.currentStage?.canonicalStage ?? "",
+        recruiter: p.recruiter
+          ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
+          : "",
+        addedOn: new Date(p.createdAt),
+        stageAge: Math.floor(stageAgeMins / 1440), // days
+        stageAgingLabel: formatAging(stageAgeMins),
+        totalDays: Math.floor(totalPipelineMins / 1440),
+        totalAgingLabel: formatAging(totalPipelineMins),
+        rejected: p.isRejected ? "Yes" : "No",
+        withdrawn: p.isWithdrawn ? "Yes" : "No",
+        onHold: p.isOnHold ? "Yes" : "No",
+        submittedAt: p.submittedAt ? new Date(p.submittedAt) : "",
+        offerStatus: p.offerStatus ?? "",
+        joiningDate: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
+      });
+
+      dataRow.height = 18;
+      dataRow.getCell("addedOn").numFmt = "dd-mmm-yyyy";
+      if (p.submittedAt) dataRow.getCell("submittedAt").numFmt = "dd-mmm-yyyy";
+      if (p.actualJoiningDate)
+        dataRow.getCell("joiningDate").numFmt = "dd-mmm-yyyy";
+
+      // Flag rejected/withdrawn rows
+      if (p.isRejected || p.isWithdrawn) {
+        dataRow.eachCell((cell) => {
+          cell.font = { ...cell.font, color: { argb: "FF7A869A" } };
+        });
+      }
+    }
+
+    sheet2.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: sheet2.columnCount },
+    };
+
+    // ── Stream to response
+    const dateStr = new Date().toISOString().split("T")[0];
+    const filename = `requirements-export-${dateStr}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("exportRequirements:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to export requirements" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// All other existing controllers (getRequirementById, getRequirementDetail,
+// getRequirementTree, createRequirement, updateRequirement,
+// updateRequirementStatus, deleteRequirement, createAssignment,
+// removeAssignment, getRequirementCandidates, getRequirementCandidateById,
+// getCandidates, getCandidateDetail, getActivities, getRequirementStats)
+// remain UNCHANGED from the existing file.
+// Only getRequirements and the new exportRequirements are defined here.
+// ─────────────────────────────────────────────────────────────────────────────

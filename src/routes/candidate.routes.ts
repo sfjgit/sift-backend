@@ -32,6 +32,8 @@ import {
   holdCandidate,
   setDisposition,
   removeCandidate,
+  getCandidateMeta,
+  getCanonicalStages,
 } from "@/controller/candidate.controller";
 
 const router = Router();
@@ -44,6 +46,13 @@ const scope = scopeFilter("candidates");
 
 // GET  /candidates?requirementId=&assignmentId=&canonicalStage=&disposition=&search=
 router.get("/", auth, scope, getCandidates);
+
+router.get("/canonical-stages", auth, scope, getCanonicalStages);
+// File: candidate.routes.ts (addition)
+// Path: src/routes/candidate.routes.ts
+
+// GET /candidates/meta — must be before /:candidateId to avoid param collision
+router.get("/meta", auth, scope, getCandidateMeta);
 
 // POST /candidates  — add candidate to pipeline (snapshot + pipeline row)
 router.post(
