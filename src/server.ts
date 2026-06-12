@@ -117,7 +117,7 @@ app.use(
 );
 
 app.get("/", (_req, res) => {
-  console.log("Root route accessed=============================");
+  console.log("Root route");
   loggers.info("Root route accessed");
   res.json({
     success: true,
