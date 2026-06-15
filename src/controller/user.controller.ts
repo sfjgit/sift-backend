@@ -1367,33 +1367,59 @@ export const getMySubordinates = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const users = await prisma.user.findMany({
-      where: {
-        isActive: true,
-        OR: [{ reportingToId: userId }, { teamLeadId: userId }],
-      },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        employeeId: true,
-        reportingToId: true,
-        teamLeadId: true,
-        department: { select: { id: true, name: true } },
-        role: { select: { id: true, name: true } },
-      },
-      orderBy: { firstName: "asc" },
-    });
+    const USER_SELECT = {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      employeeId: true,
+      reportingToId: true,
+      teamLeadId: true,
+      department: { select: { id: true, name: true } },
+      role: { select: { id: true, name: true } },
+    } as const;
+
+    const [reportees, extras] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          isActive: true,
+          OR: [{ reportingToId: userId }, { teamLeadId: userId }],
+        },
+        select: USER_SELECT,
+        orderBy: { firstName: "asc" },
+      }),
+      prisma.userAssignableTo.findMany({
+        where: {
+          userId,
+          target: { isActive: true },
+        },
+        select: {
+          target: { select: USER_SELECT },
+        },
+      }),
+    ]);
 
     const seen = new Set<string>();
-    const deduped = users.filter((u) => {
-      if (seen.has(u.id)) return false;
-      seen.add(u.id);
-      return true;
-    });
+    const merged: ((typeof reportees)[number] & {
+      _source: "chain" | "extra";
+    })[] = [];
 
-    res.json({ success: true, data: deduped });
+    for (const u of reportees) {
+      if (!seen.has(u.id)) {
+        seen.add(u.id);
+        merged.push({ ...u, _source: "chain" });
+      }
+    }
+    for (const e of extras) {
+      if (!seen.has(e.target.id)) {
+        seen.add(e.target.id);
+        merged.push({ ...e.target, _source: "extra" });
+      }
+    }
+
+    merged.sort((a, b) => a.firstName.localeCompare(b.firstName));
+
+    res.json({ success: true, data: merged });
   } catch (err) {
     console.error("getMySubordinates:", err);
     res

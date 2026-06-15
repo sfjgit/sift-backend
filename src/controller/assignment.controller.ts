@@ -680,6 +680,14 @@ export const getMyAssignments = async (req: Request, res: Response) => {
 // GET /assignments/assignable-targets
 // ─────────────────────────────────────────────────────────────────────────────
 
+// File: assignment.controller.ts
+// Path: src/controller/assignment.controller.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/assignable-targets
+// Returns reportees + tagged extra users (UserAssignableTo)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const getAssignableTargets = async (req: Request, res: Response) => {
   try {
     const { requirementId, parentAssignmentId } = req.query as Record<
@@ -694,16 +702,16 @@ export const getAssignableTargets = async (req: Request, res: Response) => {
       return;
     }
 
+    // who's already assigned — exclude them
     const existing = await prisma.requirementAssignment.findMany({
       where: { requirementId, status: "ACTIVE" },
       select: { assignedToId: true },
     });
     const alreadyAssignedIds = existing.map((a) => a.assignedToId);
+    const excludeIds = [req.user!.id, ...alreadyAssignedIds];
 
-    let whereClause: any = {
-      isActive: true,
-      id: { notIn: [req.user!.id, ...alreadyAssignedIds] },
-    };
+    let reporteeWhere: any = null;
+    let pivotUserId: string = req.user!.id; // whose chain + extras we resolve from
 
     if (parentAssignmentId) {
       const parent = await prisma.requirementAssignment.findUnique({
@@ -720,30 +728,74 @@ export const getAssignableTargets = async (req: Request, res: Response) => {
         res.json({ success: true, data: [] });
         return;
       }
-      whereClause = {
-        ...whereClause,
-        OR: [
-          { reportingToId: parent.assignedToId },
-          { teamLeadId: parent.assignedToId },
-        ],
+      pivotUserId = parent.assignedToId;
+      reporteeWhere = {
+        isActive: true,
+        id: { notIn: excludeIds },
+        OR: [{ reportingToId: pivotUserId }, { teamLeadId: pivotUserId }],
+      };
+    } else {
+      // depth 0 — assigning from self
+      reporteeWhere = {
+        isActive: true,
+        id: { notIn: excludeIds },
+        OR: [{ reportingToId: pivotUserId }, { teamLeadId: pivotUserId }],
       };
     }
 
-    const users = await prisma.user.findMany({
-      where: whereClause,
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        employeeId: true,
-        role: { select: { id: true, name: true } },
-        department: { select: { id: true, name: true } },
-      },
-      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-      take: 100,
-    });
+    const USER_SELECT = {
+      id: true,
+      firstName: true,
+      lastName: true,
+      employeeId: true,
+      role: { select: { id: true, name: true } },
+      department: { select: { id: true, name: true } },
+    } as const;
 
-    res.json({ success: true, data: users });
+    // fetch reportees + tagged extras in parallel
+    const [reportees, extras] = await Promise.all([
+      prisma.user.findMany({
+        where: reporteeWhere,
+        select: USER_SELECT,
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+        take: 100,
+      }),
+      prisma.userAssignableTo.findMany({
+        where: {
+          userId: pivotUserId,
+          target: {
+            isActive: true,
+            id: { notIn: excludeIds },
+          },
+        },
+        select: {
+          target: { select: USER_SELECT },
+        },
+      }),
+    ]);
+
+    // merge — dedupe by id in case someone is both a reportee and tagged
+    const seen = new Set<string>();
+    const merged: typeof reportees = [];
+
+    for (const u of reportees) {
+      if (!seen.has(u.id)) {
+        seen.add(u.id);
+        merged.push({ ...u, _source: "chain" } as any);
+      }
+    }
+    for (const e of extras) {
+      if (!seen.has(e.target.id)) {
+        seen.add(e.target.id);
+        merged.push({ ...e.target, _source: "extra" } as any);
+      }
+    }
+
+    merged.sort((a, b) =>
+      (a as any).firstName.localeCompare((b as any).firstName)
+    );
+
+    res.json({ success: true, data: merged });
   } catch (err) {
     console.error("getAssignableTargets:", err);
     res
@@ -778,12 +830,10 @@ export const createAssignment = async (req: Request, res: Response) => {
       return;
     }
     if (!["ACTIVE", "PENDING_APPROVAL"].includes(requirement.status)) {
-      res
-        .status(400)
-        .json({
-          success: false,
-          message: `Cannot assign a requirement in ${requirement.status} status`,
-        });
+      res.status(400).json({
+        success: false,
+        message: `Cannot assign a requirement in ${requirement.status} status`,
+      });
       return;
     }
 
@@ -796,13 +846,11 @@ export const createAssignment = async (req: Request, res: Response) => {
       },
     });
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message:
-            "This user already has an active assignment for this requirement",
-        });
+      res.status(409).json({
+        success: false,
+        message:
+          "This user already has an active assignment for this requirement",
+      });
       return;
     }
 
@@ -833,13 +881,11 @@ export const createAssignment = async (req: Request, res: Response) => {
       select: ASSIGNMENT_SELECT,
     });
 
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Assignment created",
-        data: shapeAssignment(assignment),
-      });
+    res.status(201).json({
+      success: true,
+      message: "Assignment created",
+      data: shapeAssignment(assignment),
+    });
   } catch (err) {
     console.error("createAssignment:", err);
     res
@@ -889,12 +935,10 @@ export const subAssign = async (req: Request, res: Response) => {
       return;
     }
     if (parent.assignedToId !== actorId && !req.user!.isSuperAdmin) {
-      res
-        .status(403)
-        .json({
-          success: false,
-          message: "Only the assignee of the parent assignment can sub-assign",
-        });
+      res.status(403).json({
+        success: false,
+        message: "Only the assignee of the parent assignment can sub-assign",
+      });
       return;
     }
 
@@ -907,13 +951,11 @@ export const subAssign = async (req: Request, res: Response) => {
       },
     });
     if (existing) {
-      res
-        .status(409)
-        .json({
-          success: false,
-          message:
-            "This user already has an active sub-assignment under this assignment",
-        });
+      res.status(409).json({
+        success: false,
+        message:
+          "This user already has an active sub-assignment under this assignment",
+      });
       return;
     }
 
@@ -943,13 +985,11 @@ export const subAssign = async (req: Request, res: Response) => {
       select: ASSIGNMENT_SELECT,
     });
 
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Sub-assignment created",
-        data: shapeAssignment(child),
-      });
+    res.status(201).json({
+      success: true,
+      message: "Sub-assignment created",
+      data: shapeAssignment(child),
+    });
   } catch (err) {
     console.error("subAssign:", err);
     res

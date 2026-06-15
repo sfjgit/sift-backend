@@ -263,12 +263,35 @@ model User {
 
   jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
 
+
+ canAssignTo    UserAssignableTo[] @relation("CanAssignTo")
+ assignableBy   UserAssignableTo[] @relation("AssignableBy")
+ assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
+
   @@index([email])
   @@index([isActive])
   @@index([roleId])
   @@index([departmentId])
   @@index([reportingToId])
   @@index([teamLeadId])
+}
+
+
+model UserAssignableTo {
+  id        String   @id @default(uuid())
+  userId    String   // the one who can assign
+  targetId  String   // the extra user they can assign to
+  
+  user      User     @relation("CanAssignTo", fields: [userId], references: [id])
+  target    User     @relation("AssignableBy", fields: [targetId], references: [id])
+
+  addedById String
+  addedBy   User     @relation("AssignableAddedBy", fields: [addedById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, targetId])
+  @@index([userId])
 }
 
 model UserAppCredential {
