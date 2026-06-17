@@ -1765,10 +1765,6 @@ export const getRequirementTree = async (req: Request, res: Response) => {
         title: true,
         status: true,
         totalOpenings: true,
-        // filledOpenings: true,
-        // activeApplications: true,
-        // interviewsScheduled: true,
-        // offersRolledOut: true,
       },
     });
 
@@ -1778,15 +1774,10 @@ export const getRequirementTree = async (req: Request, res: Response) => {
         .json({ success: false, message: "Requirement not found" });
     }
 
-    const subordinateIds = isSuperAdmin
-      ? null
-      : [userId, ...(await getSubordinateIds(userId))];
-
     const assignments = await prisma.requirementAssignment.findMany({
       where: {
         requirementId,
         status: "ACTIVE",
-        ...(subordinateIds && { assignedToId: { in: subordinateIds } }),
       },
       orderBy: { depth: "asc" },
       select: {
