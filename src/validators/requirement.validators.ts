@@ -21,11 +21,11 @@ export const createRequirementSchema = z.object({
   state: z.string().max(100).optional().nullable(),
   country: z.string().max(100).optional().nullable(),
 
-  experienceMin: z.number().min(0).optional().nullable(),
-  experienceMax: z.number().min(0).optional().nullable(),
+  experienceMin: z.coerce.number().min(0).optional().nullable(),
+  experienceMax: z.coerce.number().min(0).optional().nullable(),
 
-  salaryMin: z.number().min(0).optional().nullable(),
-  salaryMax: z.number().min(0).optional().nullable(),
+  salaryMin: z.coerce.number().min(0).optional().nullable(),
+  salaryMax: z.coerce.number().min(0).optional().nullable(),
   salaryType: z
     .enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"])
     .optional()

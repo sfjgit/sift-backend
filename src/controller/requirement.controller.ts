@@ -1864,11 +1864,19 @@ export const getRequirementTree = async (req: Request, res: Response) => {
   }
 };
 
+// coerce any incoming value to number | null — handles strings, empty, NaN
+function toNum(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return isNaN(n) ? null : n;
+}
+
 export const createRequirement = async (req: Request, res: Response) => {
   try {
     const actorId = req.user!.id;
     const body = req.body;
 
+    // ── Validate SPOC ─────────────────────────────────────────────────────
     const spoc = await prisma.clientSpoc.findUnique({
       where: { id: body.clientSpocId },
       select: {
@@ -1885,7 +1893,19 @@ export const createRequirement = async (req: Request, res: Response) => {
         .json({ success: false, message: "Invalid or inactive SPOC" });
     }
 
+    // ── Dates ─────────────────────────────────────────────────────────────
+    const startDate = body.startDate ? new Date(body.startDate) : new Date();
+    const targetDate = body.targetDate ? new Date(body.targetDate) : null;
+
+    // auto-compute — never trust client value
+    const turnaroundDays = targetDate
+      ? Math.ceil(
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+        )
+      : null;
+
     const reqCode = await generateReqCode();
+
     const requirement = await prisma.requirement.create({
       data: {
         reqCode,
@@ -1895,20 +1915,20 @@ export const createRequirement = async (req: Request, res: Response) => {
         remoteType: body.remoteType,
         priority: body.priority ?? "MEDIUM",
         jobOpenFor: body.jobOpenFor ?? "EXTERNAL",
-        totalOpenings: body.totalOpenings ?? 1,
+        totalOpenings: toNum(body.totalOpenings) ?? 1,
 
         city: body.city ?? null,
         state: body.state ?? null,
         country: body.country ?? null,
 
-        experienceMin: body.experienceMin ?? null,
-        experienceMax: body.experienceMax ?? null,
+        experienceMin: toNum(body.experienceMin),
+        experienceMax: toNum(body.experienceMax),
 
-        salaryMin: body.salaryMin ?? null,
-        salaryMax: body.salaryMax ?? null,
+        salaryMin: toNum(body.salaryMin),
+        salaryMax: toNum(body.salaryMax),
         salaryType: body.salaryType ?? null,
         salaryCurrency: body.salaryCurrency ?? "INR",
-        bonusAmount: body.bonusAmount ?? null,
+        bonusAmount: toNum(body.bonusAmount),
         hideSalaryFromCandidate: body.hideSalaryFromCandidate ?? false,
         showMedianSalary: body.showMedianSalary ?? false,
 
@@ -1921,10 +1941,10 @@ export const createRequirement = async (req: Request, res: Response) => {
         functionalArea: body.functionalArea ?? null,
         shift: body.shift ?? null,
 
-        startDate: body.startDate ? new Date(body.startDate) : null,
-        targetDate: body.targetDate ? new Date(body.targetDate) : null,
-        respondBy: body.respondBy ? new Date(body.respondBy) : null,
-        turnaroundDays: body.turnaroundDays ?? null,
+        startDate,
+        targetDate,
+        respondBy: null, // removed from form — always null on create
+        turnaroundDays, // computed, never from body
 
         jdFileKey: body.jdFileKey ?? null,
         jdFileName: body.jdFileName ?? null,
@@ -1958,6 +1978,74 @@ export const createRequirement = async (req: Request, res: Response) => {
         summary: `Requirement ${reqCode} created`,
       },
     });
+
+    // ── Push to JD library for future cloning ─────────────────────────────
+    // Saved as parsedData so the library search + clone flow works identically
+    // to a JD upload. Non-fatal — requirement is already created, don't fail.
+    try {
+      const libraryPayload = {
+        title: body.title,
+        description: body.description ?? null,
+        jobType: body.jobType ?? null,
+        remoteType: body.remoteType ?? null,
+        experienceMin: toNum(body.experienceMin),
+        experienceMax: toNum(body.experienceMax),
+        salaryMin: toNum(body.salaryMin),
+        salaryMax: toNum(body.salaryMax),
+        salaryType: body.salaryType ?? null,
+        education: body.education ?? null,
+        functionalArea: body.functionalArea ?? null,
+        shift: body.shift ?? null,
+        city: body.city ?? null,
+        state: body.state ?? null,
+        country: body.country ?? null,
+        bonusAmount: toNum(body.bonusAmount),
+        primarySkills: body.primarySkills ?? [],
+        keySkills: body.keySkills ?? [],
+        targetCompanies: body.targetCompanies ?? [],
+        noPoachCompanies: body.noPoachCompanies ?? [],
+        // meta — not used for cloning but useful for traceability
+        _source: "requirement",
+        _reqCode: reqCode,
+        _reqId: requirement.id,
+      };
+
+      const existing = await prisma.parsedJDLibrary.findFirst({
+        where: {
+          title: { equals: body.title, mode: "insensitive" },
+          isActive: true,
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        // update with latest data — most recent requirement wins
+        await prisma.parsedJDLibrary.update({
+          where: { id: existing.id },
+          data: {
+            parsedData: libraryPayload,
+            parsedById: actorId,
+            parsedAt: new Date(),
+          },
+        });
+      } else {
+        await prisma.parsedJDLibrary.create({
+          data: {
+            title: body.title,
+            parsedData: libraryPayload,
+            parsedById: actorId,
+            usageCount: 0,
+            usedByIds: [],
+            isActive: true,
+          },
+        });
+      }
+    } catch (libErr) {
+      console.warn(
+        "createRequirement: failed to push to JD library (non-fatal)",
+        libErr
+      );
+    }
 
     return res.status(201).json({
       success: true,
