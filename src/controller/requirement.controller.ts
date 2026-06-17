@@ -2300,7 +2300,6 @@ export const deleteRequirement = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to delete requirement" });
   }
 };
-
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
@@ -2343,25 +2342,21 @@ export const createAssignment = async (req: Request, res: Response) => {
       depth = parent.depth + 1;
     }
 
-    // ── 3. Fetch subordinate tree once ────────────────────────────────────────
-    const subordinateIds = await getSubordinateIds(actorId);
-    const isSuperAdmin = req.user!.isSuperAdmin;
-
-    // ── 4. Fetch existing active assignments in one query ─────────────────────
+    // ── 3. Fetch existing active assignments in one query ─────────────────────
     const existingActive = await prisma.requirementAssignment.findMany({
       where: { requirementId, assignedToId: { in: ids }, status: "ACTIVE" },
       select: { assignedToId: true },
     });
     const alreadyAssigned = new Set(existingActive.map((e) => e.assignedToId));
 
-    // ── 5. Fetch assignee metadata in one query ───────────────────────────────
+    // ── 4. Fetch assignee metadata in one query ───────────────────────────────
     const assigneeUsers = await prisma.user.findMany({
       where: { id: { in: ids } },
       select: { id: true, departmentId: true, firstName: true, lastName: true },
     });
     const assigneeMap = new Map(assigneeUsers.map((u) => [u.id, u]));
 
-    // ── 6. Process each id ────────────────────────────────────────────────────
+    // ── 5. Process each id ────────────────────────────────────────────────────
     type ItemResult =
       | { assignedToId: string; status: "created"; assignment: object }
       | { assignedToId: string; status: "skipped"; reason: string };
@@ -2369,14 +2364,6 @@ export const createAssignment = async (req: Request, res: Response) => {
     const results: ItemResult[] = [];
 
     for (const id of ids) {
-      if (!isSuperAdmin && !subordinateIds.includes(id)) {
-        results.push({
-          assignedToId: id,
-          status: "skipped",
-          reason: "Not in your reporting tree",
-        });
-        continue;
-      }
       if (alreadyAssigned.has(id)) {
         results.push({
           assignedToId: id,
@@ -2449,7 +2436,7 @@ export const createAssignment = async (req: Request, res: Response) => {
     const created = results.filter((r) => r.status === "created");
     const skipped = results.filter((r) => r.status === "skipped");
 
-    // ── 7. Response — single returns flat object, bulk returns array ──────────
+    // ── 6. Response — single returns flat object, bulk returns array ──────────
     if (ids.length === 1) {
       if (created.length === 1) {
         return res.status(201).json({
@@ -2462,8 +2449,6 @@ export const createAssignment = async (req: Request, res: Response) => {
         const statusCode =
           reason === "Already actively assigned"
             ? 409
-            : reason === "Not in your reporting tree"
-            ? 403
             : reason === "User not found"
             ? 404
             : 400;
