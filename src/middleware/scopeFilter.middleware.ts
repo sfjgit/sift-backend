@@ -37,6 +37,7 @@ export const scopeFilter =
 
       // Super admin bypasses everything
       if (user.isSuperAdmin) {
+        console.log("Super admin bypassing scope filter");
         req.scopeFilter = { type: "ALL" };
         req.modulePermission = {
           canView: true,

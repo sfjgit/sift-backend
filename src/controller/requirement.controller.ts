@@ -3331,9 +3331,20 @@ async function getCreatorScopeUserIds(
     return [userId];
   }
 
+  // if (createdByScope === "TEAM") {
+  //   const teamMembers = await prisma.user.findMany({
+  //     where: { teamLeadId: userId, isActive: true },
+  //     select: { id: true },
+  //   });
+  //   return [userId, ...teamMembers.map((u) => u.id)];
+  // }
+
   if (createdByScope === "TEAM") {
     const teamMembers = await prisma.user.findMany({
-      where: { teamLeadId: userId, isActive: true },
+      where: {
+        OR: [{ teamLeadId: userId }, { reportingToId: userId }],
+        isActive: true,
+      },
       select: { id: true },
     });
     return [userId, ...teamMembers.map((u) => u.id)];
