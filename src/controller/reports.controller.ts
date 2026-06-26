@@ -510,28 +510,75 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 // Sheet 2: All candidate details per recruiter
 // ─────────────────────────────────────────────────────────────────────────────
 
+// File: reports.controller.ts (partial — replace only exportRecruiterReport)
+// Path: src/controller/reports.controller.ts
+
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
     const { clientId, buId, serviceLineId, fromDate, toDate, recruiterId } =
       req.query as Record<string, string>;
 
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope = isSuperAdmin
-      ? PermissionScope.ALL
-      : req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    // ── view param from frontend — matches what user sees on screen
+    // summary  → Sourced + all canonical stages + Active + Avg Days
+    // funnel   → same as summary (canonical rollup)
+    // pipeline → one col per actual pipeline stage (only active ones)
+    const view = (req.query.view as string) ?? "summary";
 
-    const callerUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { departmentId: true },
-    });
+    const sf = req.scopeFilter;
 
-    const scopedRecruiterIds = await resolveVisibleRecruiterIds(
-      userId,
-      isSuperAdmin,
-      canViewScope,
-      callerUser?.departmentId
-    );
+    // ── Resolve scope (same as getRecruiterReport)
+    let scopedUserIds: string[] | null = null;
+    if (!sf || sf.type === "ALL") {
+      scopedUserIds = null;
+    } else if (sf.type === "OWN") {
+      scopedUserIds = [sf.userId];
+    } else if (sf.type === "TEAM") {
+      scopedUserIds = sf.teamMemberIds ?? [sf.userId];
+    } else if (sf.type === "REPORTING") {
+      scopedUserIds = sf.subordinateIds ?? [sf.userId];
+    } else if (sf.type === "BU") {
+      scopedUserIds = sf.subordinateIds ?? [sf.userId];
+    } else if (sf.type === "DEPARTMENT") {
+      if (!sf.departmentId) {
+        scopedUserIds = [sf.userId];
+      } else {
+        const users = await prisma.user.findMany({
+          where: { departmentId: sf.departmentId, isActive: true },
+          select: { id: true },
+        });
+        scopedUserIds = users.map((u) => u.id);
+      }
+    } else if (sf.type === "REPORTING_LINE") {
+      const seedIds: string[] = sf.reportingLineIds ?? [sf.userId];
+      const rows: { id: string }[] = await prisma.$queryRaw`
+        WITH RECURSIVE org_tree AS (
+          SELECT id FROM "User"
+          WHERE id = ANY(${seedIds}::uuid[]) AND "isActive" = true
+          UNION ALL
+          SELECT u.id FROM "User" u
+          INNER JOIN org_tree ot ON u."reportingToId" = ot.id
+          WHERE u."isActive" = true
+        )
+        SELECT DISTINCT id::text FROM org_tree
+      `;
+      scopedUserIds = rows.map((r) => r.id);
+    }
+
+    if (
+      recruiterId &&
+      scopedUserIds !== null &&
+      !scopedUserIds.includes(recruiterId)
+    ) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Recruiter not in your scope" });
+    }
+
+    const recruiterFilter: Record<string, any> = recruiterId
+      ? { recruiterId }
+      : scopedUserIds !== null
+      ? { recruiterId: { in: scopedUserIds } }
+      : {};
 
     const globalWhere = buildGlobalWhere({
       clientId,
@@ -541,21 +588,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       toDate,
     });
 
-    let recruiterFilter: Record<string, any> = {};
-    if (recruiterId) {
-      if (
-        scopedRecruiterIds !== null &&
-        !scopedRecruiterIds.includes(recruiterId)
-      ) {
-        return res
-          .status(403)
-          .json({ success: false, message: "Recruiter not in your scope" });
-      }
-      recruiterFilter = { recruiterId };
-    } else if (scopedRecruiterIds !== null) {
-      recruiterFilter = { recruiterId: { in: scopedRecruiterIds } };
-    }
-
+    // ── Fetch all pipeline stages from DB — never hardcoded
     const allStages = await prisma.pipelineStage.findMany({
       where: { isActive: true },
       select: {
@@ -568,13 +601,48 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
 
+    // Canonical keys in DB order
+    const canonicalKeys = [
+      ...new Set(
+        allStages
+          .filter((s) => s.canonicalStage !== null)
+          .map((s) => s.canonicalStage as string)
+      ),
+    ];
+
+    // ── Fetch pipeline rows with snapshot + requirement
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: {
         requirement: { ...globalWhere, deletedAt: null },
         ...recruiterFilter,
       },
       select: {
-        ...PIPELINE_SELECT_FOR_REPORTS,
+        id: true,
+        recruiterId: true,
+        requirementId: true,
+        currentStageId: true,
+        disposition: true,
+        submittedAt: true,
+        isRejected: true,
+        isWithdrawn: true,
+        isOnHold: true,
+        offerStatus: true,
+        actualJoiningDate: true,
+        stageUpdatedAt: true,
+        createdAt: true,
+        currentStage: {
+          select: {
+            id: true,
+            code: true,
+            label: true,
+            order: true,
+            canonicalStage: true,
+          },
+        },
+        stageHistory: { select: { timeInPrevStageMins: true } },
+        recruiter: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
         requirement: { select: { reqCode: true, title: true } },
         snapshot: {
           select: {
@@ -591,59 +659,176 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       take: 5000,
     });
 
-    // Build summary using same computeRecruiterStats
-    const summaryData = computeRecruiterStats(pipelines, allStages);
+    // ── Build per-recruiter aggregation (same as getRecruiterReport)
+    type RecruiterAgg = {
+      name: string;
+      email: string;
+      sourced: number;
+      submitted: number;
+      joined: number;
+      dropped: number;
+      active: number;
+      submitTimeMins: number[];
+      requirementIds: Set<string>;
+      stageCounts: Record<string, number>; // stageId → count
+      canonicalCounts: Record<string, number>; // canonical → count
+    };
+
+    const recruiterMap: Record<string, RecruiterAgg> = {};
+
+    for (const p of pipelines) {
+      const rid = p.recruiterId;
+      if (!recruiterMap[rid]) {
+        recruiterMap[rid] = {
+          name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+          email: p.recruiter.email,
+          sourced: 0,
+          submitted: 0,
+          joined: 0,
+          dropped: 0,
+          active: 0,
+          submitTimeMins: [],
+          requirementIds: new Set(),
+          stageCounts: Object.fromEntries(allStages.map((s) => [s.id, 0])),
+          canonicalCounts: {},
+        };
+      }
+      const r = recruiterMap[rid];
+      r.requirementIds.add(p.requirementId);
+      r.sourced++;
+
+      if (p.currentStageId in r.stageCounts) r.stageCounts[p.currentStageId]++;
+
+      const canonical = p.currentStage?.canonicalStage ?? null;
+      if (canonical)
+        r.canonicalCounts[canonical] = (r.canonicalCounts[canonical] ?? 0) + 1;
+
+      if (p.submittedAt) r.submitted++;
+      if (p.disposition === "PLACED" || p.actualJoiningDate) r.joined++;
+      if (p.disposition === "DROPPED" || p.isRejected || p.isWithdrawn)
+        r.dropped++;
+      if (p.disposition === "ACTIVE") r.active++;
+
+      if (p.submittedAt) {
+        r.submitTimeMins.push(
+          (p.stageHistory ?? []).reduce(
+            (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
+            0
+          )
+        );
+      }
+    }
+
+    const summaryRows = Object.entries(recruiterMap)
+      .map(([, r]) => r)
+      .sort((a, b) => b.sourced - a.sourced);
+
+    // ── Determine which pipeline stages have any data (for pipeline view)
+    const activeStageIds = new Set<string>();
+    if (view === "pipeline") {
+      for (const r of summaryRows) {
+        for (const [sid, cnt] of Object.entries(r.stageCounts)) {
+          if (cnt > 0) activeStageIds.add(sid);
+        }
+      }
+    }
+    const activeStages = allStages.filter((s) => activeStageIds.has(s.id));
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BUILD WORKBOOK
+    // ─────────────────────────────────────────────────────────────────────────
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // ── Sheet 1: Recruiter Summary
+    // ─────────────────────────────────────────────────────────────────────────
+    // SHEET 1: Recruiter summary — columns match what user sees on screen
+    // summary/funnel → Sourced + canonical stages + Active + Avg Days
+    // pipeline       → Sourced + one col per active pipeline stage + Active + Avg Days
+    // ─────────────────────────────────────────────────────────────────────────
+
     const sheet1 = workbook.addWorksheet("Recruiter Summary", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
-    sheet1.columns = [
+
+    // Build columns dynamically based on view
+    const fixedLeft = [
       { header: "Recruiter", key: "name", width: 26 },
       { header: "Email", key: "email", width: 30 },
       { header: "Requirements", key: "reqs", width: 14 },
       { header: "Sourced", key: "sourced", width: 12 },
-      { header: "Submitted", key: "submitted", width: 12 },
-      { header: "Submission %", key: "subRate", width: 14 },
-      { header: "Shortlisted", key: "shortlisted", width: 14 },
-      { header: "Offered", key: "offered", width: 12 },
-      { header: "Offer %", key: "offerRate", width: 12 },
-      { header: "Joined", key: "joined", width: 12 },
-      { header: "Join %", key: "joinRate", width: 12 },
-      { header: "Dropped", key: "dropped", width: 12 },
+    ];
+
+    const dynamicCols: { header: string; key: string; width: number }[] =
+      view === "pipeline"
+        ? activeStages.map((s) => ({
+            header: s.label,
+            key: `stage_${s.id}`,
+            width: 16,
+          }))
+        : canonicalKeys.map((key) => ({
+            // Human-readable label, not raw enum key
+            header: key
+              .split("_")
+              .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+              .join(" "),
+            key: `canonical_${key}`,
+            width: 16,
+          }));
+
+    const fixedRight = [
       { header: "Active", key: "active", width: 12 },
       { header: "Avg Days to Submit", key: "avgDays", width: 18 },
     ];
+
+    sheet1.columns = [...fixedLeft, ...dynamicCols, ...fixedRight];
     styleHeaderRow(sheet1.getRow(1));
 
-    for (const s of summaryData) {
+    for (const r of summaryRows) {
+      const avgDays =
+        r.submitTimeMins.length > 0
+          ? +(
+              r.submitTimeMins.reduce((a, b) => a + b, 0) /
+              r.submitTimeMins.length /
+              1440
+            ).toFixed(1)
+          : "";
+
+      const dynamicValues: Record<string, number> = {};
+      if (view === "pipeline") {
+        for (const s of activeStages) {
+          dynamicValues[`stage_${s.id}`] = r.stageCounts[s.id] ?? 0;
+        }
+      } else {
+        for (const key of canonicalKeys) {
+          dynamicValues[`canonical_${key}`] = r.canonicalCounts[key] ?? 0;
+        }
+      }
+
       sheet1.addRow({
-        name: s.name,
-        email: s.email,
-        reqs: s.requirementsCount,
-        sourced: s.sourced,
-        submitted: s.submitted,
-        subRate: s.submissionRate,
-        shortlisted: s.shortlisted,
-        offered: s.offered,
-        offerRate: s.offerRate,
-        joined: s.joined,
-        joinRate: s.joinRate,
-        dropped: s.dropped,
-        active: s.active,
-        avgDays: s.avgTimeToSubmitDays ?? "",
+        name: r.name,
+        email: r.email,
+        reqs: r.requirementIds.size,
+        sourced: r.sourced,
+        ...dynamicValues,
+        active: r.active,
+        avgDays,
       }).height = 18;
     }
+
     sheet1.autoFilter = {
       from: { row: 1, column: 1 },
-      to: { row: 1, column: 14 },
+      to: {
+        row: 1,
+        column: fixedLeft.length + dynamicCols.length + fixedRight.length,
+      },
     };
 
-    // ── Sheet 2: Candidate Details
+    // ─────────────────────────────────────────────────────────────────────────
+    // SHEET 2: Candidate details — always full detail regardless of view
+    // ─────────────────────────────────────────────────────────────────────────
+
     const sheet2 = workbook.addWorksheet("Candidate Details", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -658,8 +843,8 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       { header: "Current Company", key: "company", width: 24 },
       { header: "Exp (yrs)", key: "exp", width: 10 },
       { header: "Current Stage", key: "stage", width: 22 },
-      { header: "Canonical Stage", key: "canonical", width: 20 },
-      { header: "Disposition", key: "disposition", width: 14 },
+      { header: "Stage Group", key: "canonical", width: 20 },
+      { header: "Status", key: "disposition", width: 14 },
       { header: "Added On", key: "addedOn", width: 16 },
       { header: "Days in Pipeline", key: "pipelineDays", width: 16 },
       { header: "Submitted At", key: "submittedAt", width: 18 },
@@ -687,7 +872,15 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         company: (p as any).snapshot?.currentCompany ?? "",
         exp: (p as any).snapshot?.totalExpYears ?? "",
         stage: p.currentStage?.label ?? "",
-        canonical: p.currentStage?.canonicalStage ?? "",
+        canonical: p.currentStage?.canonicalStage
+          ? p.currentStage.canonicalStage
+              .split("_")
+              .map(
+                (w: string) =>
+                  w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+              )
+              .join(" ")
+          : "",
         disposition: p.disposition,
         addedOn: new Date(p.createdAt),
         pipelineDays: Math.floor(totalMins / 1440),
@@ -713,6 +906,12 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       to: { row: 1, column: 17 },
     };
 
+    const viewLabel =
+      view === "pipeline"
+        ? "all-stages"
+        : view === "funnel"
+        ? "stage-funnel"
+        : "summary";
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
@@ -720,7 +919,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="recruiter-report-${dateStr}.xlsx"`
+      `attachment; filename="recruiter-report-${viewLabel}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();

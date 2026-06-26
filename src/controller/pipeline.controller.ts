@@ -604,22 +604,22 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
 
-    const skippedMandatory = stages
-      .slice(currentIdx + 1, targetIdx)
-      .filter((s) => s.isMandatory);
-    if (skippedMandatory.length > 0 && !skipReason) {
-      res.status(400).json({
-        success: false,
-        message: `Skipping mandatory stage(s): ${skippedMandatory
-          .map((s) => s.label)
-          .join(", ")}. Provide skipReason.`,
-        skippedStages: skippedMandatory.map((s) => ({
-          code: s.code,
-          label: s.label,
-        })),
-      });
-      return;
-    }
+    // const skippedMandatory = stages
+    //   .slice(currentIdx + 1, targetIdx)
+    //   .filter((s) => s.isMandatory);
+    // if (skippedMandatory.length > 0 && !skipReason) {
+    //   res.status(400).json({
+    //     success: false,
+    //     message: `Skipping mandatory stage(s): ${skippedMandatory
+    //       .map((s) => s.label)
+    //       .join(", ")}. Provide skipReason.`,
+    //     skippedStages: skippedMandatory.map((s) => ({
+    //       code: s.code,
+    //       label: s.label,
+    //     })),
+    //   });
+    //   return;
+    // }
 
     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
@@ -642,7 +642,7 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
           fromStageId: pipeline.currentStageId,
           toStageId: stageId,
           changedById: actorId,
-          wasSkipped: skippedMandatory.length > 0,
+          // wasSkipped: skippedMandatory.length > 0,
           skipReason: skipReason ?? null,
           timeInPrevStageMins,
           note: note ?? null,

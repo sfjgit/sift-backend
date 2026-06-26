@@ -958,73 +958,7 @@ model RequirementCandidatePipeline {
   @@index([stageUpdatedAt])
 }
 
-// model RequirementCandidatePipeline {
-//   id String @id @default(uuid())
 
-//   snapshotId String            @unique
-//   snapshot   CandidateSnapshot @relation(fields: [snapshotId], references: [id])
-
-//   requirementId String
-//   requirement   Requirement @relation(fields: [requirementId], references: [id])
-
-//   assignmentId String?
-//   assignment   RequirementAssignment? @relation(fields: [assignmentId], references: [id])
-
-//   recruiterId String
-//   recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
-
-//   currentStageId   String
-//   currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
-//   stageUpdatedAt   DateTime      @default(now())
-//   stageUpdatedById String
-//   stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
-
-//   disposition       CandidateDisposition  @default(ACTIVE)
-// dispositionAt     DateTime?
-// dropReason  String?   // free text — "client rejected", whatever they type
-// dropNote    String?
-//   // submission to client
-//   submissionNote String?
-//   submittedAt    DateTime?
-//   submittedById  String?
-//   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
-
-//   // offer
-//   offeredCtc          Float?
-//   salaryCurrency      String?      @default("INR")
-//   salaryType          SalaryType?
-//   offeredAt           DateTime?
-//   offeredById         String?
-//   offeredBy           User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
-//   offerStatus         OfferStatus?
-//   expectedJoiningDate DateTime?
-//   actualJoiningDate   DateTime?
-
-//   // terminal states — can happen from any stage
-//   isRejected      Boolean   @default(false)
-//   rejectedAt      DateTime?
-//   rejectedById    String?
-//   rejectedBy      User?     @relation("PipelineRejectedBy", fields: [rejectedById], references: [id])
-//   rejectionReason String?
-
-//   isWithdrawn     Boolean   @default(false)
-//   withdrawnAt     DateTime?
-//   withdrawnReason String?
-
-//   isOnHold     Boolean   @default(false)
-//   onHoldAt     DateTime?
-//   onHoldReason String?
-
-//   stageHistory CandidatePipelineStageLog[]
-
-//   createdAt DateTime @default(now())
-//   updatedAt DateTime @updatedAt
-
-//   @@index([requirementId, currentStageId])
-//   @@index([recruiterId])
-//   @@index([assignmentId])
-//   @@index([stageUpdatedAt])
-// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE LOG
