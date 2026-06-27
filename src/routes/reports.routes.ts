@@ -3,77 +3,46 @@
 
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import {
-  scopeFilter,
-  checkPermission,
-} from "@/middleware/scopeFilter.middleware";
+import { scopeFilter } from "@/middleware/scopeFilter.middleware";
 import {
   getRecruiterReport,
   exportRecruiterReport,
+  getRequirementReport,
+  exportRequirementReport,
+  getAssignmentReport,
+  exportAssignmentReport,
   getCandidateReport,
   exportCandidateReport,
-  getRequirementReport,
-  exportReportPDF,
 } from "@/controller/reports.controller";
 
 const router = Router();
+const auth = authenticateUser;
 const scope = scopeFilter("reports");
 
-// ── Recruiter reports
-// GET /reports/recruiters              → JSON dashboard stats
-// GET /reports/recruiters/export       → XLSX download
-router.get("/recruiters", authenticateUser, scope, getRecruiterReport);
-router.get(
-  "/recruiters/export",
-  authenticateUser,
-  scope,
-  exportRecruiterReport
-);
+// ── Recruiter reports ─────────────────────────────────────────────────────────
+// GET  /reports/recruiters          → per-recruiter stats with requirement breakdown
+// GET  /reports/recruiters/export   → XLSX (view=summary|funnel|pipeline)
+router.get("/recruiters", auth, scope, getRecruiterReport);
+router.get("/recruiters/export", auth, scope, exportRecruiterReport);
 
-// ── Candidate reports
-// GET /reports/candidates              → funnel stats JSON
-// GET /reports/candidates/export       → XLSX download
-//   ?canonicalStage=SCREENING          → filter export by stage
-//   ?disposition=ACTIVE                → filter export by disposition
-router.get("/candidates", authenticateUser, scope, getCandidateReport);
-router.get(
-  "/candidates/export",
-  authenticateUser,
-  scope,
-  exportCandidateReport
-);
+// ── Requirement reports ───────────────────────────────────────────────────────
+// GET  /reports/requirements        → requirement list with per-row candidate stats
+// GET  /reports/requirements/export → XLSX (all requirements + candidates sheet)
+// GET  /reports/requirements/:id/export → single requirement XLSX
+router.get("/requirements", auth, scope, getRequirementReport);
+router.get("/requirements/export", auth, scope, exportRequirementReport);
+router.get("/requirements/:id/export", auth, scope, exportRequirementReport);
 
-// ── Requirement reports
-// GET /reports/requirements            → grouped stats JSON
-router.get("/requirements", authenticateUser, scope, getRequirementReport);
+// ── Assignment reports ────────────────────────────────────────────────────────
+// GET  /reports/assignments         → assignment list with candidate stats
+// GET  /reports/assignments/export  → XLSX (all assignments + candidates sheet)
+// GET  /reports/assignments/:id/export → single assignment XLSX
+router.get("/assignments", auth, scope, getAssignmentReport);
+router.get("/assignments/export", auth, scope, exportAssignmentReport);
+router.get("/assignments/:id/export", auth, scope, exportAssignmentReport);
 
-// ── PDF export — Puppeteer + Chart.js
-// GET /reports/pdf/recruiters          → bar chart PDF
-// GET /reports/pdf/candidates          → funnel chart PDF
-// GET /reports/pdf/requirements        → status chart PDF
-router.get("/pdf/:type", authenticateUser, scope, exportReportPDF);
+// ── Candidate funnel report ───────────────────────────────────────────────────
+router.get("/candidates", auth, scope, getCandidateReport);
+router.get("/candidates/export", auth, scope, exportCandidateReport);
 
 export default router;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Register in main app:
-//
-//   import reportsRouter from "@/routes/reports.routes";
-//   app.use("/reports", reportsRouter);
-//
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// GLOBAL QUERY PARAMS (every route):
-//   clientId       → filter by client
-//   buId           → filter by BU (ancestorIds — picks up child BUs too)
-//   serviceLineId  → filter by service line
-//   fromDate       → ISO date, scoped to requirement.createdAt
-//   toDate         → ISO date, scoped to requirement.createdAt
-//
-// RECRUITER-SPECIFIC:
-//   recruiterId    → drill into a single recruiter
-//
-// CANDIDATE-SPECIFIC:
-//   canonicalStage → export filter (e.g. SCREENING, INTERVIEW)
-//   disposition    → export filter (ACTIVE, PLACED, DROPPED…)
-// ─────────────────────────────────────────────────────────────────────────────

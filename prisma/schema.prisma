@@ -906,42 +906,58 @@ model RequirementCandidatePipeline {
   recruiterId String
   recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
 
-  currentStageId        String
-  currentStage          PipelineStage   @relation(fields: [currentStageId], references: [id])
-  stageUpdatedAt        DateTime        @default(now())
-  stageUpdatedById      String
-  stageUpdatedBy        User            @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
+  currentStageId   String
+  currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
+  stageUpdatedAt   DateTime      @default(now())
+  stageUpdatedById String
+  stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
 
   disposition   CandidateDisposition @default(ACTIVE)
   dispositionAt DateTime?
   dropReason    String?
   dropNote      String?
 
+  // ── Submission
   submissionNote String?
   submittedAt    DateTime?
   submittedById  String?
   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
 
-  offeredCtc          Float?
-  salaryCurrency      String?      @default("INR")
-  salaryType          SalaryType?
-  offeredAt           DateTime?
-  offeredById         String?
-  offeredBy           User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
-  offerStatus         OfferStatus?
-  expectedJoiningDate DateTime?
-  actualJoiningDate   DateTime?
+  // ── Offer
+  offeredCtc     Float?       // formal offer number
+  salaryCurrency String?      @default("INR")
+  salaryType     SalaryType?
+  offeredAt      DateTime?
+  offeredById    String?
+  offeredBy      User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
+  offerStatus    OfferStatus?
 
+  // ── CTC breakdown
+  currentCtc    Float?   // what candidate earns now at current company
+  expectedCtc   Float?   // what candidate asked for
+  negotiatedCtc Float?   // what was agreed during negotiation
+  ctcNotes      String?  // free text — any CTC context
+
+  // ── Joining
+  lastWorkingDate     DateTime? // LWD at current company
+  expectedJoiningDate DateTime? // when we expect them to join
+  actualJoiningDate   DateTime? // when they actually joined
+  monthOfJoining      String?   // "June 2025" — derived on write, stored for reporting
+  remainingDaysToJoin Int?      // computed on write — negative means overdue, null = no date set
+
+  // ── Rejection
   isRejected      Boolean   @default(false)
   rejectedAt      DateTime?
   rejectedById    String?
   rejectedBy      User?     @relation("PipelineRejectedBy", fields: [rejectedById], references: [id])
   rejectionReason String?
 
+  // ── Withdrawal
   isWithdrawn     Boolean   @default(false)
   withdrawnAt     DateTime?
   withdrawnReason String?
 
+  // ── Hold
   isOnHold     Boolean   @default(false)
   onHoldAt     DateTime?
   onHoldReason String?
@@ -952,10 +968,13 @@ model RequirementCandidatePipeline {
   updatedAt DateTime @updatedAt
 
   @@index([requirementId, currentStageId])
-  // @@index([requirementId, currentCanonicalStage])
   @@index([recruiterId])
   @@index([assignmentId])
   @@index([stageUpdatedAt])
+  @@index([actualJoiningDate])
+  @@index([expectedJoiningDate])
+  @@index([monthOfJoining])
+  @@index([disposition])
 }
 
 
