@@ -595,14 +595,14 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
     );
     const targetIdx = stages.findIndex((s) => s.id === stageId);
 
-    if (targetIdx === -1) {
-      res.status(400).json({
-        success: false,
-        message:
-          "Target stage is not valid for this requirement's service line",
-      });
-      return;
-    }
+    // if (targetIdx === -1) {
+    //   res.status(400).json({
+    //     success: false,
+    //     message:
+    //       "Target stage is not valid for this requirement's service line",
+    //   });
+    //   return;
+    // }
 
     // const skippedMandatory = stages
     //   .slice(currentIdx + 1, targetIdx)

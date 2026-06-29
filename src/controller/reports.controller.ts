@@ -2,7 +2,6 @@
 // Path: src/controller/reports.controller.ts
 
 import { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
 import ExcelJS from "exceljs";
 import prisma from "@/utils/prisma/client";
 
@@ -12,58 +11,47 @@ import prisma from "@/utils/prisma/client";
 // Returns null = entire org (ALL / superAdmin), string[] = scoped list
 // ─────────────────────────────────────────────────────────────────────────────
 
-// File: resolveScopedUserIds.ts
-// Path: src/utils/resolveScopedUserIds.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL: BFS downward from userId — returns self + all reportees recursively
+// SuperAdmin → null (no filter, entire org)
+// Everyone else → self + full subtree below them in org chart
+// Applied uniformly: a recruiter with no reportees gets [userId] only.
+// A TL/DM gets themselves + everyone below. Simple, no scope branching.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// File: resolveScopedUserIds.ts
-// Path: src/utils/resolveScopedUserIds.ts
+async function resolveOrgTreeDown(
+  userId: string,
+  isSuperAdmin: boolean
+): Promise<string[] | null> {
+  if (isSuperAdmin) return null; // superAdmin sees everything
 
-async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
-  const sf = req.scopeFilter;
-  if (!sf || sf.type === "ALL") return null;
-  if (sf.type === "OWN") return [sf.userId!];
-  if (sf.type === "TEAM") return sf.teamMemberIds ?? [sf.userId!];
-  if (sf.type === "REPORTING") return sf.subordinateIds ?? [sf.userId!];
-  if (sf.type === "BU") return sf.subordinateIds ?? [sf.userId!];
+  const visited = new Set<string>([userId]);
+  let frontier = [userId];
 
-  if (sf.type === "DEPARTMENT") {
-    if (!sf.departmentId) return [sf.userId!];
-    const users = await prisma.user.findMany({
-      where: { departmentId: sf.departmentId, isActive: true },
+  while (frontier.length > 0) {
+    const children = await prisma.user.findMany({
+      where: {
+        reportingToId: { in: frontier },
+        isActive: true,
+        id: { notIn: [...visited] }, // avoid cycles
+      },
       select: { id: true },
     });
-    return users.map((u) => u.id);
-  }
-
-  if (sf.type === "REPORTING_LINE") {
-    // BFS using Prisma — no raw SQL, no uuid/text cast issues
-    const seedIds: string[] = sf.reportingLineIds ?? [sf.userId!];
-    const visited = new Set<string>(seedIds);
-    let frontier = [...seedIds];
-
-    while (frontier.length > 0) {
-      const children = await prisma.user.findMany({
-        where: {
-          reportingToId: { in: frontier },
-          isActive: true,
-          // skip already-visited to avoid cycles
-          id: { notIn: [...visited] },
-        },
-        select: { id: true },
-      });
-      frontier = [];
-      for (const c of children) {
-        if (!visited.has(c.id)) {
-          visited.add(c.id);
-          frontier.push(c.id);
-        }
+    frontier = [];
+    for (const c of children) {
+      if (!visited.has(c.id)) {
+        visited.add(c.id);
+        frontier.push(c.id);
       }
     }
-
-    return [...visited];
   }
 
-  return [sf.userId!];
+  return [...visited];
+}
+
+// Wrapper that reads from req — used for pipeline/assignment scope
+async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
+  return resolveOrgTreeDown(req.user!.id, req.user!.isSuperAdmin);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -816,7 +804,18 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
-    const reqWhere = buildReqWhere(q);
+
+    // Scope: only requirements created by self + reportees (full org tree down)
+    // SuperAdmin gets all. A recruiter gets only their own.
+    const creatorIds = await resolveOrgTreeDown(
+      req.user!.id,
+      req.user!.isSuperAdmin
+    );
+    const baseReqWhere = buildReqWhere(q);
+    const reqWhere =
+      creatorIds !== null
+        ? { ...baseReqWhere, createdById: { in: creatorIds } }
+        : baseReqWhere;
 
     const canonicalKeys = await fetchCanonicalKeys();
     const allStages = await fetchAllStages();
@@ -920,9 +919,22 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     const q = req.query as Record<string, string>;
     const singleId = req.params.id ?? null; // set when /requirements/:id/export
 
-    const baseWhere = singleId
-      ? { id: singleId, deletedAt: null }
-      : buildReqWhere(q);
+    // Single requirement export — no scope filter needed (direct ID access)
+    // Bulk export — scope to requirements created by self + reportees
+    let baseWhere: Record<string, any>;
+    if (singleId) {
+      baseWhere = { id: singleId, deletedAt: null };
+    } else {
+      const creatorIds = await resolveOrgTreeDown(
+        req.user!.id,
+        req.user!.isSuperAdmin
+      );
+      const reqFilter = buildReqWhere(q);
+      baseWhere =
+        creatorIds !== null
+          ? { ...reqFilter, createdById: { in: creatorIds } }
+          : reqFilter;
+    }
 
     const canonicalKeys = await fetchCanonicalKeys();
     const allStages = await fetchAllStages();
