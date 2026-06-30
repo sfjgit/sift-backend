@@ -5,7 +5,21 @@ import { z } from "zod";
 export const addNoteSchema = z.object({
   content: z.string().min(1, "Content is required").max(2000).trim(),
 });
+// add to: src/validators/requirement.validators.ts
+// next to your other pipeline schemas (rollOfferSchema, submitCandidateSchema, etc.)
 
+export const updatePipelineDetailsSchema = z.object({
+  currentCtc: z.number().nonnegative().nullable().optional(),
+  expectedCtc: z.number().nonnegative().nullable().optional(),
+  negotiatedCtc: z.number().nonnegative().nullable().optional(),
+  ctcNotes: z.string().max(1000).nullable().optional(),
+  lastWorkingDate: z.string().datetime().nullable().optional(),
+  actualJoiningDate: z.string().datetime().nullable().optional(),
+});
+
+export type UpdatePipelineDetailsInput = z.infer<
+  typeof updatePipelineDetailsSchema
+>;
 export const createRequirementSchema = z.object({
   title: z.string().min(1).max(300).trim(),
   description: z.string().max(5000).optional().nullable(),

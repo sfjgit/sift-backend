@@ -60,6 +60,33 @@ const FULL_PIPELINE_SELECT = {
   actualJoiningDate: true,
   stageUpdatedAt: true,
   createdAt: true,
+
+  // ── CTC ladder — ADD THESE
+  currentCtc: true,
+  expectedCtc: true,
+  negotiatedCtc: true,
+  ctcNotes: true,
+
+  // ── Offer — ADD THESE
+  salaryCurrency: true,
+  salaryType: true,
+
+  // ── Submission — ADD THESE (if missing)
+
+  submissionNote: true,
+
+  // ── Joining — ADD THESE
+  lastWorkingDate: true,
+
+  monthOfJoining: true,
+  remainingDaysToJoin: true,
+
+  // ── Status flags — ADD THESE (if missing)
+
+  rejectionReason: true,
+  withdrawnReason: true,
+  onHoldReason: true,
+
   currentStage: {
     select: {
       id: true,
@@ -81,6 +108,7 @@ const FULL_PIPELINE_SELECT = {
     select: {
       id: true,
       fullName: true,
+      candidateServiceId: true, // ← THIS is the redirect ID
       email: true,
       phone: true,
       currentTitle: true,

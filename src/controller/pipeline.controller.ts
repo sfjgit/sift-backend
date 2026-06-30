@@ -4,7 +4,10 @@
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import { getRequirementScopeWhere } from "@/services/requirementService";
-import { UpdateDispositionInput } from "@/validators/requirement.validators";
+import {
+  UpdateDispositionInput,
+  UpdatePipelineDetailsInput,
+} from "@/validators/requirement.validators";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
@@ -46,15 +49,33 @@ async function findPipeline(pipelineId: string, requirementId?: string) {
       id: true,
       requirementId: true,
       recruiterId: true,
+      assignmentId: true,
       isRejected: true,
       isWithdrawn: true,
       isOnHold: true,
       stageUpdatedAt: true,
       currentStageId: true,
       currentStage: {
-        select: { id: true, code: true, order: true, isTerminal: true },
+        select: {
+          id: true,
+          code: true,
+          order: true,
+          isTerminal: true,
+          canonicalStage: true,
+        },
       },
       offerStatus: true,
+      // ── CTC ladder — needed by updatePipelineDetails
+      currentCtc: true,
+      expectedCtc: true,
+      negotiatedCtc: true,
+      ctcNotes: true,
+      // ── Joining — needed by updatePipelineDetails
+      expectedJoiningDate: true,
+      lastWorkingDate: true,
+      actualJoiningDate: true,
+      monthOfJoining: true,
+      remainingDaysToJoin: true,
     },
   });
 }
@@ -81,11 +102,26 @@ const PIPELINE_SELECT = {
   offeredAt: true,
   expectedJoiningDate: true,
   actualJoiningDate: true,
+  // ── CTC ladder — surfaced in the assignment pipeline table
+  currentCtc: true,
+  expectedCtc: true,
+  negotiatedCtc: true,
+  ctcNotes: true,
+  // ── Joining — surfaced in the assignment pipeline table
+  lastWorkingDate: true,
+  monthOfJoining: true,
+  remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
   updatedAt: true,
   currentStage: {
-    select: { id: true, code: true, label: true, order: true },
+    select: {
+      id: true,
+      code: true,
+      label: true,
+      order: true,
+      canonicalStage: true,
+    },
   },
   snapshot: {
     select: {
@@ -539,7 +575,7 @@ export const pushCandidate = async (req: Request, res: Response) => {
 export const moveCandidateStage = async (req: Request, res: Response) => {
   try {
     const { pipelineId } = req.params;
-    const { stageId, skipReason, note } = req.body;
+    const { stageId, note } = req.body;
     const actorId = req.user!.id;
 
     const pipeline = await findPipeline(pipelineId);
@@ -549,6 +585,7 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
         .json({ success: false, message: "Pipeline entry not found" });
       return;
     }
+
     if (pipeline.isRejected || pipeline.isWithdrawn) {
       res.status(400).json({
         success: false,
@@ -556,10 +593,11 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       });
       return;
     }
-    if (pipeline.currentStage.isTerminal) {
+
+    if (pipeline.currentStageId === stageId) {
       res.status(400).json({
         success: false,
-        message: "Candidate has already reached a terminal stage",
+        message: "Candidate is already at this stage",
       });
       return;
     }
@@ -569,61 +607,23 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       select: {
         id: true,
         code: true,
-        order: true,
-        isMandatory: true,
-        isTerminal: true,
         label: true,
+        order: true,
+        isTerminal: true,
+        canonicalStage: true,
       },
     });
+
     if (!targetStage) {
-      res
-        .status(404)
-        .json({ success: false, message: "Target stage not found" });
-      return;
-    }
-    if (targetStage.order <= pipeline.currentStage.order) {
-      res.status(400).json({
-        success: false,
-        message: "Stage must move forward in sequence",
-      });
+      res.status(404).json({ success: false, message: "Stage not found" });
       return;
     }
 
-    const stages = await getStageSequence(pipeline.requirementId);
-    const currentIdx = stages.findIndex(
-      (s) => s.id === pipeline.currentStageId
-    );
-    const targetIdx = stages.findIndex((s) => s.id === stageId);
-
-    // if (targetIdx === -1) {
-    //   res.status(400).json({
-    //     success: false,
-    //     message:
-    //       "Target stage is not valid for this requirement's service line",
-    //   });
-    //   return;
-    // }
-
-    // const skippedMandatory = stages
-    //   .slice(currentIdx + 1, targetIdx)
-    //   .filter((s) => s.isMandatory);
-    // if (skippedMandatory.length > 0 && !skipReason) {
-    //   res.status(400).json({
-    //     success: false,
-    //     message: `Skipping mandatory stage(s): ${skippedMandatory
-    //       .map((s) => s.label)
-    //       .join(", ")}. Provide skipReason.`,
-    //     skippedStages: skippedMandatory.map((s) => ({
-    //       code: s.code,
-    //       label: s.label,
-    //     })),
-    //   });
-    //   return;
-    // }
-
+    const isMovingForward = targetStage.order > pipeline.currentStage.order;
     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
     await prisma.$transaction(async (tx) => {
+      // 1. Move the stage
       await tx.requirementCandidatePipeline.update({
         where: { id: pipelineId },
         data: {
@@ -636,25 +636,25 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
         },
       });
 
+      // 2. Write stage history log — always, forward or backward
       await tx.candidatePipelineStageLog.create({
         data: {
           pipelineId,
           fromStageId: pipeline.currentStageId,
           toStageId: stageId,
           changedById: actorId,
-          // wasSkipped: skippedMandatory.length > 0,
-          skipReason: skipReason ?? null,
-          timeInPrevStageMins,
+          timeInPrevStageMins: timeInPrevStageMins,
           note: note ?? null,
+          // canonicalStage fields from schema
+          fromCanonicalStage: pipeline.currentStage.canonicalStage ?? null,
+          toCanonicalStage: targetStage.canonicalStage ?? null,
         },
       });
 
-      const interviewCodes = ["05", "06", "07A", "07B", "08"];
-      if (interviewCodes.includes(targetStage.code)) {
-        await tx.requirement.update({
-          where: { id: pipeline.requirementId },
-          data: {},
-        });
+      // 3. If moving forward to INTERVIEW canonical stage
+      //    → increment interviewsCount on the recruiter's assignment
+      //    (interviewsCount lives on RequirementAssignment, not Requirement)
+      if (isMovingForward && targetStage.canonicalStage === "INTERVIEW") {
         await tx.requirementAssignment.updateMany({
           where: {
             requirementId: pipeline.requirementId,
@@ -665,24 +665,39 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
         });
       }
 
-      if (targetStage.isTerminal) {
-        await tx.requirement.update({
-          where: { id: pipeline.requirementId },
-          data: {
-            filledOpenings: { increment: 1 },
-            activeApplications: { decrement: 1 },
-          },
+      // 4. If moving forward to terminal stage
+      //    → increment filledOpenings on the assignment only
+      if (isMovingForward && targetStage.isTerminal && pipeline.assignmentId) {
+        await tx.requirementAssignment.update({
+          where: { id: pipeline.assignmentId },
+          data: { filledOpenings: { increment: 1 } },
+        });
+      }
+
+      // 5. If moving BACKWARD from terminal stage
+      //    → undo filledOpenings on the assignment
+      if (
+        !isMovingForward &&
+        pipeline.currentStage.isTerminal &&
+        pipeline.assignmentId
+      ) {
+        await tx.requirementAssignment.update({
+          where: { id: pipeline.assignmentId },
+          data: { filledOpenings: { decrement: 1 } },
         });
       }
     });
 
     res.json({
       success: true,
-      message: `Stage moved to ${targetStage.label}`,
+      message: `Stage ${isMovingForward ? "moved to" : "rolled back to"} ${
+        targetStage.label
+      }`,
       data: {
         pipelineId,
         stageCode: targetStage.code,
         stageLabel: targetStage.label,
+        direction: isMovingForward ? "forward" : "backward",
       },
     });
   } catch (err) {
@@ -774,11 +789,21 @@ export const submitCandidate = async (req: Request, res: Response) => {
 // PATCH /pipeline/:pipelineId/offer
 // ─────────────────────────────────────────────────────────────────────────────
 
+// pipeline.controller.ts — rollOffer replacement
 export const rollOffer = async (req: Request, res: Response) => {
   try {
     const { pipelineId } = req.params;
-    const { offeredCtc, salaryCurrency, salaryType, expectedJoiningDate } =
-      req.body;
+    const {
+      offeredCtc,
+      salaryCurrency,
+      salaryType,
+      expectedJoiningDate,
+      // CTC ladder — added
+      currentCtc,
+      expectedCtc,
+      negotiatedCtc,
+      ctcNotes,
+    } = req.body;
     const actorId = req.user!.id;
 
     const pipeline = await findPipeline(pipelineId);
@@ -789,64 +814,93 @@ export const rollOffer = async (req: Request, res: Response) => {
       return;
     }
     if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res.status(400).json({
-        success: false,
-        message: "Candidate is rejected or withdrawn",
-      });
-      return;
-    }
-
-    const offerStage = await prisma.pipelineStage.findFirst({
-      where: { code: "09", isActive: true },
-      select: { id: true, label: true },
-    });
-    if (!offerStage) {
       res
-        .status(500)
-        .json({ success: false, message: "Stage 09 not configured" });
+        .status(400)
+        .json({
+          success: false,
+          message: "Candidate is rejected or withdrawn",
+        });
       return;
     }
 
-    const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
+    // Build the update payload — CTC ladder fields always, offer fields only if offeredCtc provided
+    const data: Record<string, any> = {};
 
-    await prisma.$transaction(async (tx) => {
-      await tx.requirementCandidatePipeline.update({
-        where: { id: pipelineId },
-        data: {
-          offeredCtc,
-          salaryCurrency: salaryCurrency ?? "INR",
-          salaryType,
-          offeredAt: new Date(),
-          offeredById: actorId,
-          offerStatus: "PENDING",
-          expectedJoiningDate: expectedJoiningDate
-            ? new Date(expectedJoiningDate)
-            : null,
-          currentStageId: offerStage.id,
-          stageUpdatedAt: new Date(),
-          stageUpdatedById: actorId,
-        },
+    // ── CTC ladder (no stage move, no side effects)
+    if (currentCtc !== undefined) data.currentCtc = currentCtc;
+    if (expectedCtc !== undefined) data.expectedCtc = expectedCtc;
+    if (negotiatedCtc !== undefined) data.negotiatedCtc = negotiatedCtc;
+    if (ctcNotes !== undefined) data.ctcNotes = ctcNotes;
+
+    if (Object.keys(data).length === 0 && !offeredCtc) {
+      res.status(400).json({ success: false, message: "No fields provided" });
+      return;
+    }
+
+    // ── Formal offer — only when offeredCtc is explicitly provided
+    if (offeredCtc != null) {
+      const offerStage = await prisma.pipelineStage.findFirst({
+        where: { code: "09", isActive: true },
+        select: { id: true, label: true, canonicalStage: true },
       });
-      await tx.candidatePipelineStageLog.create({
-        data: {
-          pipelineId,
-          fromStageId: pipeline.currentStageId,
-          toStageId: offerStage.id,
-          changedById: actorId,
-          timeInPrevStageMins,
-          note: `Offer rolled: ${offeredCtc} ${salaryCurrency ?? "INR"}`,
-        },
+      if (!offerStage) {
+        res
+          .status(500)
+          .json({ success: false, message: "Stage 09 not configured" });
+        return;
+      }
+
+      const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
+
+      data.offeredCtc = offeredCtc;
+      data.salaryCurrency = salaryCurrency ?? "INR";
+      data.salaryType = salaryType;
+      data.offeredAt = new Date();
+      data.offeredById = actorId;
+      data.offerStatus = "PENDING";
+      data.currentStageId = offerStage.id;
+      data.stageUpdatedAt = new Date();
+      data.stageUpdatedById = actorId;
+      if (expectedJoiningDate)
+        data.expectedJoiningDate = new Date(expectedJoiningDate);
+
+      await prisma.$transaction(async (tx) => {
+        await tx.requirementCandidatePipeline.update({
+          where: { id: pipelineId },
+          data,
+        });
+        await tx.candidatePipelineStageLog.create({
+          data: {
+            pipelineId,
+            fromStageId: pipeline.currentStageId,
+            toStageId: offerStage.id,
+            changedById: actorId,
+            timeInPrevStageMins,
+            fromCanonicalStage: pipeline.currentStage.canonicalStage ?? null,
+            toCanonicalStage: offerStage.canonicalStage ?? null,
+            note: `Offer rolled: ${offeredCtc} ${salaryCurrency ?? "INR"}`,
+          },
+        });
       });
-      await tx.requirement.update({
-        where: { id: pipeline.requirementId },
-        data: { offersRolledOut: { increment: 1 } },
+
+      res.json({
+        success: true,
+        message: "Offer rolled out and CTC details saved",
       });
+      return;
+    }
+
+    // ── CTC ladder only — no stage move
+    await prisma.requirementCandidatePipeline.update({
+      where: { id: pipelineId },
+      data,
     });
-
-    res.json({ success: true, message: "Offer rolled out" });
+    res.json({ success: true, message: "CTC details updated" });
   } catch (err) {
     console.error("rollOffer:", err);
-    res.status(500).json({ success: false, message: "Failed to roll offer" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update offer details" });
   }
 };
 
@@ -1094,6 +1148,106 @@ export const holdCandidate = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to hold candidate" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /pipeline/:pipelineId/details
+// CTC ladder + joining fields that have no dedicated action endpoint.
+// Backs the "Update Candidate Details" dialog on the assignment pipeline UI.
+// Does NOT touch disposition, stage, or assignment counters — those stay on
+// /disposition, /stage, /offer, etc.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updatePipelineDetails = async (req: Request, res: Response) => {
+  try {
+    const { pipelineId } = req.params;
+    const {
+      currentCtc,
+      expectedCtc,
+      negotiatedCtc,
+      ctcNotes,
+      lastWorkingDate,
+      actualJoiningDate,
+    } = req.body as UpdatePipelineDetailsInput;
+
+    const pipeline = await findPipeline(pipelineId);
+    if (!pipeline) {
+      res
+        .status(404)
+        .json({ success: false, message: "Pipeline entry not found" });
+      return;
+    }
+
+    const data: Record<string, any> = {};
+
+    if (currentCtc !== undefined) data.currentCtc = currentCtc;
+    if (expectedCtc !== undefined) data.expectedCtc = expectedCtc;
+    if (negotiatedCtc !== undefined) data.negotiatedCtc = negotiatedCtc;
+    if (ctcNotes !== undefined) data.ctcNotes = ctcNotes;
+    if (lastWorkingDate !== undefined) {
+      data.lastWorkingDate = lastWorkingDate ? new Date(lastWorkingDate) : null;
+    }
+
+    // actualJoiningDate drives the two derived fields. Recomputed here since
+    // the schema comment says "computed on write" — no cron involved.
+    // Disposition / assignment fill counts are intentionally left untouched —
+    // use PATCH /:pipelineId/disposition with PLACED for that.
+    if (actualJoiningDate !== undefined) {
+      if (actualJoiningDate) {
+        const joined = new Date(actualJoiningDate);
+        data.actualJoiningDate = joined;
+        data.monthOfJoining = joined.toLocaleString("en-IN", {
+          month: "long",
+          year: "numeric",
+        });
+        data.remainingDaysToJoin = 0;
+      } else {
+        // clearing the actual join date — fall back to recomputing the
+        // countdown against expectedJoiningDate if one exists
+        data.actualJoiningDate = null;
+        data.monthOfJoining = null;
+        data.remainingDaysToJoin = pipeline.expectedJoiningDate
+          ? Math.floor(
+              (pipeline.expectedJoiningDate.getTime() - Date.now()) / 86_400_000
+            )
+          : null;
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      res
+        .status(400)
+        .json({ success: false, message: "No fields provided to update" });
+      return;
+    }
+
+    const updated = await prisma.requirementCandidatePipeline.update({
+      where: { id: pipelineId },
+      data,
+      select: {
+        id: true,
+        currentCtc: true,
+        expectedCtc: true,
+        negotiatedCtc: true,
+        ctcNotes: true,
+        lastWorkingDate: true,
+        actualJoiningDate: true,
+        monthOfJoining: true,
+        remainingDaysToJoin: true,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: "Candidate details updated",
+      data: updated,
+    });
+  } catch (err) {
+    console.error("updatePipelineDetails:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update candidate details" });
   }
 };
 

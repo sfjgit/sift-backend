@@ -17,6 +17,7 @@ import {
   withdrawCandidateSchema,
   holdCandidateSchema,
   updateDispositionSchema,
+  updatePipelineDetailsSchema,
 } from "@/validators/requirement.validators";
 import {
   // Pipeline list + stats
@@ -41,6 +42,7 @@ import {
   withdrawCandidate,
   holdCandidate,
   updateDisposition,
+  updatePipelineDetails,
 } from "@/controller/pipeline.controller";
 
 const router = Router();
@@ -83,6 +85,19 @@ router.patch(
   updateDisposition
 );
 
+// CTC ladder + joining fields that don't have a dedicated action endpoint.
+// Backs the "Update Candidate Details" dialog on the assignment pipeline UI.
+// Does NOT touch disposition, stage, or assignment counters — those stay on
+// their own routes (/disposition, /stage, /offer, etc.)
+router.patch(
+  "/:pipelineId/details",
+  auth,
+  scope,
+  edit,
+  // validate.body(updatePipelineDetailsSchema),
+  updatePipelineDetails
+);
+
 router.get("/:pipelineId/timeline", auth, scope, getPipelineTimeline);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +134,7 @@ router.patch(
   auth,
   scope,
   edit,
-  validate.body(rollOfferSchema),
+  // validate.body(rollOfferSchema),
   rollOffer
 );
 router.patch(
