@@ -107,7 +107,7 @@ export const createAssignmentSchema = z
       (data.assignedToIds && data.assignedToIds.length > 0),
     {
       message: "assignedToId or assignedToIds is required",
-    }
+    },
   );
 
 // export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
@@ -192,7 +192,7 @@ export type RollOfferInput = z.infer<typeof rollOfferSchema>;
 
 export const updateDispositionSchema = z
   .object({
-    disposition: z.nativeEnum(CandidateDisposition),
+    disposition: z.enum(CandidateDisposition),
     dropReason: z.string().max(500).optional().nullable(),
     dropNote: z.string().max(500).optional().nullable(),
     holdNote: z.string().max(500).optional().nullable(),
