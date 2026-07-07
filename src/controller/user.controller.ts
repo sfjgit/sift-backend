@@ -178,6 +178,71 @@ export const listUsers = async (req: Request, res: Response) => {
   }
 };
 
+// GET /users/hierarchy-filters
+export const getHierarchyFilters = async (req: Request, res: Response) => {
+  try {
+    const [teamLeadRows, reportingToRows] = await Promise.all([
+      prisma.user.findMany({
+        where: { teamLeadId: { not: null } },
+        select: { teamLeadId: true },
+        distinct: ["teamLeadId"],
+      }),
+      prisma.user.findMany({
+        where: { reportingToId: { not: null } },
+        select: { reportingToId: true },
+        distinct: ["reportingToId"],
+      }),
+    ]);
+
+    const teamLeadIds = [
+      ...new Set(teamLeadRows.map((r) => r.teamLeadId).filter(Boolean)),
+    ] as string[];
+
+    const reportingToIds = [
+      ...new Set(reportingToRows.map((r) => r.reportingToId).filter(Boolean)),
+    ] as string[];
+
+    const [teamLeads, reportingTo] = await Promise.all([
+      teamLeadIds.length
+        ? prisma.user.findMany({
+            where: { id: { in: teamLeadIds } },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              isActive: true,
+            },
+            orderBy: { firstName: "asc" },
+          })
+        : [],
+      reportingToIds.length
+        ? prisma.user.findMany({
+            where: { id: { in: reportingToIds } },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              isActive: true,
+            },
+            orderBy: { firstName: "asc" },
+          })
+        : [],
+    ]);
+
+    res.json({
+      success: true,
+      data: { teamLeads, reportingTo },
+    });
+  } catch (err) {
+    console.error("getHierarchyFilters:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch hierarchy filters" });
+  }
+};
+
 // ─────────────────────────────────────────
 // GET /users/:id
 // ─────────────────────────────────────────
@@ -991,11 +1056,11 @@ export const getUserTree = async (req: Request, res: Response) => {
           totalFilled: s._sum.filledOpenings ?? 0,
           totalAllocated: s._sum.allocatedOpenings ?? 0,
         },
-      ])
+      ]),
     );
 
     const reqsMap = new Map(
-      reqsCreated.map((r) => [r.createdById, r._count.id])
+      reqsCreated.map((r) => [r.createdById, r._count.id]),
     );
 
     const spocsMap = new Map<string, typeof spocs>();
@@ -1317,27 +1382,27 @@ export const getUserCard = async (req: Request, res: Response) => {
         acc[label] = (acc[label] || 0) + 1;
         return acc;
       },
-      {}
+      {},
     );
 
     const activeAssignments = user.assignmentsReceived.filter(
-      (a) => a.status === "ACTIVE"
+      (a) => a.status === "ACTIVE",
     );
 
     const aggregateStats = {
       activeReqs: user._count.assignmentsReceived,
       totalSubmissions: activeAssignments.reduce(
         (s, a) => s + a.submissionsCount,
-        0
+        0,
       ),
       totalInterviews: activeAssignments.reduce(
         (s, a) => s + a.interviewsCount,
-        0
+        0,
       ),
       totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
       totalAllocated: activeAssignments.reduce(
         (s, a) => s + (a.allocatedOpenings ?? 0),
-        0
+        0,
       ),
       totalAssignmentsGiven: user._count.assignmentsGiven,
       requirementsCreated: user._count.requirementsCreated,

@@ -10,7 +10,9 @@ import {
 } from "@/utils/jwt";
 import { createAuditLog } from "@/services/auditLogs.service";
 import { setTokenCookies } from "@/middleware/auth";
-import { loggers } from "@/utils/logger";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+import env from "@/config/env";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -114,7 +116,7 @@ export const login = async (req: Request, res: Response) => {
     console.log("🟢 [LOGIN] setTokenCookies called");
     console.log(
       "🟢 [LOGIN] Response headers after setTokenCookies:",
-      res.getHeaders()
+      res.getHeaders(),
     );
 
     await prisma.refreshToken.create({
@@ -292,6 +294,91 @@ export const logout = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Error logging out" });
+  }
+};
+
+export const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    // Prevent email enumeration
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If an account exists, a password reset link has been sent.",
+      });
+    }
+
+    // Generate secure token
+    const token = crypto.randomBytes(32).toString("hex");
+
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        resetPasswordToken: token,
+        resetPasswordExpires: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT),
+      secure: false, // use true if port is 465
+      auth: {
+        user: env.SMTP_USER,
+        pass: env.SMTP_PASS,
+      },
+    });
+
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+
+    await transporter.sendMail({
+      from: env.SMTP_FROM,
+      to: email,
+      subject: "Reset Password",
+      html: `
+        <h2>Password Reset</h2>
+
+        <p>You requested a password reset.</p>
+
+        <p>
+          Click below to reset your password:
+        </p>
+
+        <a href="${resetUrl}">
+          Reset Password
+        </a>
+
+        <p>
+          This link expires in 15 minutes.
+        </p>
+      `,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "If an account exists, a password reset link has been sent.",
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+    });
   }
 };
 

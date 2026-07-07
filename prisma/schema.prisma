@@ -189,6 +189,9 @@ model User {
   email        String @unique
   passwordHash String
 
+  resetPasswordToken   String?
+  resetPasswordExpires DateTime?
+
   firstName       String
   lastName        String
   middleName      String?

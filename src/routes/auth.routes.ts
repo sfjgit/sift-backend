@@ -9,6 +9,7 @@ import {
 import { validate } from "@/validators/validator";
 import { Router } from "express";
 import {
+  forgotPassword,
   getUserCredentials,
   login,
   logout,
@@ -31,7 +32,7 @@ router.post(
   authenticateUser,
   // authorize('SUPER_ADMIN'),
   validate.body(registerSchema),
-  register
+  register,
 );
 // router.use("/", (_req, res) => {
 //   console.log("Root route accessed");
@@ -64,6 +65,13 @@ router.post("/refresh", refresh);
 router.post("/logout", authenticateUser, logout);
 
 /**
+ * @route   POST /api/auth/forgot-password
+ * @desc    Forgot password
+ * @access
+ */
+router.post("/forgot-password", forgotPassword);
+
+/**
  * @route   PATCH /api/auth/reset-password/:userId
  * @desc    Reset password
  * @access  Super Admin
@@ -74,7 +82,7 @@ router.patch(
   // authorize("SUPER_ADMIN"),
   validate.params(resetPasswordParamsSchema),
   validate.body(resetPasswordBodySchema),
-  resetPassword
+  resetPassword,
 );
 
 /**
@@ -87,7 +95,7 @@ router.get(
   authenticateUser,
   // authorize("SUPER_ADMIN"),
   validate.params(getUserCredentialsSchema),
-  getUserCredentials
+  getUserCredentials,
 );
 
 export default router;

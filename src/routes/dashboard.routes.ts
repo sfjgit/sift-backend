@@ -8,6 +8,7 @@ import {
   getPipelineOverview,
   getMyAssignments,
   getDashboardActivity,
+  getResumeParsingStats,
 } from "@/controller/dashboard.controller";
 
 const router = Router();
@@ -15,6 +16,7 @@ const router = Router();
 router.use(authenticateUser);
 
 router.get("/stats", getDashboardStats);
+router.get("/resume-stats", getResumeParsingStats);
 router.get("/pipeline-overview", getPipelineOverview);
 router.get("/my-assignments", getMyAssignments);
 router.get("/activity", getDashboardActivity);
