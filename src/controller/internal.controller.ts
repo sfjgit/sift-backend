@@ -21,6 +21,7 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
       topSkills,
       resumeUrl,
       rawSnapshot,
+      sourced,
     } = req.body;
 
     console.log("[syncCandidateToCore] Body:", req.body);
@@ -126,7 +127,7 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
 
     if (!sourcedStage) {
       console.error(
-        "[syncCandidateToCore] STAGE_NOT_CONFIGURED: Pipeline stage code '01' not found. Run seed."
+        "[syncCandidateToCore] STAGE_NOT_CONFIGURED: Pipeline stage code '01' not found. Run seed.",
       );
       res.status(500).json({
         success: false,
@@ -151,6 +152,7 @@ export const syncCandidateToCore = async (req: Request, res: Response) => {
           topSkills: topSkills ?? [],
           resumeUrl: resumeUrl ?? null,
           rawSnapshot: rawSnapshot ?? {},
+          sourced: sourced ?? null,
           createdById: recruiterId,
         },
       });

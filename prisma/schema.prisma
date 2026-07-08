@@ -189,6 +189,9 @@ model User {
   email        String @unique
   passwordHash String
 
+  resetPasswordToken   String?
+  resetPasswordExpires DateTime?
+
   firstName       String
   lastName        String
   middleName      String?
@@ -859,6 +862,9 @@ model CandidateSnapshot {
 
   // full response blob from Candidate Service GET /candidates/:id
   rawSnapshot Json
+
+  // snapshot source
+  sourced String?
 
   createdById String
   createdBy   User   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])

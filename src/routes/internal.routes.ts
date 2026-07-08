@@ -17,7 +17,7 @@ config();
 const requireInternalSecret = (
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) => {
   const secret = req.headers["x-internal-secret"];
   if (!secret || secret !== process.env.INTERNAL_SECRET) {
@@ -42,6 +42,7 @@ const syncSchema = z.object({
   topSkills: z.array(z.string()).default([]),
   resumeUrl: z.string().optional().nullable(),
   rawSnapshot: z.any(),
+  sourced: z.string().optional().nullable(),
 });
 
 // const validate = (req: Request, res: Response, next: NextFunction) => {
@@ -63,7 +64,7 @@ router.post(
   "/candidates/sync",
   requireInternalSecret,
   // validate.body(syncSchema),
-  syncCandidateToCore
+  syncCandidateToCore,
 );
 
 export default router;
