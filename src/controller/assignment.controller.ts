@@ -530,6 +530,7 @@ export const getAssignments = async (req: Request, res: Response) => {
       limit = "25",
       sortBy = "assignedAt",
       sortDir = "desc",
+      search,
     } = req.query as Record<string, string>;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -537,6 +538,29 @@ export const getAssignments = async (req: Request, res: Response) => {
 
     const scopeWhere = assignmentScopeWhere(req.scopeFilter!);
     const filterWhere: any = { ...scopeWhere };
+    if (search?.trim()) {
+      const q = search.trim();
+      filterWhere.OR = [
+        {
+          requirement: {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { reqCode: { contains: q, mode: "insensitive" } },
+              { client: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+        },
+        {
+          assignedTo: {
+            OR: [
+              { firstName: { contains: q, mode: "insensitive" } },
+              { lastName: { contains: q, mode: "insensitive" } },
+              { employeeId: { contains: q, mode: "insensitive" } },
+            ],
+          },
+        },
+      ];
+    }
 
     if (requirementId) filterWhere.requirementId = requirementId;
     if (assignedToId) filterWhere.assignedToId = assignedToId;
@@ -687,6 +711,7 @@ export const getMyAssignments = async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const {
       status,
+      search,
       page = "1",
       limit = "25",
       sortDir = "desc",
@@ -697,7 +722,20 @@ export const getMyAssignments = async (req: Request, res: Response) => {
 
     const where: any = { assignedToId: userId };
     if (status) where.status = status;
-
+    if (search?.trim()) {
+      const q = search.trim();
+      where.OR = [
+        {
+          requirement: {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { reqCode: { contains: q, mode: "insensitive" } },
+              { client: { name: { contains: q, mode: "insensitive" } } },
+            ],
+          },
+        },
+      ];
+    }
     const [total, assignments] = await Promise.all([
       prisma.requirementAssignment.count({ where }),
       prisma.requirementAssignment.findMany({
