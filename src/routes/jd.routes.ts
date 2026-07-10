@@ -99,14 +99,28 @@ async function promptRateLimit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PROMPT_SYSTEM = `You are a Job Description extraction assistant.
-The user will give you a plain-text description of a job requirement.
-Extract all relevant fields and return ONLY a valid JSON object.
-No preamble, no explanation, no markdown fences.
+The user will give you a plain-text job description, which may contain multiple sections (About the Role, Responsibilities, Eligibility, Skills, etc.).
 
-Return exactly this shape (all fields optional except title):
+You have two jobs on the SAME input:
+
+1. "description" — put the FULL job description in here, cleaned up as Markdown.
+   - Preserve every section (About the Role, Key Responsibilities, Eligibility,
+     Required Skills, What We're Looking For, Performance Expectations, Why Join Us, etc.)
+   - Use "## Heading" for section titles and "- " for bullet lists.
+   - Do NOT summarize, shorten, or drop content — even if a detail is also
+     pulled into a structured field below, it must still appear in "description".
+
+2. Separately extract the structured fields below FROM the same text, only when
+   explicitly stated. These exist for filtering/search — they do not replace
+   the full text in "description".
+
+Return ONLY a valid JSON object. No preamble, no explanation, no markdown fences
+wrapping the JSON itself (though "description" may contain markdown internally).
+
+Return exactly this shape (all fields optional except title and description):
 {
   "title": "string",
-  "description": "string | null",
+  "description": "string (full markdown JD — never thin, never empty)",
   "jobType": "CONTRACT | PERMANENT | CONTRACT_TO_HIRE | FREELANCE | null",
   "remoteType": "ONSITE | REMOTE | HYBRID | null",
   "experienceMin": number | null,

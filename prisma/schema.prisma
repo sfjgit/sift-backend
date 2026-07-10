@@ -1115,3 +1115,69 @@ model PipelineStage {
   @@index([order])
   @@index([canonicalStage])
 }
+
+// File: staging-schema-additions.prisma
+// Path: src/migration/staging-schema-additions.prisma
+//
+// Append these models to your main schema.prisma before running the
+// migration script. They hold anything the script could not confidently
+// map to a real row in a live table (User, Client, ClientSpoc,
+// RequirementAssignment). Nothing here has FKs into your live tables on
+// purpose — a staging row must survive even if the thing it references
+// doesn't exist yet.
+//
+// Workflow: run migrate-requirements.ts in DRY RUN (default) -> review
+// MigrationStaging rows -> fix data (map an email to a User, fix a typo,
+// whatever) -> run the promote step (promote-staging.ts, not included yet,
+// build once you've seen what actually lands here) -> re-run migration
+// with --commit.
+
+enum MigrationStagingType {
+  UNMAPPED_CREATOR // Requirement's "Created By" email has no matching User
+  UNMAPPED_RECRUITER // A recruiter email in "Recruiters"/"Sourced By" col has no matching User
+  UNRESOLVED_CHAIN // Both creator and recruiter exist as Users, but no
+  // reportingTo/teamLead path connects them
+  CLIENT_SPOC_NEEDS_REVIEW // Regex-extracted ClientSpoc, unverified
+  DUPLICATE_REQ_CODE // Job ID / Reference ID collided with an existing reqCode
+  UNMAPPED_REQUIREMENT // Candidate row's Job ID has no matching Requirement
+  UNMAPPED_STAGE // Stage/Substage combo missing from stage-mapping.ts
+  PIPELINE_STAGE_NOT_SEEDED // CanonicalStage has no seeded PipelineStage row
+  FLAT_FALLBACK_ASSIGNMENT // No hierarchy/assignable path — flat creator->recruiter assignment created (audit record, not a blocker)
+}
+
+enum MigrationStagingStatus {
+  PENDING
+  RESOLVED
+  IGNORED
+}
+
+model MigrationStaging {
+  id   String               @id @default(uuid())
+  type MigrationStagingType
+
+  // Human-readable, e.g. "ta4087@sfjbs.com not found in Users" —
+  // this is what you'll actually read when triaging.
+  reason String
+
+  // Free-form context needed to resolve this row by hand later:
+  // the source xlsx row number, the raw cell values, any partially
+  // resolved ids (e.g. requirementId if creator was fine but a
+  // recruiter wasn't), etc. Keep it dumb and complete.
+  payload Json
+
+  // Which xlsx row this came from, for traceability back to the source file.
+  sourceRow Int?
+
+  status MigrationStagingStatus @default(PENDING)
+
+  // Once someone manually maps the missing entity (e.g. adds the
+  // correct userId here), the promote script picks this up.
+  resolvedUserId String?
+  resolvedNote   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type, status])
+  @@index([sourceRow])
+}

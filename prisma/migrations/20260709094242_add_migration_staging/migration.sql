@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "MigrationStagingType" ADD VALUE 'FLAT_FALLBACK_ASSIGNMENT';

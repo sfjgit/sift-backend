@@ -151,12 +151,29 @@ export async function extractTextFromJD(
 const SYSTEM_PROMPT = `
 You are a JD (Job Description) parser. You will receive raw text extracted from a Job Description document.
 
+You have two jobs on the SAME input:
+
+1. "description" — put the FULL job description text in here, cleaned up as Markdown.
+   - Preserve every section as written (About the Role, Key Responsibilities,
+     Eligibility, Required Skills, What We're Looking For, Performance
+     Expectations, Why Join Us, etc.)
+   - Use "## Heading" for section titles and "- " for bullet lists.
+   - Do NOT summarize, shorten, truncate, or drop content. There is no length
+     cap — if the source JD is long, "description" should be long too.
+   - Even if a detail is also pulled into a structured field below, it must
+     still appear in full inside "description".
+
+2. Separately extract the structured fields below FROM the same text, only
+   when explicitly stated in the JD. These exist for filtering/search — they
+   supplement "description", they do not replace it.
+
 Return ONLY a valid JSON object with the fields below.
-No explanation, no markdown, no code fences — raw JSON only.
+No explanation, no markdown, no code fences wrapping the JSON itself (though
+"description" may contain markdown internally) — raw JSON only.
 
 {
   "title":            string | null,
-  "description":      string | null,       // summary, max 2000 chars
+  "description":      string | null,       // full markdown JD — never thin, no length cap
   "primarySkills":    string[],            // top 3-5 must-have skills only
   "keySkills":        string[],            // all other required skills
   "experienceMin":    number | null,       // years, decimal ok (e.g. 2.5)
