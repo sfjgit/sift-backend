@@ -16,6 +16,7 @@ import {
   refresh,
   register,
   resetPassword,
+  resetPasswordByToken,
 } from "../controller/auth.controller";
 import { authorize } from "@/middleware/role";
 import { authenticateUser } from "@/middleware/auth";
@@ -70,6 +71,13 @@ router.post("/logout", authenticateUser, logout);
  * @access
  */
 router.post("/forgot-password", forgotPassword);
+
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Reset password
+ * @access  Public
+ */
+router.post("/reset-password", resetPasswordByToken);
 
 /**
  * @route   PATCH /api/auth/reset-password/:userId
