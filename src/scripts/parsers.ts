@@ -102,3 +102,37 @@ export function parseClientSpoc(
   if (!name) return null;
   return { name, email: emailMatch[1].toLowerCase().trim() };
 }
+
+/**
+ * Extracts name + email pairs from a multi-entry cell like "Recruiters" or
+ * a single-entry cell like "Created By". Pattern per entry:
+ * "CODE|Team|Lead|Full Name (email@x.com)". Name = last |-segment before the
+ * final parenthesis. Used by auto-user-creation so migrated users get real
+ * names, not email prefixes.
+ */
+export function extractNameEmailPairs(
+  cell: string | null | undefined
+): Array<{ name: string; email: string }> {
+  if (!cell) return [];
+  const segments = cell
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const pairs: Array<{ name: string; email: string }> = [];
+  const seen = new Set<string>();
+  for (const seg of segments) {
+    const m = seg.match(
+      /\(([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\)\s*$/
+    );
+    if (!m) continue;
+    const email = m[1].toLowerCase().trim();
+    if (seen.has(email)) continue;
+    seen.add(email);
+    const beforeParen = seg.slice(0, m.index).trim();
+    const lastSegment = beforeParen.split("|").pop() ?? beforeParen;
+    const name =
+      lastSegment.replace(/\([^)]*\)\s*$/, "").trim() || email.split("@")[0];
+    pairs.push({ name, email });
+  }
+  return pairs;
+}

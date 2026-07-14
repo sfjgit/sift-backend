@@ -4,44 +4,38 @@
 // One-time backfill: legacy "All_active_Requirements.xlsx" export -> TalentOS
 // Client / ClientSpoc / Requirement / RequirementAssignment tables.
 //
-// SAFE BY DEFAULT: runs as a dry run unless you pass --commit. Dry run does
-// every lookup and prints exactly what it WOULD write, with counts, and
-// nothing touches the DB except reads.
+// SAFE BY DEFAULT: dry run unless --commit.
 //
 // Usage:
 //   npx tsx src/scripts/migrate-requirements.ts src/scripts/data/All_active_Requirements.xlsx
 //   npx tsx src/scripts/migrate-requirements.ts src/scripts/data/All_active_Requirements.xlsx --commit
 //
-// Requires: npm install xlsx
-//
 // Decisions this script encodes (confirmed with Rahul):
-//   - createdById <- "Created By" column email (literal audit fact)
-//   - Client.name <- "Client/Department" with trailing _ServiceLine_Year stripped
-//   - ClientSpoc  <- regex-parsed from "Client Contact", flagged for review
-//   - Assignment chain resolution (in priority order):
-//       1. HIERARCHY WALK: climb recruiter's reportingToId/teamLeadId ancestry
-//          up to the creator. Full multi-hop chain written if found.
-//       2. ASSIGNABLE-TO EDGE: direct UserAssignableTo edge creator -> recruiter
-//          -> single depth-0 assignment.
-//       3. ASSIGNABLE-TO + SUB-HIERARCHY: creator has an assignable edge to an
-//          ANCESTOR of the recruiter -> bridged multi-depth chain.
-//       4. FLAT FALLBACK (confirmed with Rahul after dry runs showed real org
-//          data has creators and recruiters in different branches with no
-//          stored relationship): the xlsx itself is proof this recruiter
-//          worked this requirement, so create a direct depth-0 assignment
-//          creator -> recruiter AND auto-create the missing UserAssignableTo
-//          edge so the relationship is legit in the system going forward.
-//          These are tallied separately (chainsViaFlatFallback) and each one
-//          is also logged to MigrationStaging as FLAT_FALLBACK_ASSIGNMENT for
-//          later audit — created live, but traceable.
-//   - Anything unmapped (missing creator/recruiter user, duplicate reqCode)
-//     -> MigrationStaging row, live tables untouched for that item.
+//   - createdById <- "Created By" column email
+//   - MISSING USERS ARE AUTO-CREATED (per Rahul's original instruction:
+//     "if the chain doesn't exist create that user with that mail and map
+//     them, later flag them as not mapped"). Creator or recruiter email not
+//     found in User table -> create the User with:
+//       * email + name parsed from the "CODE|Team|Name (email)" cell
+//       * password = pass@123 (bcrypt-hashed) — users can log in, tell them to change it
+//       * role = "MIGRATED" (found or created; isSystem=false)
+//       * flagged in MigrationStaging as USER_AUTO_CREATED for later review
+//   - Client.name <- "Client/Department" minus trailing _ServiceLine_Year
+//   - ClientSpoc  <- regex-parsed from "Client Contact", flagged for review;
+//     BU = "B2B" (found or created)
+//   - Assignment chain strategies, in order:
+//       1. hierarchy walk  2. direct UserAssignableTo edge
+//       3. assignable edge to recruiter's ancestor  4. flat fallback
+//          (creator -> recruiter depth-0 + auto UserAssignableTo edge)
+//   - Every auto-action is logged to MigrationStaging so nothing is silent.
 
 import { PrismaClient, RequirementType, RemoteType } from "@prisma/client";
+import * as bcrypt from "bcryptjs"; // if your project uses "bcrypt" instead, change this import — API is identical
 import * as XLSX from "xlsx";
 import {
   extractSingleEmail,
   extractMultipleEmails,
+  extractNameEmailPairs,
   parseClientDepartment,
   parseClientSpoc,
 } from "./parsers";
@@ -66,24 +60,34 @@ const DEFAULT_JOB_TYPE: RequirementType = "CONTRACT";
 const DEFAULT_REMOTE_TYPE: RemoteType = "ONSITE";
 
 type Row = Record<string, any>;
+type UserLite = {
+  id: string;
+  email: string;
+  reportingToId: string | null;
+  teamLeadId: string | null;
+};
 
 async function main() {
   console.log(
     `Mode: ${COMMIT ? "COMMIT (writing to DB)" : "DRY RUN (no writes)"}`
   );
 
+  // default login password for all auto-created users (confirmed with Rahul):
+  // pass@123 — hashed once, reused for every migrated user. Tell these users
+  // to change it after first login.
+  const defaultPasswordHash = await bcrypt.hash("pass@123", 10);
+
   const wb = XLSX.readFile(filePath);
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows: Row[] = XLSX.utils.sheet_to_json(sheet, { defval: null });
 
-  // ── preload everything, once ────────────────────────────────────────
-  const users = await prisma.user.findMany({
+  // ── preload ─────────────────────────────────────────────────────────
+  const users: UserLite[] = await prisma.user.findMany({
     select: { id: true, email: true, reportingToId: true, teamLeadId: true },
   });
   const userByEmail = new Map(users.map((u) => [u.email.toLowerCase(), u]));
   const userById = new Map(users.map((u) => [u.id, u]));
 
-  // UserAssignableTo edges: userId (assigner) -> set of targetIds they can assign to
   const assignableEdges = await prisma.userAssignableTo.findMany({
     select: { userId: true, targetId: true },
   });
@@ -94,7 +98,6 @@ async function main() {
     assignableByUser.get(e.userId)!.add(e.targetId);
   }
 
-  // ── DIAGNOSTICS ─────────────────────────────────────────────────────
   const usersWithManager = users.filter(
     (u) => u.reportingToId || u.teamLeadId
   ).length;
@@ -122,9 +125,7 @@ async function main() {
     )
   );
 
-  // default BU for migrated spocs — B2B (confirmed with Rahul).
-  // Auto-created if missing: in dry run we use a placeholder id (no writes),
-  // in commit we create the real row.
+  // ── default BU "B2B" — find or create ───────────────────────────────
   let defaultBU = await prisma.businessUnit.findFirst({
     where: { name: { equals: "B2B", mode: "insensitive" } },
     select: { id: true },
@@ -135,7 +136,6 @@ async function main() {
         data: { name: "B2B", ancestorIds: [] },
         select: { id: true },
       });
-      // ancestorIds must include self per schema convention — set it now
       await prisma.businessUnit.update({
         where: { id: createdBU.id },
         data: { ancestorIds: [createdBU.id] },
@@ -150,14 +150,39 @@ async function main() {
     }
   }
 
+  // ── role for auto-created users — find or create "MIGRATED" ─────────
+  let migratedRole = await prisma.role.findFirst({
+    where: { name: { equals: "MIGRATED", mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (!migratedRole) {
+    if (COMMIT) {
+      migratedRole = await prisma.role.create({
+        data: {
+          name: "MIGRATED",
+          description:
+            "Auto-created during legacy data migration. Users with this role were referenced in the legacy export but did not exist in the system. Review and reassign proper roles.",
+          isSystem: false,
+        },
+        select: { id: true },
+      });
+      console.log('[setup] Role "MIGRATED" did not exist — created it.');
+    } else {
+      migratedRole = { id: "DRY-RUN-ROLE:MIGRATED" };
+      console.log(
+        '[setup] Role "MIGRATED" does not exist — WILL BE CREATED on --commit.'
+      );
+    }
+  }
+
   const stagingRows: Array<{
     type:
       | "UNMAPPED_CREATOR"
       | "UNMAPPED_RECRUITER"
-      | "UNRESOLVED_CHAIN"
       | "CLIENT_SPOC_NEEDS_REVIEW"
       | "DUPLICATE_REQ_CODE"
-      | "FLAT_FALLBACK_ASSIGNMENT";
+      | "FLAT_FALLBACK_ASSIGNMENT"
+      | "USER_AUTO_CREATED";
     reason: string;
     payload: any;
     sourceRow: number;
@@ -167,25 +192,83 @@ async function main() {
     totalRows: rows.length,
     requirementsCreated: 0,
     requirementsSkippedDuplicate: 0,
-    requirementsSkippedNoCreator: 0,
     clientsCreated: 0,
     clientSpocsCreated: 0,
+    usersAutoCreated: 0,
     assignmentsCreated: 0,
     chainsViaHierarchy: 0,
     chainsViaAssignableDirect: 0,
     chainsViaAssignableSubtree: 0,
     chainsViaFlatFallback: 0,
     assignableEdgesAutoCreated: 0,
-    recruitersUnmapped: 0,
+    rowsSkippedNoEmailParseable: 0,
   };
 
   const newClientCache = new Map<string, string>();
+  let dryRunUserSeq = 0;
 
   /**
-   * Ancestry chain of a user walking UP via reportingToId/teamLeadId:
-   * [user, manager, manager's manager, ...]. Stops at maxDepth or when no
-   * parent is set.
+   * Finds a User by email, or AUTO-CREATES one (confirmed rule) with the
+   * name parsed from the raw legacy cell. Auto-created users:
+   *   - password pass@123 (bcrypt-hashed, confirmed default)
+   *   - role "MIGRATED", isActive true
+   *   - flagged in staging as USER_AUTO_CREATED
+   * Keeps the in-memory maps in sync so later rows reuse the same user.
    */
+  async function findOrCreateUser(
+    email: string,
+    name: string,
+    sourceRow: number,
+    context: string
+  ): Promise<UserLite> {
+    const existing = userByEmail.get(email);
+    if (existing) return existing;
+
+    const nameParts = name.trim().split(/\s+/);
+    const firstName = nameParts[0] || email.split("@")[0];
+    const lastName = nameParts.slice(1).join(" ") || "-";
+
+    let created: UserLite;
+    if (COMMIT) {
+      const u = await prisma.user.create({
+        data: {
+          email,
+          passwordHash: defaultPasswordHash,
+          firstName,
+          lastName,
+          displayName: name.trim() || undefined,
+          roleId: migratedRole!.id,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          email: true,
+          reportingToId: true,
+          teamLeadId: true,
+        },
+      });
+      created = u;
+    } else {
+      created = {
+        id: `DRY-RUN-USER:${++dryRunUserSeq}:${email}`,
+        email,
+        reportingToId: null,
+        teamLeadId: null,
+      };
+    }
+
+    userByEmail.set(email, created);
+    userById.set(created.id, created);
+    summary.usersAutoCreated++;
+    stagingRows.push({
+      type: "USER_AUTO_CREATED",
+      reason: `User ${email} (${name}) did not exist — auto-created during migration (${context}). Role=MIGRATED, password pass@123. Review: set proper role, reporting line, BU.`,
+      payload: { email, name, userId: created.id, context },
+      sourceRow,
+    });
+    return created;
+  }
+
   function ancestryOf(
     userId: string,
     maxDepth = MAX_HIERARCHY_DEPTH
@@ -203,14 +286,6 @@ async function main() {
     return chain;
   }
 
-  /**
-   * Resolves the assignment path from creator down to recruiter using,
-   * in order: hierarchy, direct assignable edge, assignable edge to an
-   * ancestor of the recruiter, then FLAT FALLBACK (always succeeds when
-   * both users exist — confirmed decision). Returns { path, via }.
-   * via === "flat-fallback" signals the caller to also create the
-   * UserAssignableTo edge.
-   */
   function resolveChainPath(
     creatorId: string,
     recruiterId: string
@@ -226,27 +301,24 @@ async function main() {
       return { path: [creatorId], via: "hierarchy" };
     }
 
-    // ── strategy 1: hierarchy walk ────────────────────────────────────
     const recruiterAncestry = ancestryOf(recruiterId);
-    const creatorIdxInAncestry = recruiterAncestry.indexOf(creatorId);
-    if (creatorIdxInAncestry !== -1) {
-      const path = recruiterAncestry
-        .slice(0, creatorIdxInAncestry + 1)
-        .reverse();
-      return { path, via: "hierarchy" };
+    const creatorIdx = recruiterAncestry.indexOf(creatorId);
+    if (creatorIdx !== -1) {
+      return {
+        path: recruiterAncestry.slice(0, creatorIdx + 1).reverse(),
+        via: "hierarchy",
+      };
     }
 
-    // ── strategy 2: direct assignable edge ────────────────────────────
     const creatorAssignables = assignableByUser.get(creatorId);
     if (creatorAssignables?.has(recruiterId)) {
       return { path: [creatorId, recruiterId], via: "assignable-direct" };
     }
 
-    // ── strategy 3: assignable edge to an ancestor of the recruiter ───
     if (creatorAssignables && creatorAssignables.size > 0) {
       for (let i = 1; i < recruiterAncestry.length; i++) {
         if (creatorAssignables.has(recruiterAncestry[i])) {
-          const downChain = recruiterAncestry.slice(0, i + 1).reverse(); // ancestor ... recruiter
+          const downChain = recruiterAncestry.slice(0, i + 1).reverse();
           return {
             path: [creatorId, ...downChain],
             via: "assignable-subtree",
@@ -255,11 +327,24 @@ async function main() {
       }
     }
 
-    // ── strategy 4: flat fallback — xlsx is the proof of relationship ──
     return { path: [creatorId, recruiterId], via: "flat-fallback" };
   }
 
+  const startTime = Date.now();
+
   for (let i = 0; i < rows.length; i++) {
+    if (i > 0 && i % 25 === 0) {
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const etaSec = Math.round(((rows.length - i) * elapsedSec) / i);
+      console.log(
+        `[progress] row ${i}/${rows.length} | ${elapsedSec.toFixed(
+          0
+        )}s elapsed | ~${etaSec}s remaining | assignments: ${
+          summary.assignmentsCreated
+        } | users auto-created: ${summary.usersAutoCreated}`
+      );
+    }
+
     const row = rows[i];
     const sourceRow = i + 2;
     const reqCode = String(row["Job ID"] ?? row["Reference ID"] ?? "").trim();
@@ -279,21 +364,24 @@ async function main() {
       continue;
     }
 
-    // ── creator ────────────────────────────────────────────────────────
-    const creatorEmail = extractSingleEmail(row["Created By"]);
-    const creator = creatorEmail ? userByEmail.get(creatorEmail) : undefined;
-    if (!creator) {
-      summary.requirementsSkippedNoCreator++;
+    // ── creator: find or AUTO-CREATE ────────────────────────────────────
+    const creatorPairs = extractNameEmailPairs(row["Created By"]);
+    if (creatorPairs.length === 0) {
+      summary.rowsSkippedNoEmailParseable++;
       stagingRows.push({
         type: "UNMAPPED_CREATOR",
-        reason: `"Created By" email ${
-          creatorEmail ?? "(none found)"
-        } has no matching User — requirement not created`,
+        reason: `Could not parse any email from "Created By" cell — requirement not created (nothing to auto-create a user from)`,
         payload: { reqCode, createdByRaw: row["Created By"] },
         sourceRow,
       });
       continue;
     }
+    const creator = await findOrCreateUser(
+      creatorPairs[0].email,
+      creatorPairs[0].name,
+      sourceRow,
+      `creator of requirement ${reqCode}`
+    );
 
     // ── client ─────────────────────────────────────────────────────────
     const { clientName, serviceLineCode } = parseClientDepartment(
@@ -319,7 +407,7 @@ async function main() {
       ? serviceLineByCode.get(serviceLineCode.toLowerCase()) ?? null
       : null;
 
-    // ── client spoc (best-effort, always flagged for review) ────────────
+    // ── client spoc ─────────────────────────────────────────────────────
     const spocParsed = parseClientSpoc(row["Client Contact"]);
     let clientSpocId: string | null = null;
     if (spocParsed && serviceLineId) {
@@ -338,7 +426,7 @@ async function main() {
             firstName: spocParsed.name.split(" ")[0] ?? spocParsed.name,
             lastName: spocParsed.name.split(" ").slice(1).join(" ") || "-",
             email: spocParsed.email,
-            handlerId: creator.id, // assumption: requirement creator handles this spoc
+            handlerId: creator.id,
             serviceLineId,
             businessUnitId: defaultBU.id,
             addedById: creator.id,
@@ -403,24 +491,18 @@ async function main() {
     }
     summary.requirementsCreated++;
 
-    // ── assignment chain ─────────────────────────────────────────────────
-    const recruiterEmails = extractMultipleEmails(row["Recruiters"]);
-    for (const email of recruiterEmails) {
-      const recruiter = userByEmail.get(email);
-      if (!recruiter) {
-        summary.recruitersUnmapped++;
-        stagingRows.push({
-          type: "UNMAPPED_RECRUITER",
-          reason: `Recruiter email ${email} (from "Recruiters" column) has no matching User`,
-          payload: { reqCode, requirementId, email },
-          sourceRow,
-        });
-        continue;
-      }
+    // ── assignment chain: recruiters find-or-created too ─────────────────
+    const recruiterPairs = extractNameEmailPairs(row["Recruiters"]);
+    for (const pair of recruiterPairs) {
+      const recruiter = await findOrCreateUser(
+        pair.email,
+        pair.name,
+        sourceRow,
+        `recruiter on requirement ${reqCode}`
+      );
 
       const { path, via } = resolveChainPath(creator.id, recruiter.id);
 
-      // tally which strategy resolved it
       if (via === "hierarchy") summary.chainsViaHierarchy++;
       else if (via === "assignable-direct") summary.chainsViaAssignableDirect++;
       else if (via === "assignable-subtree")
@@ -428,8 +510,6 @@ async function main() {
       else if (via === "flat-fallback") {
         summary.chainsViaFlatFallback++;
 
-        // auto-create the missing UserAssignableTo edge so this direct
-        // assignment is legit within the system's own rules going forward
         const already = assignableByUser.get(creator.id)?.has(recruiter.id);
         if (!already) {
           if (COMMIT) {
@@ -444,19 +524,16 @@ async function main() {
               create: {
                 userId: creator.id,
                 targetId: recruiter.id,
-                addedById: creator.id, // migration acts on the creator's behalf
+                addedById: creator.id,
               },
             });
           }
-          // keep the in-memory map in sync so we don't upsert the same edge
-          // repeatedly across rows
           if (!assignableByUser.has(creator.id))
             assignableByUser.set(creator.id, new Set());
           assignableByUser.get(creator.id)!.add(recruiter.id);
           summary.assignableEdgesAutoCreated++;
         }
 
-        // audit trail — created live, but every fallback is traceable
         stagingRows.push({
           type: "FLAT_FALLBACK_ASSIGNMENT",
           reason: `No hierarchy/assignable path between creator (${creator.email}) and recruiter (${recruiter.email}) — created flat depth-0 assignment + UserAssignableTo edge per confirmed migration rule`,

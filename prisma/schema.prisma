@@ -1116,21 +1116,8 @@ model PipelineStage {
   @@index([canonicalStage])
 }
 
-// File: staging-schema-additions.prisma
-// Path: src/migration/staging-schema-additions.prisma
-//
-// Append these models to your main schema.prisma before running the
-// migration script. They hold anything the script could not confidently
-// map to a real row in a live table (User, Client, ClientSpoc,
-// RequirementAssignment). Nothing here has FKs into your live tables on
-// purpose — a staging row must survive even if the thing it references
-// doesn't exist yet.
-//
-// Workflow: run migrate-requirements.ts in DRY RUN (default) -> review
-// MigrationStaging rows -> fix data (map an email to a User, fix a typo,
-// whatever) -> run the promote step (promote-staging.ts, not included yet,
-// build once you've seen what actually lands here) -> re-run migration
-// with --commit.
+
+
 
 enum MigrationStagingType {
   UNMAPPED_CREATOR // Requirement's "Created By" email has no matching User
@@ -1143,6 +1130,7 @@ enum MigrationStagingType {
   UNMAPPED_STAGE // Stage/Substage combo missing from stage-mapping.ts
   PIPELINE_STAGE_NOT_SEEDED // CanonicalStage has no seeded PipelineStage row
   FLAT_FALLBACK_ASSIGNMENT // No hierarchy/assignable path — flat creator->recruiter assignment created (audit record, not a blocker)
+  USER_AUTO_CREATED // Creator/recruiter email had no User — auto-created with role MIGRATED, password pass@123. Review and fix role/reporting/BU.
 }
 
 enum MigrationStagingStatus {
@@ -1161,8 +1149,7 @@ model MigrationStaging {
 
   // Free-form context needed to resolve this row by hand later:
   // the source xlsx row number, the raw cell values, any partially
-  // resolved ids (e.g. requirementId if creator was fine but a
-  // recruiter wasn't), etc. Keep it dumb and complete.
+  // resolved ids. Keep it dumb and complete.
   payload Json
 
   // Which xlsx row this came from, for traceability back to the source file.
