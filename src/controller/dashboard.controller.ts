@@ -328,6 +328,192 @@ export const getDashboardStats = async (req: Request, res: Response) => {
 };
 
 // ─── GET /dashboard/resume-parsing-stats ─────────────────────────────────────
+// export const getResumeParsingStats = async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+
+//     const {
+//       buId,
+//       deptId,
+//       teamLeadId,
+//       reportingToId,
+//       serviceLineId,
+//       clientId,
+//       dateFrom: rawFrom,
+//       dateTo: rawTo,
+//     } = req.query as Record<string, string>;
+
+//     const { dateFrom, dateTo } = parseDateRange(rawFrom, rawTo);
+
+//     // reuse the same requirement-scope guard the rest of the dashboard uses,
+//     // applied through the nested `requirement` relation on the snapshot
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+
+//     const requirementFilter = {
+//       ...scopeWhere,
+//       deletedAt: null,
+//       ...(buId
+//         ? {
+//             businessUnit: {
+//               OR: [{ id: buId }, { ancestorIds: { has: buId } }],
+//             },
+//           }
+//         : {}),
+//       ...(serviceLineId ? { serviceLineId } : {}),
+//       ...(clientId ? { clientId } : {}),
+//     };
+
+//     const createdByFilter = {
+//       ...(deptId ? { departmentId: deptId } : {}),
+//       ...(teamLeadId ? { teamLeadId } : {}),
+//       ...(reportingToId ? { reportingToId } : {}),
+//     };
+
+//     const dateFilter =
+//       dateFrom || dateTo
+//         ? {
+//             snapshotAt: {
+//               ...(dateFrom ? { gte: dateFrom } : {}),
+//               ...(dateTo ? { lte: dateTo } : {}),
+//             },
+//           }
+//         : {};
+
+//     const where = {
+//       requirement: requirementFilter,
+//       ...(Object.keys(createdByFilter).length
+//         ? { createdBy: createdByFilter }
+//         : {}),
+//       ...dateFilter,
+//     };
+
+//     const [total, bySource, byRecruiterRaw] = await Promise.all([
+//       prisma.candidateSnapshot.count({ where }),
+
+//       // source is a scalar field on CandidateSnapshot — safe to groupBy directly
+//       prisma.candidateSnapshot.groupBy({
+//         by: ["sourced"],
+//         where,
+//         _count: { _all: true },
+//       }),
+
+//       // createdById is scalar too — group here, resolve dept/team/BU below
+//       prisma.candidateSnapshot.groupBy({
+//         by: ["createdById"],
+//         where,
+//         _count: { _all: true },
+//       }),
+//     ]);
+
+//     const recruiterIds = byRecruiterRaw.map((r) => r.createdById);
+
+//     const recruiters = recruiterIds.length
+//       ? await prisma.user.findMany({
+//           where: { id: { in: recruiterIds } },
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//             departmentId: true,
+//             department: { select: { id: true, name: true } },
+//             teamLeadId: true,
+//             teamLead: { select: { id: true, firstName: true, lastName: true } },
+//             buId: true,
+//             bu: { select: { id: true, name: true } },
+//           },
+//         })
+//       : [];
+
+//     const recruiterMap = new Map(recruiters.map((r) => [r.id, r]));
+
+//     // roll per-recruiter counts up into dept / team-lead / BU buckets
+//     const deptAgg = new Map<
+//       string,
+//       { id: string; name: string; count: number }
+//     >();
+//     const teamLeadAgg = new Map<
+//       string,
+//       { id: string; name: string; count: number }
+//     >();
+//     const buAgg = new Map<
+//       string,
+//       { id: string; name: string; count: number }
+//     >();
+
+//     const byRecruiter = byRecruiterRaw.map((row) => {
+//       const u = recruiterMap.get(row.createdById);
+//       const count = row._count._all;
+
+//       if (u?.department) {
+//         const key = u.department.id;
+//         const cur = deptAgg.get(key) ?? {
+//           id: key,
+//           name: u.department.name,
+//           count: 0,
+//         };
+//         cur.count += count;
+//         deptAgg.set(key, cur);
+//       }
+
+//       if (u?.teamLead) {
+//         const key = u.teamLead.id;
+//         const name = `${u.teamLead.firstName} ${u.teamLead.lastName}`.trim();
+//         const cur = teamLeadAgg.get(key) ?? { id: key, name, count: 0 };
+//         cur.count += count;
+//         teamLeadAgg.set(key, cur);
+//       }
+
+//       if (u?.bu) {
+//         const key = u.bu.id;
+//         const cur = buAgg.get(key) ?? { id: key, name: u.bu.name, count: 0 };
+//         cur.count += count;
+//         buAgg.set(key, cur);
+//       }
+
+//       return {
+//         recruiterId: row.createdById,
+//         name: u ? `${u.firstName} ${u.lastName}`.trim() : "Unknown",
+//         count,
+//       };
+//     });
+
+//     res.json({
+//       success: true,
+//       data: {
+//         total,
+//         bySource: bySource
+//           .map((s) => ({
+//             source: s.sourced ?? "Unspecified",
+//             count: s._count._all,
+//           }))
+//           .sort((a, b) => b.count - a.count),
+//         byDepartment: [...deptAgg.values()].sort((a, b) => b.count - a.count),
+//         byTeamLead: [...teamLeadAgg.values()].sort((a, b) => b.count - a.count),
+//         byBusinessUnit: [...buAgg.values()].sort((a, b) => b.count - a.count),
+//         byRecruiter: byRecruiter.sort((a, b) => b.count - a.count),
+//         appliedFilters: {
+//           dateFrom: dateFrom?.toISOString() ?? null,
+//           dateTo: dateTo?.toISOString() ?? null,
+//           buId: buId ?? null,
+//           deptId: deptId ?? null,
+//           teamLeadId: teamLeadId ?? null,
+//           reportingToId: reportingToId ?? null,
+//           serviceLineId: serviceLineId ?? null,
+//           clientId: clientId ?? null,
+//         },
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getResumeParsingStats:", err);
+//     res
+//       .status(500)
+//       .json({
+//         success: false,
+//         message: "Failed to fetch resume parsing stats",
+//       });
+//   }
+// };
 export const getResumeParsingStats = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -346,8 +532,6 @@ export const getResumeParsingStats = async (req: Request, res: Response) => {
 
     const { dateFrom, dateTo } = parseDateRange(rawFrom, rawTo);
 
-    // reuse the same requirement-scope guard the rest of the dashboard uses,
-    // applied through the nested `requirement` relation on the snapshot
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
     const requirementFilter = {
@@ -391,14 +575,12 @@ export const getResumeParsingStats = async (req: Request, res: Response) => {
     const [total, bySource, byRecruiterRaw] = await Promise.all([
       prisma.candidateSnapshot.count({ where }),
 
-      // source is a scalar field on CandidateSnapshot — safe to groupBy directly
       prisma.candidateSnapshot.groupBy({
         by: ["sourced"],
         where,
         _count: { _all: true },
       }),
 
-      // createdById is scalar too — group here, resolve dept/team/BU below
       prisma.candidateSnapshot.groupBy({
         by: ["createdById"],
         where,
@@ -427,7 +609,6 @@ export const getResumeParsingStats = async (req: Request, res: Response) => {
 
     const recruiterMap = new Map(recruiters.map((r) => [r.id, r]));
 
-    // roll per-recruiter counts up into dept / team-lead / BU buckets
     const deptAgg = new Map<
       string,
       { id: string; name: string; count: number }
@@ -471,10 +652,23 @@ export const getResumeParsingStats = async (req: Request, res: Response) => {
         buAgg.set(key, cur);
       }
 
+      // ── CHANGED: include group-membership fields so the frontend can do
+      //   drill-down filtering purely on the client side.
       return {
         recruiterId: row.createdById,
         name: u ? `${u.firstName} ${u.lastName}`.trim() : "Unknown",
         count,
+        // dept
+        departmentId: u?.department?.id ?? null,
+        departmentName: u?.department?.name ?? null,
+        // team lead
+        teamLeadId: u?.teamLead?.id ?? null,
+        teamLeadName: u?.teamLead
+          ? `${u.teamLead.firstName} ${u.teamLead.lastName}`.trim()
+          : null,
+        // BU
+        buId: u?.bu?.id ?? null,
+        buName: u?.bu?.name ?? null,
       };
     });
 
@@ -506,12 +700,10 @@ export const getResumeParsingStats = async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("getResumeParsingStats:", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Failed to fetch resume parsing stats",
-      });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch resume parsing stats",
+    });
   }
 };
 
