@@ -571,6 +571,7 @@ export const createUser = async (req: Request, res: Response) => {
           reportingTo: {
             select: { id: true, firstName: true, lastName: true },
           },
+          teamLead: { select: { id: true, firstName: true, lastName: true } },
         },
       });
 
