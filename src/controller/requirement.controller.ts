@@ -7,8 +7,16 @@ import {
   generateReqCode,
   getRequirementScopeWhere,
 } from "@/services/requirementService";
-import { getSubordinateIds } from "@/services/orgService";
+import { PermissionScope } from "@prisma/client";
+import {
+  BulkUploadResult,
+  RowValidationError,
+  ValidatedRequirementRow,
+} from "@/types/bulkRequirement.type";
 
+import ExcelJS from "exceljs";
+import { parseUploadedFile } from "@/utils/bulkRequirementParser";
+import { validateRequirementRow } from "@/utils/bulkRequirements";
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — compute aging string from a date to now
 // "2h 15m", "3d 4h", "1m 2d"
@@ -42,8 +50,8 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+      PermissionScope.OWN) as PermissionScope;
 
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
@@ -243,7 +251,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
     const relevantStages = allStages.filter(
-      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
+      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId,
     );
 
     // ── Scoped stage counts + summary counts — all in one Promise.all
@@ -313,7 +321,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
     ]);
 
     const stageCountMap = Object.fromEntries(
-      stageCounts.map((s) => [s.currentStageId, s._count.id])
+      stageCounts.map((s) => [s.currentStageId, s._count.id]),
     );
 
     const pipelineStageSummary = relevantStages.map((stage) => ({
@@ -1138,10 +1146,10 @@ export const getRequirementStats = async (req: Request, res: Response) => {
       ]);
 
     const byStatus = Object.fromEntries(
-      byStatusRaw.map((r) => [r.status, r._count._all])
+      byStatusRaw.map((r) => [r.status, r._count._all]),
     );
     const byPriority = Object.fromEntries(
-      byPriorityRaw.map((r) => [r.priority, r._count._all])
+      byPriorityRaw.map((r) => [r.priority, r._count._all]),
     );
 
     res.json({
@@ -1290,7 +1298,6 @@ export const getRequirementStats = async (req: Request, res: Response) => {
 // import { Request, Response } from "express";
 // import { prisma } from "../lib/prisma";
 // import { getRequirementScopeWhere } from "../lib/scopeHelpers";
-import { PermissionScope } from "@prisma/client";
 
 /**
  * Build the set of recruiter IDs visible to `userId` based on their canViewScope.
@@ -1597,8 +1604,8 @@ export const getRequirementById = async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+      PermissionScope.OWN) as PermissionScope;
 
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
 
@@ -1891,7 +1898,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     // auto-compute — never trust client value
     const turnaroundDays = targetDate
       ? Math.ceil(
-          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
         )
       : null;
 
@@ -2034,7 +2041,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     } catch (libErr) {
       console.warn(
         "createRequirement: failed to push to JD library (non-fatal)",
-        libErr
+        libErr,
       );
     }
 
@@ -2048,6 +2055,284 @@ export const createRequirement = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to create requirement" });
+  }
+};
+
+// File: requirement.controller.ts (bulkUploadRequirementsController section)
+// Path: src/controller/requirement.controller.ts
+// Replace the existing bulkUploadRequirementsController function with this entire block.
+
+const MAX_ROWS = 25;
+const MIN_ROWS = 1;
+
+export const bulkUploadRequirementsController = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    // ─── 1. Validate file presence ──────────────────────────────────────────
+
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({
+        success: false,
+        error: "No file uploaded. Send the file under the field name 'file'.",
+      });
+      return;
+    }
+
+    // ─── 2. Actor — never trust body for createdById ──────────────────────
+
+    const createdById = req.user!.id;
+
+    // ─── 3. clientSpocId from body (selected via UI dropdown) ─────────────
+    // clientId, businessUnitId, serviceLineId are derived from the SPOC.
+    // They are never read from the Excel sheet.
+
+    const { clientSpocId } = req.body;
+
+    if (!clientSpocId) {
+      res.status(400).json({
+        success: false,
+        error:
+          "clientSpocId is required. Select a client and SPOC before uploading.",
+      });
+      return;
+    }
+
+    // ─── 4. Validate SPOC + derive all relational fields ─────────────────
+    // Also fetch client name + service line name for reqCode generation.
+
+    const spoc = await prisma.clientSpoc.findUnique({
+      where: { id: clientSpocId },
+      select: {
+        clientId: true,
+        businessUnitId: true,
+        serviceLineId: true,
+        isActive: true,
+        client: { select: { name: true } },
+        serviceLine: { select: { name: true } },
+      },
+    });
+
+    if (!spoc || !spoc.isActive) {
+      res.status(400).json({
+        success: false,
+        error: "Invalid or inactive SPOC. Select a valid SPOC and try again.",
+      });
+      return;
+    }
+
+    const { clientId, businessUnitId, serviceLineId } = spoc;
+    const clientName = spoc.client?.name ?? "CLNT";
+    const serviceLineName = spoc.serviceLine?.name ?? "SRVC";
+
+    // ─── 5. Parse file into raw rows ──────────────────────────────────────
+
+    let rawRows;
+    try {
+      rawRows = parseUploadedFile(
+        file.buffer,
+        file.mimetype,
+        file.originalname,
+      );
+    } catch (parseError: unknown) {
+      const message =
+        parseError instanceof Error
+          ? parseError.message
+          : "Failed to parse file";
+      res.status(400).json({ success: false, error: message });
+      return;
+    }
+
+    if (rawRows.length < MIN_ROWS) {
+      res.status(400).json({
+        success: false,
+        error: "The uploaded file contains no data rows.",
+      });
+      return;
+    }
+
+    if (rawRows.length > MAX_ROWS) {
+      res.status(400).json({
+        success: false,
+        error: `Too many rows. Maximum allowed per upload is ${MAX_ROWS}. Found ${rawRows.length} rows.`,
+      });
+      return;
+    }
+
+    // ─── 6. Validate all rows ─────────────────────────────────────────────
+    // Excel template: 2 instruction rows + 1 header row → data starts at row 4
+    // CSV: 1 header row → data starts at row 2
+
+    const isExcel =
+      file.originalname.endsWith(".xlsx") || file.originalname.endsWith(".xls");
+    const dataRowOffset = isExcel ? 4 : 2;
+
+    const validRows: Array<{
+      rowNumber: number;
+      data: ValidatedRequirementRow;
+    }> = [];
+    const allErrors: RowValidationError[] = [];
+
+    rawRows.forEach((raw, index) => {
+      const rowNumber = dataRowOffset + index;
+      const result = validateRequirementRow(raw, rowNumber);
+      if (result.valid && result.data) {
+        validRows.push({ rowNumber, data: result.data });
+      } else {
+        allErrors.push(...result.errors);
+      }
+    });
+
+    // ─── 7. Filter out invalid rows ───────────────────────────────────────
+
+    const failedRowNumbers = new Set(allErrors.map((e) => e.row));
+    const createableRows = validRows.filter(
+      ({ rowNumber }) => !failedRowNumbers.has(rowNumber),
+    );
+
+    // ─── 8. Insert rows sequentially — NO $transaction ────────────────────
+
+    const createdRequirementIds: string[] = [];
+    const rowInsertErrors: RowValidationError[] = [];
+
+    for (const { rowNumber, data } of createableRows) {
+      try {
+        // ─── Dedup check — skip if same title already exists for this client ──
+        const duplicate = await prisma.requirement.findFirst({
+          where: {
+            title: { equals: data.title, mode: "insensitive" },
+            clientId, // ← already available from SPOC lookup above
+            deletedAt: null,
+          },
+          select: { reqCode: true },
+        });
+
+        if (duplicate) {
+          rowInsertErrors.push({
+            row: rowNumber,
+            field: "title",
+            message: `"${data.title}" already exists for this client (${duplicate.reqCode}). Skipped.`,
+          });
+          continue; // ← skip to next row, don't insert
+        }
+        // generateReqCode is scoped to SL + client + year —
+        // no collision possible between different clients or service lines.
+        // Sequential inserts within the same client/SL are safe because
+        // each commit is visible before the next call.
+        const reqCode = await generateReqCode(clientName, serviceLineName);
+
+        const startDate = data.startDate ?? new Date();
+        const targetDate = data.targetDate ?? null;
+        const turnaroundDays = targetDate
+          ? Math.ceil(
+              (targetDate.getTime() - startDate.getTime()) /
+                (1000 * 60 * 60 * 24),
+            )
+          : null;
+
+        const created = await prisma.requirement.create({
+          data: {
+            reqCode,
+            title: data.title,
+            jobType: data.jobType,
+            remoteType: data.remoteType,
+            priority: data.priority,
+            jobOpenFor: data.jobOpenFor,
+            totalOpenings: data.totalOpenings,
+            status: data.status,
+            primarySkills: data.primarySkills,
+            keySkills: data.keySkills,
+            city: data.city ?? null,
+            state: data.state ?? null,
+            country: data.country,
+            experienceMin: data.experienceMin ?? null,
+            experienceMax: data.experienceMax ?? null,
+            salaryMin: data.salaryMin ?? null,
+            salaryMax: data.salaryMax ?? null,
+            salaryType: data.salaryType ?? null,
+            salaryCurrency: data.salaryCurrency,
+            hideSalaryFromCandidate: data.hideSalaryFromCandidate,
+            education: data.education ?? null,
+            functionalArea: data.functionalArea ?? null,
+            shift: data.shift ?? null,
+            targetCompanies: data.targetCompanies,
+            noPoachCompanies: data.noPoachCompanies,
+            startDate,
+            targetDate,
+            respondBy: null,
+            turnaroundDays,
+            // ── From SPOC lookup — never from the sheet ──────────────────
+            clientId,
+            clientSpocId,
+            businessUnitId: businessUnitId ?? null,
+            serviceLineId: serviceLineId ?? null,
+            description: data.description ?? null,
+            createdById,
+          },
+          select: { id: true },
+        });
+
+        createdRequirementIds.push(created.id);
+      } catch (rowErr) {
+        // Row failed — log and continue, don't abort remaining rows
+        console.error(`[bulkUpload] Row ${rowNumber} insert failed:`, rowErr);
+        rowInsertErrors.push({
+          row: rowNumber,
+          field: "insert",
+          message: "Failed to create this requirement. Please retry this row.",
+        });
+      }
+    }
+
+    // ─── 9. Activity log (non-fatal) ──────────────────────────────────────
+
+    if (createdRequirementIds.length > 0) {
+      try {
+        await prisma.requirementActivity.createMany({
+          data: createdRequirementIds.map((requirementId) => ({
+            requirementId,
+            actorId: createdById,
+            type: "REQUIREMENT_CREATED",
+            summary: "Created via bulk upload",
+            meta: { source: "bulk_upload" },
+          })),
+        });
+      } catch (activityErr) {
+        console.warn(
+          "[bulkUpload] Activity log failed (non-fatal):",
+          activityErr,
+        );
+      }
+    }
+
+    // ─── 10. Return result summary ────────────────────────────────────────
+
+    const combinedErrors = [...allErrors, ...rowInsertErrors];
+    const totalFailed = failedRowNumbers.size + rowInsertErrors.length;
+
+    const result: BulkUploadResult = {
+      totalRows: rawRows.length,
+      created: createdRequirementIds.length,
+      skipped: 0,
+      failed: totalFailed,
+      errors: combinedErrors,
+      createdRequirementIds,
+    };
+
+    const statusCode =
+      result.created === 0 ? 422 : result.failed > 0 ? 207 : 201;
+    res.status(statusCode).json({ success: result.created > 0, ...result });
+  } catch (error) {
+    console.error(
+      "[bulkUploadRequirementsController] Unexpected error:",
+      error,
+    );
+    res.status(500).json({
+      success: false,
+      error: "Internal server error during bulk upload.",
+    });
   }
 };
 
@@ -2441,8 +2726,8 @@ export const createAssignment = async (req: Request, res: Response) => {
           reason === "Already actively assigned"
             ? 409
             : reason === "User not found"
-            ? 404
-            : 400;
+              ? 404
+              : 400;
         return res.status(statusCode).json({ success: false, message: reason });
       }
     }
@@ -2577,8 +2862,8 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
     const { id: requirementId } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+      PermissionScope.OWN) as PermissionScope;
 
     const {
       stageId,
@@ -2707,7 +2992,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
     const now = Date.now();
     const enriched = pipelines.map((p) => {
       const agingMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       return {
         ...p,
@@ -2746,14 +3031,14 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getRequirementCandidateById = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { id: requirementId, pipelineId } = req.params;
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+      PermissionScope.OWN) as PermissionScope;
 
     const requirement = await prisma.requirement.findFirst({
       where: { id: requirementId, deletedAt: null },
@@ -2874,13 +3159,13 @@ export const getRequirementCandidateById = async (
     }
 
     const agingMins = Math.floor(
-      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000,
     );
 
     const totalPipelineMins =
       pipeline.stageHistory.reduce(
         (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
-        0
+        0,
       ) + agingMins;
 
     res.json({
@@ -3247,7 +3532,6 @@ export const getCandidateDetail = async (req: Request, res: Response) => {
 //   getRequirementScopeWhere,
 // } from "@/services/requirementService";
 // import { getSubordinateIds } from "@/services/orgService";
-import ExcelJS from "exceljs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTIL: getVisibleRecruiterIds (scope filter for pipeline counts)
@@ -3278,7 +3562,7 @@ import ExcelJS from "exceljs";
 async function getVisibleRecruiterIds(
   userId: string,
   isSuperAdmin: boolean,
-  canViewScope: PermissionScope
+  canViewScope: PermissionScope,
 ): Promise<string[] | null> {
   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
   if (canViewScope === PermissionScope.OWN) return [userId];
@@ -3320,7 +3604,7 @@ async function getVisibleRecruiterIds(
 async function getCreatorScopeUserIds(
   userId: string,
   isSuperAdmin: boolean,
-  createdByScope: string
+  createdByScope: string,
 ): Promise<string[] | null> {
   // Only ALL scope (explicit opt-in) removes the creator filter entirely.
   // isSuperAdmin does NOT auto-bypass — even a superAdmin clicking "Mine"
@@ -3410,8 +3694,8 @@ export const getRequirements = async (req: Request, res: Response) => {
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope =
-      req.modulePermission?.canViewScope ?? PermissionScope.OWN;
+    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+      PermissionScope.OWN) as PermissionScope;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
@@ -3430,7 +3714,7 @@ export const getRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope
+        createdByScope,
       );
       if (creatorIds !== null) {
         // Apply creator filter — only requirements made by these users
@@ -3549,14 +3833,14 @@ export const getRequirements = async (req: Request, res: Response) => {
     // ── Pipeline stage counts (existing two-bucket logic, unchanged)
     const reqIds = requirements.map((r) => r.id);
     const createdByMeIds = new Set(
-      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id),
     );
     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
 
     const visibleRecruiterIds = await getVisibleRecruiterIds(
       userId,
       isSuperAdmin,
-      canViewScope
+      canViewScope,
     );
 
     const allStages = await prisma.pipelineStage.findMany({
@@ -3642,7 +3926,7 @@ export const getRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i)
+          .filter((v, i, a) => a.indexOf(v) === i),
       );
 
     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
@@ -3650,7 +3934,7 @@ export const getRequirements = async (req: Request, res: Response) => {
     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
       // Start with all keys at zero — never hardcoded, pulled from DB
       const canonical: Record<string, number> = Object.fromEntries(
-        allCanonicalKeys.map((k) => [k, 0])
+        allCanonicalKeys.map((k) => [k, 0]),
       );
       for (const sc of stageCounts) {
         if (!sc.canonicalStage) continue;
@@ -3664,7 +3948,7 @@ export const getRequirements = async (req: Request, res: Response) => {
     for (const r of requirements) {
       if (!canonicalCountsByReq[r.id]) {
         canonicalCountsByReq[r.id] = Object.fromEntries(
-          allCanonicalKeys.map((k) => [k, 0])
+          allCanonicalKeys.map((k) => [k, 0]),
         );
       }
     }
@@ -3754,7 +4038,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope
+        createdByScope,
       );
       if (creatorIds !== null) {
         where.createdById = { in: creatorIds };
@@ -3841,7 +4125,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i)
+          .filter((v, i, a) => a.indexOf(v) === i),
       );
 
     // ── Fetch pipeline counts grouped by requirementId + currentStageId
@@ -3932,7 +4216,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     const applyHeaderRow = (
       row: ExcelJS.Row,
-      fill: ExcelJS.Fill = headerFill
+      fill: ExcelJS.Fill = headerFill,
     ) => {
       row.eachCell((cell) => {
         cell.fill = fill;
@@ -4026,10 +4310,10 @@ export const exportRequirements = async (req: Request, res: Response) => {
     const now = Date.now();
     for (const req of requirements) {
       const totalCandidates = Object.values(
-        canonicalByReq[req.id] ?? {}
+        canonicalByReq[req.id] ?? {},
       ).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(req.createdAt).getTime()) / 86400000
+        (now - new Date(req.createdAt).getTime()) / 86400000,
       );
 
       const rowData: Record<string, any> = {
@@ -4162,12 +4446,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (!req) continue;
 
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       const totalPipelineMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
@@ -4223,7 +4507,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
@@ -4236,13 +4520,3 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export requirements" });
   }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// All other existing controllers (getRequirementById, getRequirementDetail,
-// getRequirementTree, createRequirement, updateRequirement,
-// updateRequirementStatus, deleteRequirement, createAssignment,
-// removeAssignment, getRequirementCandidates, getRequirementCandidateById,
-// getCandidates, getCandidateDetail, getActivities, getRequirementStats)
-// remain UNCHANGED from the existing file.
-// Only getRequirements and the new exportRequirements are defined here.
-// ─────────────────────────────────────────────────────────────────────────────
