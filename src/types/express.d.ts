@@ -2,6 +2,10 @@
 declare global {
   namespace Express {
     interface Request {
+      //newly added
+      params: ParamsDictionary;
+      query: Query;
+
       validatedBody: any;
       validatedQuery: any;
       validatedParams: any;

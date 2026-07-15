@@ -897,8 +897,8 @@ export const addSpocDMs = async (req: Request, res: Response) => {
           prisma.clientSpocDM.create({
             data: { spocId, dmId: id },
             select: { id: true, dmId: true },
-          })
-        )
+          }),
+        ),
       );
 
       // Re-fetch to return full shape
