@@ -7,6 +7,13 @@ import { CreateClientInput } from "@/validators/client.validators";
 // ── GET /clients// File: client.controller.ts (getClients function only)
 // Path: src/controller/client.controller.ts
 
+// File: client.controller.ts (read paths — replace getClients, getMyClients, getClientById)
+// Path: src/controller/client.controller.ts
+//
+// All three now select bands.value (NOT stringValue) so reads match the
+// write paths (createClient / updateClient) and the Band model.
+
+// ── GET /clients
 export const getClients = async (req: Request, res: Response) => {
   try {
     const {
@@ -28,47 +35,25 @@ export const getClients = async (req: Request, res: Response) => {
 
     // ── Build scope-based client filter ───────────────────────────────────────
     let scopeClause: any = {};
-    console.log(scope);
 
     if (req.user!.isSuperAdmin || scope === "ALL") {
-      // no restriction
       scopeClause = {};
-      console.log(scope);
     } else if (scope === "DEPARTMENT") {
-      // "Department" for us = everyone who reports to me (direct subordinates)
-      // fetch all users with reportingToId = current user
       const subordinates = await prisma.user.findMany({
         where: { reportingToId: userId, isActive: true },
         select: { id: true },
       });
-
       const handlerIds = [userId, ...subordinates.map((u) => u.id)];
-
-      // clients where any active spoc is handled by me or my subordinates
       scopeClause = {
-        spocs: {
-          some: {
-            handlerId: { in: handlerIds },
-            isActive: true,
-          },
-        },
+        spocs: { some: { handlerId: { in: handlerIds }, isActive: true } },
       };
     } else {
-      // OWN — only clients where I am the spoc handler
       scopeClause = {
-        spocs: {
-          some: {
-            handlerId: userId,
-            isActive: true,
-          },
-        },
+        spocs: { some: { handlerId: userId, isActive: true } },
       };
     }
 
-    const where: any = {
-      ...scopeClause,
-      deletedAt: null,
-    };
+    const where: any = { ...scopeClause, deletedAt: null };
 
     if (status) where.status = status;
     if (buId) where.businessUnitId = buId;
@@ -80,12 +65,8 @@ export const getClients = async (req: Request, res: Response) => {
       ];
     }
     if (serviceLineId) {
-      // merge with existing spocs filter if already set
       if (where.spocs?.some) {
-        where.spocs.some = {
-          ...where.spocs.some,
-          serviceLineId,
-        };
+        where.spocs.some = { ...where.spocs.some, serviceLineId };
       } else {
         where.spocs = { some: { serviceLineId, isActive: true } };
       }
@@ -105,9 +86,29 @@ export const getClients = async (req: Request, res: Response) => {
           name: true,
           vmsName: true,
           industry: true,
+          website: true,
+          country: true,
+          state: true,
+          city: true,
+          address: true,
           status: true,
           createdAt: true,
+          // pricing / agreement — needed by card + edit sheet
+          agreementType: true,
+          percentageValue: true,
+          bands: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              rangeFrom: true,
+              rangeTo: true,
+              value: true,
+              experience: true,
+            },
+          },
           businessUnit: { select: { id: true, name: true } },
+          parentClient: { select: { id: true, name: true } },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
           spocs: {
             where: { isActive: true },
@@ -186,11 +187,11 @@ export const getMyClients = async (req: Request, res: Response) => {
           select: {
             id: true,
             name: true,
+            code: true,
             rangeFrom: true,
             rangeTo: true,
-            stringValue: true,
+            value: true,
             experience: true,
-            code: true,
           },
         },
         businessUnit: { select: { id: true, name: true } },
@@ -221,13 +222,6 @@ export const getMyClients = async (req: Request, res: Response) => {
 };
 
 // ── GET /clients/:id
-// File: client.controller.ts
-// Path: src/controller/client.controller.ts
-
-// ─────────────────────────────────────────────────────────────────────────────
-// getClientById — add clientSpocDms inside spocs select
-// ─────────────────────────────────────────────────────────────────────────────
-
 export const getClientById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -254,11 +248,11 @@ export const getClientById = async (req: Request, res: Response) => {
           select: {
             id: true,
             name: true,
+            code: true,
             rangeFrom: true,
             rangeTo: true,
-            stringValue: true,
+            value: true,
             experience: true,
-            code: true,
           },
         },
         businessUnit: { select: { id: true, name: true } },
@@ -284,7 +278,6 @@ export const getClientById = async (req: Request, res: Response) => {
             addedBy: { select: { id: true, firstName: true, lastName: true } },
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
-            // ── DM tags ───────────────────────────────────────────────────
             clientSpocDms: {
               orderBy: { createdAt: "asc" },
               select: {
@@ -350,6 +343,203 @@ export const getClientById = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to fetch client" });
   }
 };
+
+// ── GET /clients/mine — clients where I handle at least one active spoc
+// export const getMyClients = async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.user!.id;
+//     const { search, limit = "200" } = req.query as Record<string, string>;
+
+//     const where: any = {
+//       deletedAt: null,
+//       status: "ACTIVE",
+//       spocs: { some: { handlerId: userId, isActive: true } },
+//     };
+
+//     if (search) {
+//       where.OR = [
+//         { name: { contains: search, mode: "insensitive" } },
+//         { vmsName: { contains: search, mode: "insensitive" } },
+//       ];
+//     }
+
+//     const clients = await prisma.client.findMany({
+//       where,
+//       select: {
+//         id: true,
+//         name: true,
+//         vmsName: true,
+//         industry: true,
+//         agreementType: true,
+//         percentageValue: true,
+//         bands: {
+//           select: {
+//             id: true,
+//             name: true,
+//             rangeFrom: true,
+//             rangeTo: true,
+//             stringValue: true,
+//             experience: true,
+//             code: true,
+//           },
+//         },
+//         businessUnit: { select: { id: true, name: true } },
+//         spocs: {
+//           where: { handlerId: userId, isActive: true },
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//             designation: true,
+//             isPrimary: true,
+//             serviceLine: { select: { id: true, name: true } },
+//             businessUnit: { select: { id: true, name: true } },
+//           },
+//         },
+//       },
+//       orderBy: { name: "asc" },
+//       take: Math.min(parseInt(limit), 500),
+//     });
+
+//     res.json({ success: true, data: clients });
+//   } catch (err) {
+//     console.error("getMyClients:", err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch clients" });
+//   }
+// };
+
+// // ── GET /clients/:id
+// // File: client.controller.ts
+// // Path: src/controller/client.controller.ts
+
+// // ─────────────────────────────────────────────────────────────────────────────
+// // getClientById — add clientSpocDms inside spocs select
+// // ─────────────────────────────────────────────────────────────────────────────
+
+// export const getClientById = async (req: Request, res: Response) => {
+//   try {
+//     const { id } = req.params;
+
+//     const client = await prisma.client.findFirst({
+//       where: { id, deletedAt: null, ...clientScopeWhere(req.scopeFilter) },
+//       select: {
+//         id: true,
+//         name: true,
+//         vmsName: true,
+//         industry: true,
+//         website: true,
+//         country: true,
+//         state: true,
+//         city: true,
+//         address: true,
+//         status: true,
+//         createdAt: true,
+//         updatedAt: true,
+//         approvedAt: true,
+//         agreementType: true,
+//         percentageValue: true,
+//         bands: {
+//           select: {
+//             id: true,
+//             name: true,
+//             rangeFrom: true,
+//             rangeTo: true,
+//             stringValue: true,
+//             experience: true,
+//             code: true,
+//           },
+//         },
+//         businessUnit: { select: { id: true, name: true } },
+//         parentClient: { select: { id: true, name: true } },
+//         childClients: { select: { id: true, name: true, status: true } },
+//         createdBy: { select: { id: true, firstName: true, lastName: true } },
+//         approvedBy: { select: { id: true, firstName: true, lastName: true } },
+//         spocs: {
+//           orderBy: { createdAt: "desc" },
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//             email: true,
+//             phone: true,
+//             designation: true,
+//             department: true,
+//             isPrimary: true,
+//             isActive: true,
+//             notes: true,
+//             createdAt: true,
+//             handler: { select: { id: true, firstName: true, lastName: true } },
+//             addedBy: { select: { id: true, firstName: true, lastName: true } },
+//             serviceLine: { select: { id: true, name: true } },
+//             businessUnit: { select: { id: true, name: true } },
+//             // ── DM tags ───────────────────────────────────────────────────
+//             clientSpocDms: {
+//               orderBy: { createdAt: "asc" },
+//               select: {
+//                 id: true,
+//                 spocId: true,
+//                 createdAt: true,
+//                 dm: {
+//                   select: {
+//                     id: true,
+//                     firstName: true,
+//                     lastName: true,
+//                     displayName: true,
+//                     email: true,
+//                     role: { select: { id: true, name: true } },
+//                   },
+//                 },
+//               },
+//             },
+//           },
+//         },
+//         notes: {
+//           select: {
+//             id: true,
+//             content: true,
+//             createdAt: true,
+//             author: { select: { id: true, firstName: true, lastName: true } },
+//           },
+//           orderBy: { createdAt: "desc" },
+//         },
+//         requirements: {
+//           where: { deletedAt: null },
+//           select: {
+//             id: true,
+//             reqCode: true,
+//             title: true,
+//             status: true,
+//             priority: true,
+//             totalOpenings: true,
+//             createdAt: true,
+//           },
+//           orderBy: { createdAt: "desc" },
+//           take: 20,
+//         },
+//         _count: { select: { requirements: true } },
+//       },
+//     });
+
+//     if (!client) {
+//       res.status(404).json({ success: false, message: "Client not found" });
+//       return;
+//     }
+
+//     res.json({
+//       success: true,
+//       data: client,
+//       permissions: {
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getClientById:", err);
+//     res.status(500).json({ success: false, message: "Failed to fetch client" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getClientSpocs — add clientSpocDms so the standalone spocs endpoint
@@ -507,6 +697,142 @@ export const createClient = async (req: Request, res: Response) => {
   }
 };
 
+// File: client.controller.ts (updateClient — replace the existing PUT handler)
+// Path: src/controller/client.controller.ts
+
+// ── PATCH /clients/:id
+// Full client edit: scalars + agreement type + percentage + bands + status.
+// Partial by design — only fields present in the body are touched.
+export const updateClient1 = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      vmsName,
+      industry,
+      website,
+      country,
+      state,
+      city,
+      address,
+      businessUnitId,
+      parentClientId,
+      status,
+      agreementType,
+      percentage,
+      bands,
+    } = req.body as Partial<CreateClientInput> & {
+      status?: "PENDING" | "ACTIVE" | "INACTIVE";
+    };
+
+    const actorId = req.user!.id;
+
+    const existing = await prisma.client.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, agreementType: true, approvedById: true },
+    });
+
+    if (!existing) {
+      res.status(404).json({ success: false, message: "Client not found" });
+      return;
+    }
+
+    // The agreement type that will be in effect after this update.
+    const effectiveType = agreementType ?? existing.agreementType ?? "FIXED";
+
+    // Only rewrite pricing/bands when the request actually carries pricing intent.
+    const touchesPricing =
+      agreementType !== undefined ||
+      percentage !== undefined ||
+      bands !== undefined;
+
+    const data: any = {
+      ...(name !== undefined && { name }),
+      ...(vmsName !== undefined && { vmsName }),
+      ...(industry !== undefined && { industry }),
+      ...(website !== undefined && { website }),
+      ...(country !== undefined && { country }),
+      ...(state !== undefined && { state }),
+      ...(city !== undefined && { city }),
+      ...(address !== undefined && { address }),
+      ...(businessUnitId !== undefined && { businessUnitId }),
+      ...(parentClientId !== undefined && { parentClientId }),
+    };
+
+    // Status change — stamp approval metadata on first activation only,
+    // mirroring updateClientStatus so this path can't silently skip it.
+    if (status !== undefined) {
+      data.status = status;
+      if (status === "ACTIVE" && !existing.approvedById) {
+        data.approvedById = actorId;
+        data.approvedAt = new Date();
+      }
+    }
+
+    if (agreementType !== undefined) data.agreementType = agreementType;
+
+    // percentageValue is only meaningful for FIXED; null it out otherwise.
+    if (touchesPricing) {
+      data.percentageValue =
+        effectiveType === "FIXED" ? percentage ?? null : null;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.client.update({ where: { id }, data });
+
+      // Bands: form rows carry no stable id, so replace wholesale.
+      // Runs when agreement type changed OR bands were sent.
+      if (touchesPricing) {
+        await tx.band.deleteMany({ where: { clientId: id } });
+
+        if (effectiveType === "BAND" && bands?.length) {
+          await tx.band.createMany({
+            data: bands.map((b) => ({
+              clientId: id,
+              name: b.name ?? null,
+              code: b.code,
+              rangeFrom: b.rangeFrom ?? null,
+              rangeTo: b.rangeTo ?? null,
+              value: b.value ?? null, // ⚠ column name — see note in reply
+              experience: b.experience ?? null,
+            })),
+          });
+        }
+      }
+
+      return tx.client.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          updatedAt: true,
+          agreementType: true,
+          percentageValue: true,
+          bands: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              rangeFrom: true,
+              rangeTo: true,
+              value: true,
+              experience: true,
+            },
+          },
+        },
+      });
+    });
+
+    res.json({ success: true, message: "Client updated", data: updated });
+  } catch (err) {
+    console.error("updateClient:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to update client" });
+  }
+};
+
 // ── PUT /clients/:id
 export const updateClient = async (req: Request, res: Response) => {
   try {
@@ -522,11 +848,19 @@ export const updateClient = async (req: Request, res: Response) => {
       address,
       businessUnitId,
       parentClientId,
-    } = req.body;
+      status,
+      agreementType,
+      percentage,
+      bands,
+    } = req.body as Partial<CreateClientInput> & {
+      status?: "PENDING" | "ACTIVE" | "INACTIVE";
+    };
+
+    const actorId = req.user!.id;
 
     const existing = await prisma.client.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true },
+      select: { id: true, agreementType: true, approvedById: true },
     });
 
     if (!existing) {
@@ -534,21 +868,91 @@ export const updateClient = async (req: Request, res: Response) => {
       return;
     }
 
-    const updated = await prisma.client.update({
-      where: { id },
-      data: {
-        ...(name !== undefined && { name }),
-        ...(vmsName !== undefined && { vmsName }),
-        ...(industry !== undefined && { industry }),
-        ...(website !== undefined && { website }),
-        ...(country !== undefined && { country }),
-        ...(state !== undefined && { state }),
-        ...(city !== undefined && { city }),
-        ...(address !== undefined && { address }),
-        ...(businessUnitId !== undefined && { businessUnitId }),
-        ...(parentClientId !== undefined && { parentClientId }),
-      },
-      select: { id: true, name: true, status: true, updatedAt: true },
+    // The agreement type that will be in effect after this update.
+    const effectiveType = agreementType ?? existing.agreementType ?? "FIXED";
+
+    // Only rewrite pricing/bands when the request actually carries pricing intent.
+    const touchesPricing =
+      agreementType !== undefined ||
+      percentage !== undefined ||
+      bands !== undefined;
+
+    const data: any = {
+      ...(name !== undefined && { name }),
+      ...(vmsName !== undefined && { vmsName }),
+      ...(industry !== undefined && { industry }),
+      ...(website !== undefined && { website }),
+      ...(country !== undefined && { country }),
+      ...(state !== undefined && { state }),
+      ...(city !== undefined && { city }),
+      ...(address !== undefined && { address }),
+      ...(businessUnitId !== undefined && { businessUnitId }),
+      ...(parentClientId !== undefined && { parentClientId }),
+    };
+
+    // Status change — stamp approval metadata on first activation only,
+    // mirroring updateClientStatus so this path can't silently skip it.
+    if (status !== undefined) {
+      data.status = status;
+      if (status === "ACTIVE" && !existing.approvedById) {
+        data.approvedById = actorId;
+        data.approvedAt = new Date();
+      }
+    }
+
+    if (agreementType !== undefined) data.agreementType = agreementType;
+
+    // percentageValue is only meaningful for FIXED; null it out otherwise.
+    if (touchesPricing) {
+      data.percentageValue =
+        effectiveType === "FIXED" ? percentage ?? null : null;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.client.update({ where: { id }, data });
+
+      // Bands: form rows carry no stable id, so replace wholesale.
+      // Runs when agreement type changed OR bands were sent.
+      if (touchesPricing) {
+        await tx.band.deleteMany({ where: { clientId: id } });
+
+        if (effectiveType === "BAND" && bands?.length) {
+          await tx.band.createMany({
+            data: bands.map((b) => ({
+              clientId: id,
+              name: b.name ?? null,
+              code: b.code,
+              rangeFrom: b.rangeFrom ?? null,
+              rangeTo: b.rangeTo ?? null,
+              value: b.value ?? null, // ⚠ column name — see note in reply
+              experience: b.experience ?? null,
+            })),
+          });
+        }
+      }
+
+      return tx.client.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          updatedAt: true,
+          agreementType: true,
+          percentageValue: true,
+          bands: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              rangeFrom: true,
+              rangeTo: true,
+              value: true,
+              experience: true,
+            },
+          },
+        },
+      });
     });
 
     res.json({ success: true, message: "Client updated", data: updated });

@@ -32,6 +32,7 @@ import {
   addSpocDMs,
   getSpocDMs,
   removeSpocDM,
+  updateClient1,
 } from "@/controller/client.controller";
 
 const router = Router();
@@ -57,8 +58,17 @@ router.put(
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  validate.body(updateClientSchema),
+  // validate.body(updateClientSchema),
   updateClient
+);
+
+router.patch(
+  "/:id",
+  authenticateUser,
+  scope,
+  checkPermission("canEdit"),
+  // validate.body(updateClientSchema),
+  updateClient1
 );
 
 router.get("/:id/spocs/:spocId/dms", authenticateUser, scope, getSpocDMs);
