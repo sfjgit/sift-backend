@@ -383,9 +383,11 @@ model RolePermission {
   @@unique([roleId, module])
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CLIENT
-// ─────────────────────────────────────────────────────────────────────────────
+
+enum AgreementType {
+  BAND
+  FIXED
+}
 
 model Client {
   id       String       @id @default(uuid())
@@ -419,6 +421,11 @@ model Client {
   notes        ClientNote[]
   assignments  RequirementAssignment[]
 
+  agreementType   AgreementType?  @default(FIXED)
+  percentageValue Decimal?
+
+  bands Band[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -426,6 +433,37 @@ model Client {
   @@index([businessUnitId])
   @@index([deletedAt])
 }
+
+model Band {
+  id String @id @default(uuid())
+
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name       String?
+  code       String
+
+  rangeFrom Decimal?
+  rangeTo   Decimal?
+  value     Decimal?
+
+  experience Decimal?
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+}
+
+// model ClientAgreement {
+//   id            String      @id @default(uuid())
+//   clientId      String
+//   client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+//   agreementType AgreementType
+  
+//   startDate     DateTime
+//   endDate       DateTime
+//   createdAt     DateTime @default(now())
+// }
 
 model ClientSpoc {
   id String @id @default(uuid())
@@ -945,6 +983,8 @@ model RequirementCandidatePipeline {
   offeredBy      User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
   offerStatus    OfferStatus?
 
+  noticePeriod   String?
+
   // ── CTC breakdown
   currentCtc    Float?   // what candidate earns now at current company
   expectedCtc   Float?   // what candidate asked for
@@ -1103,6 +1143,8 @@ model PipelineStage {
   isMandatory    Boolean         @default(true)
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
+
+  isStandard     Boolean         @default(false)
 
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")

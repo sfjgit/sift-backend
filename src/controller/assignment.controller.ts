@@ -9,6 +9,7 @@ import type {
   SubAssignInput,
   UpdateAssignmentInput,
 } from "@/validators/assignment.validator";
+import { Prisma } from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE SELECT FOR STATS
@@ -28,6 +29,14 @@ const PIPELINE_SELECT_FOR_STATS = {
   actualJoiningDate: true,
   stageUpdatedAt: true,
   createdAt: true,
+  noticePeriod: true,
+  monthOfJoining: true,
+  expectedCtc: true,
+  lastWorkingDate: true,
+  offeredCtc: true,
+  salaryType: true,
+  salaryCurrency: true,
+
   currentStage: {
     select: {
       id: true,
@@ -37,7 +46,7 @@ const PIPELINE_SELECT_FOR_STATS = {
       canonicalStage: true,
     },
   },
-} as const;
+} satisfies Prisma.RequirementCandidatePipelineSelect;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FULL PIPELINE ROW SELECT — used in getAssignmentPipeline
@@ -60,6 +69,7 @@ const FULL_PIPELINE_SELECT = {
   actualJoiningDate: true,
   stageUpdatedAt: true,
   createdAt: true,
+  noticePeriod: true,
 
   // ── CTC ladder — ADD THESE
   currentCtc: true,
@@ -146,7 +156,7 @@ const FULL_PIPELINE_SELECT = {
       },
     },
   },
-} as const;
+} satisfies Prisma.RequirementCandidatePipelineSelect;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ASSIGNMENT SELECT
@@ -333,13 +343,13 @@ function computePipelineStats(pipelines: any[]) {
   const joined = pipelines.filter((p) => p.actualJoiningDate !== null).length;
 
   const offerAccepted = pipelines.filter(
-    (p) => p.offerStatus === "ACCEPTED",
+    (p) => p.offerStatus === "ACCEPTED"
   ).length;
   const offerPending = pipelines.filter(
-    (p) => p.offerStatus === "PENDING",
+    (p) => p.offerStatus === "PENDING"
   ).length;
   const offerDeclined = pipelines.filter(
-    (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED",
+    (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED"
   ).length;
 
   // ── byCanonicalStage — read from currentStage.canonicalStage (single source of truth)
@@ -384,7 +394,7 @@ function computePipelineStats(pipelines: any[]) {
     stageMap[id].count++;
   }
   const byPipelineStage = Object.values(stageMap).sort(
-    (a, b) => a.order - b.order,
+    (a, b) => a.order - b.order
   );
 
   // ── activeByPipelineStage — same but active only
@@ -414,7 +424,7 @@ function computePipelineStats(pipelines: any[]) {
     activeStageMap[id].count++;
   }
   const activeByPipelineStage = Object.values(activeStageMap).sort(
-    (a, b) => a.order - b.order,
+    (a, b) => a.order - b.order
   );
 
   // ── Aging buckets for active candidates
@@ -490,7 +500,7 @@ function shapeAssignment(a: any) {
 function computeAging(stageUpdatedAt: string | null) {
   if (!stageUpdatedAt) return { minutes: 0, label: "—" };
   const mins = Math.floor(
-    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000,
+    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000
   );
   if (mins < 60) return { minutes: mins, label: `${mins}m` };
   const h = Math.floor(mins / 60);
@@ -643,7 +653,7 @@ export const getAssignmentById = async (req: Request, res: Response) => {
 
 export const getAssignmentsByRequirement = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { requirementId } = req.params;
@@ -881,7 +891,7 @@ export const getAssignableTargets = async (req: Request, res: Response) => {
     }
 
     merged.sort((a, b) =>
-      (a as any).firstName.localeCompare((b as any).firstName),
+      (a as any).firstName.localeCompare((b as any).firstName)
     );
 
     res.json({ success: true, data: merged });
@@ -1270,8 +1280,17 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
       }),
     ]);
 
+    const serviceLineId = assignment.requirement.serviceLine?.id;
+
+    const stageWhere: Prisma.PipelineStageWhereInput = {
+      isActive: true,
+      ...(serviceLineId
+        ? { OR: [{ serviceLineId }, { serviceLineId: null }] }
+        : { serviceLineId: null }),
+    };
+
     const pipelineStages = await prisma.pipelineStage.findMany({
-      where: { isActive: true },
+      where: stageWhere,
       select: {
         id: true,
         code: true,

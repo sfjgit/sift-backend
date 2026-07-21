@@ -15,6 +15,7 @@ export const updatePipelineDetailsSchema = z.object({
   ctcNotes: z.string().max(1000).nullable().optional(),
   lastWorkingDate: z.string().datetime().nullable().optional(),
   actualJoiningDate: z.string().datetime().nullable().optional(),
+  noticePeriod: z.number().nonnegative().nullable().optional(),
 });
 
 export type UpdatePipelineDetailsInput = z.infer<
@@ -107,7 +108,7 @@ export const createAssignmentSchema = z
       (data.assignedToIds && data.assignedToIds.length > 0),
     {
       message: "assignedToId or assignedToIds is required",
-    },
+    }
   );
 
 // export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;

@@ -2,6 +2,7 @@
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import { clientScopeWhere } from "@/middleware/scopeFilter.middleware";
+import { CreateClientInput } from "@/validators/client.validators";
 
 // ── GET /clients// File: client.controller.ts (getClients function only)
 // Path: src/controller/client.controller.ts
@@ -179,6 +180,19 @@ export const getMyClients = async (req: Request, res: Response) => {
         name: true,
         vmsName: true,
         industry: true,
+        agreementType: true,
+        percentageValue: true,
+        bands: {
+          select: {
+            id: true,
+            name: true,
+            rangeFrom: true,
+            rangeTo: true,
+            stringValue: true,
+            experience: true,
+            code: true,
+          },
+        },
         businessUnit: { select: { id: true, name: true } },
         spocs: {
           where: { handlerId: userId, isActive: true },
@@ -234,6 +248,19 @@ export const getClientById = async (req: Request, res: Response) => {
         createdAt: true,
         updatedAt: true,
         approvedAt: true,
+        agreementType: true,
+        percentageValue: true,
+        bands: {
+          select: {
+            id: true,
+            name: true,
+            rangeFrom: true,
+            rangeTo: true,
+            stringValue: true,
+            experience: true,
+            code: true,
+          },
+        },
         businessUnit: { select: { id: true, name: true } },
         parentClient: { select: { id: true, name: true } },
         childClients: { select: { id: true, name: true, status: true } },
@@ -412,7 +439,11 @@ export const createClient = async (req: Request, res: Response) => {
       address,
       businessUnitId,
       parentClientId,
-    } = req.body;
+      agreementType,
+      bands,
+      percentage,
+    } = req.body as CreateClientInput;
+
     const actorId = req.user!.id;
 
     const client = await prisma.client.create({
@@ -425,22 +456,54 @@ export const createClient = async (req: Request, res: Response) => {
         state: state ?? null,
         city: city ?? null,
         address: address ?? null,
+
         businessUnitId: businessUnitId ?? null,
         parentClientId: parentClientId ?? null,
+
         status: "PENDING",
         createdById: actorId,
+
+        agreementType: agreementType ?? "FIXED",
+
+        percentageValue: agreementType === "FIXED" ? percentage ?? null : null,
+
+        bands:
+          agreementType === "BAND" && bands?.length
+            ? {
+                create: bands.map((band) => ({
+                  name: band.name ?? null,
+                  code: band.code,
+                  // stringValue: band.stringValue,
+                  rangeFrom: band.rangeFrom,
+                  rangeTo: band.rangeTo,
+                  value: band.value,
+                  experience: band.experience ?? null,
+                })),
+              }
+            : undefined,
       },
-      select: { id: true, name: true, status: true, createdAt: true },
+
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        createdAt: true,
+        bands: true,
+      },
     });
 
-    res
-      .status(201)
-      .json({ success: true, message: "Client created", data: client });
+    res.status(201).json({
+      success: true,
+      message: "Client created",
+      data: client,
+    });
   } catch (err) {
     console.error("createClient:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to create client" });
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to create client",
+    });
   }
 };
 
@@ -897,8 +960,8 @@ export const addSpocDMs = async (req: Request, res: Response) => {
           prisma.clientSpocDM.create({
             data: { spocId, dmId: id },
             select: { id: true, dmId: true },
-          }),
-        ),
+          })
+        )
       );
 
       // Re-fetch to return full shape

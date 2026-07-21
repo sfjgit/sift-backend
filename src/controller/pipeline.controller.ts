@@ -86,7 +86,7 @@ function computeTimeInStage(stageUpdatedAt: Date): number {
 }
 async function syncDispositionAndClosure(
   tx: Prisma.TransactionClient,
-  pipelineId: string,
+  pipelineId: string
 ) {
   const p = await tx.requirementCandidatePipeline.findUniqueOrThrow({
     where: { id: pipelineId },
@@ -186,6 +186,7 @@ const PIPELINE_SELECT = {
   offeredAt: true,
   expectedJoiningDate: true,
   actualJoiningDate: true,
+  noticePeriod: true,
   // ── CTC ladder — surfaced in the assignment pipeline table
   currentCtc: true,
   expectedCtc: true,
@@ -503,7 +504,7 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
 
     const totalMins = pipeline.stageHistory.reduce(
       (acc, log) => acc + (log.timeInPrevStageMins ?? 0),
-      0,
+      0
     );
     res.json({
       success: true,
@@ -1265,6 +1266,7 @@ export const updatePipelineDetails = async (req: Request, res: Response) => {
       ctcNotes,
       lastWorkingDate,
       actualJoiningDate,
+      noticePeriod,
     } = req.body as UpdatePipelineDetailsInput;
 
     const pipeline = await findPipeline(pipelineId);
@@ -1283,6 +1285,10 @@ export const updatePipelineDetails = async (req: Request, res: Response) => {
     if (ctcNotes !== undefined) data.ctcNotes = ctcNotes;
     if (lastWorkingDate !== undefined) {
       data.lastWorkingDate = lastWorkingDate ? new Date(lastWorkingDate) : null;
+    }
+
+    if (noticePeriod !== undefined) {
+      data.noticePeriod = noticePeriod;
     }
 
     // actualJoiningDate drives the two derived fields. Recomputed here since
@@ -1305,8 +1311,7 @@ export const updatePipelineDetails = async (req: Request, res: Response) => {
         data.monthOfJoining = null;
         data.remainingDaysToJoin = pipeline.expectedJoiningDate
           ? Math.floor(
-              (pipeline.expectedJoiningDate.getTime() - Date.now()) /
-                86_400_000,
+              (pipeline.expectedJoiningDate.getTime() - Date.now()) / 86_400_000
             )
           : null;
       }
@@ -1332,6 +1337,8 @@ export const updatePipelineDetails = async (req: Request, res: Response) => {
         actualJoiningDate: true,
         monthOfJoining: true,
         remainingDaysToJoin: true,
+
+        noticePeriod: true,
       },
     });
 
@@ -1504,7 +1511,7 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
     }
 
     const activePipelineCount = await prisma.requirementCandidatePipeline.count(
-      { where: { currentStageId: stageId } },
+      { where: { currentStageId: stageId } }
     );
 
     const updated = await prisma.pipelineStage.update({
@@ -1564,7 +1571,7 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
     }
 
     const activePipelineCount = await prisma.requirementCandidatePipeline.count(
-      { where: { currentStageId: stageId } },
+      { where: { currentStageId: stageId } }
     );
     if (activePipelineCount > 0) {
       res.status(409).json({
