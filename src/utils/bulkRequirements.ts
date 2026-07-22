@@ -408,6 +408,7 @@ function optionalDate(
     });
     return undefined;
   }
+  console.log(normalized);
   const d = new Date(normalized);
   if (isNaN(d.getTime())) {
     errors.push({
