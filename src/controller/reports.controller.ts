@@ -177,6 +177,7 @@ const PIPELINE_DETAIL_SELECT = {
   remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
+  noticePeriod: true,
   currentStage: {
     select: {
       id: true,
@@ -236,6 +237,7 @@ function buildCandidateSheet(
     { header: "Stage Aging", key: "aging", width: 12 },
     { header: "Submitted At", key: "submittedAt", width: 18 },
     { header: "Offer Status", key: "offerStatus", width: 14 },
+    // {}
     // CTC breakdown — new fields
     { header: "Current CTC", key: "currentCtc", width: 14 },
     { header: "Expected CTC", key: "expectedCtc", width: 14 },
@@ -244,6 +246,7 @@ function buildCandidateSheet(
     { header: "Currency", key: "currency", width: 10 },
     { header: "Salary Type", key: "salaryType", width: 12 },
     // Joining — new fields
+    { header: "Notice Period", key: "noticePeriod", width: 14 },
     { header: "Last Working Day", key: "lwd", width: 16 },
     { header: "Expected Joining", key: "expectedJoining", width: 16 },
     { header: "Actual Joining", key: "actualJoining", width: 16 },
@@ -299,6 +302,7 @@ function buildCandidateSheet(
       currency: p.salaryCurrency ?? "",
       salaryType: p.salaryType ?? "",
       // Joining
+      noticePeriod: p.noticePeriod ?? "",
       lwd: p.lastWorkingDate ? new Date(p.lastWorkingDate) : "",
       expectedJoining: p.expectedJoiningDate
         ? new Date(p.expectedJoiningDate)
@@ -386,6 +390,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
             title: true,
             status: true,
             totalOpenings: true,
+
             client: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
             serviceLine: { select: { id: true, name: true } },
