@@ -2361,7 +2361,40 @@ export const updateRequirement = async (req: Request, res: Response) => {
         message: "Cannot edit a closed or cancelled requirement",
       });
     }
+    // ── Client/SPOC change — derive everything from the SPOC, never trust the payload ──
+    let derived: {
+      clientId?: string;
+      clientSpocId?: string;
+      serviceLineId?: string;
+      businessUnitId?: string;
+    } | null = null;
 
+    if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
+      // reuse the SAME resolver bulk-upload uses so behaviour never drifts
+      const spoc = await prisma.clientSpoc.findUnique({
+        where: { id: body.clientSpocId },
+        select: {
+          clientId: true,
+          serviceLineId: true,
+          businessUnitId: true,
+          isActive: true,
+        },
+      });
+
+      if (!spoc || !spoc.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or inActive SPOC selected",
+        });
+      }
+
+      derived = {
+        clientSpocId: body.clientSpocId,
+        clientId: spoc.clientId,
+        businessUnitId: spoc.businessUnitId,
+        serviceLineId: spoc.serviceLineId,
+      };
+    }
     const updated = await prisma.requirement.update({
       where: { id },
       data: {
@@ -2450,6 +2483,12 @@ export const updateRequirement = async (req: Request, res: Response) => {
         ...(body.jdParsedFields !== undefined && {
           jdParsedFields: body.jdParsedFields,
         }),
+        ...(derived && {
+          clientSpocId: derived.clientSpocId,
+          clientId: derived.clientId,
+          businessUnitId: derived.businessUnitId,
+          serviceLineId: derived.serviceLineId,
+        }),
       },
       select: {
         id: true,
@@ -2465,7 +2504,9 @@ export const updateRequirement = async (req: Request, res: Response) => {
         requirementId: id,
         actorId,
         type: "STATUS_CHANGED",
-        summary: `Requirement ${updated.reqCode} updated`,
+        summary: derived
+          ? `Client/SPOC changed on ${updated.reqCode}`
+          : `Requirement ${updated.reqCode} updated`,
       },
     });
 
@@ -2511,7 +2552,38 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       data.closedById = actorId;
       data.closedAt = new Date();
     }
+    // ── Client/SPOC change — derive everything from the SPOC, never trust the payload ──
+    let derived: {
+      clientId?: string;
+      clientSpocId?: string;
+      serviceLineId?: string;
+      businessUnitId?: string;
+    } = {};
 
+    if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
+      // reuse the SAME resolver bulk-upload uses so behaviour never drifts
+      const spoc = await prisma.clientSpoc.findFirst({
+        where: { id: body.clientSpocId, deletedAt: null },
+        select: {
+          id: true,
+          clientId: true,
+          serviceLineId: true,
+          businessUnitId: true,
+        },
+      });
+
+      if (!spoc) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid SPOC selected" });
+      }
+      derived = {
+        clientSpocId: spoc.id,
+        clientId: spoc.clientId,
+        serviceLineId: spoc.serviceLineId ?? undefined,
+        businessUnitId: spoc.businessUnitId ?? undefined,
+      };
+    }
     const [updated] = await prisma.$transaction([
       prisma.requirement.update({
         where: { id },

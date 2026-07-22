@@ -397,7 +397,10 @@ function optionalDate(
 ): Date | undefined {
   const v = value?.trim();
   if (!v) return undefined;
-  if (!DATE_REGEX.test(v)) {
+  // Normalize YYYY/MM/DD → YYYY-MM-DD before validating
+  const normalized = v.replace(/\//g, "-");
+
+  if (!DATE_REGEX.test(normalized)) {
     errors.push({
       row,
       field,
@@ -405,7 +408,8 @@ function optionalDate(
     });
     return undefined;
   }
-  const d = new Date(v);
+  console.log(normalized);
+  const d = new Date(normalized);
   if (isNaN(d.getTime())) {
     errors.push({
       row,
