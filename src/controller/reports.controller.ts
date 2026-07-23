@@ -531,6 +531,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     const scopedUserIds = await resolveScopedUserIds(req);
 
     const reqWhere = buildReqWhere(q);
+    // Unfiltered → every stage (needed to build per-line funnels). Filtered → that line + common.
     const stages = await fetchScopedStages(q.serviceLineId);
 
     const pipelineWhere: Record<string, any> = { requirement: reqWhere };
@@ -551,6 +552,14 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         offerStatus: true,
         createdAt: true,
         recruiter: { select: { id: true, firstName: true, lastName: true } },
+        requirement: {
+          select: {
+            serviceLineId: true,
+            serviceLine: { select: { id: true, name: true } },
+            businessUnitId: true,
+            businessUnit: { select: { id: true, name: true } },
+          },
+        },
       },
     });
 
@@ -561,6 +570,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     let dropped = 0;
     let active = 0;
 
+    const NONE = "__none__";
     const stageCounts: Record<string, number> = Object.fromEntries(
       stages.map((s) => [s.id, 0])
     );
@@ -569,6 +579,27 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       string,
       { id: string; name: string; sourced: number; joined: number }
     > = {};
+
+    // per service line
+    type LineAgg = {
+      serviceLineId: string | null;
+      name: string;
+      total: number;
+      submitted: number;
+      offered: number;
+      joined: number;
+      stageCounts: Record<string, number>;
+    };
+    const lineAgg: Record<string, LineAgg> = {};
+
+    // per business unit
+    type BuAgg = {
+      businessUnitId: string | null;
+      name: string;
+      total: number;
+      joined: number;
+    };
+    const buAgg: Record<string, BuAgg> = {};
 
     // time-series bucketing — hourly if window ≤ 2 days, else daily
     const spanMs =
@@ -585,12 +616,19 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     };
 
     for (const p of pipelines) {
+      const rq = (p as any).requirement;
+      const lineId: string | null = rq?.serviceLineId ?? null;
+      const lineKey = lineId ?? NONE;
+      const buId: string | null = rq?.businessUnitId ?? null;
+      const buKey = buId ?? NONE;
+
       if (p.currentStageId in stageCounts) stageCounts[p.currentStageId]++;
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
+      const isJ = isJoined(p);
       if (p.submittedAt) submitted++;
       if (p.offerStatus) offered++;
-      if (isJoined(p)) joined++;
+      if (isJ) joined++;
       if (isDropped(p)) dropped++;
       if (isActive(p)) active++;
 
@@ -607,9 +645,42 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         };
       }
       recruiterAgg[rid].sourced++;
-      if (isJoined(p)) recruiterAgg[rid].joined++;
+      if (isJ) recruiterAgg[rid].joined++;
+
+      // service line bucket
+      if (!lineAgg[lineKey]) {
+        lineAgg[lineKey] = {
+          serviceLineId: lineId,
+          name: rq?.serviceLine?.name ?? "Unassigned",
+          total: 0,
+          submitted: 0,
+          offered: 0,
+          joined: 0,
+          stageCounts: {},
+        };
+      }
+      const la = lineAgg[lineKey];
+      la.total++;
+      if (p.submittedAt) la.submitted++;
+      if (p.offerStatus) la.offered++;
+      if (isJ) la.joined++;
+      la.stageCounts[p.currentStageId] =
+        (la.stageCounts[p.currentStageId] ?? 0) + 1;
+
+      // business unit bucket
+      if (!buAgg[buKey]) {
+        buAgg[buKey] = {
+          businessUnitId: buId,
+          name: rq?.businessUnit?.name ?? "Unassigned",
+          total: 0,
+          joined: 0,
+        };
+      }
+      buAgg[buKey].total++;
+      if (isJ) buAgg[buKey].joined++;
     }
 
+    // global funnel (all stages, ordered)
     const funnel = stages
       .map((s) => ({
         stageId: s.id,
@@ -621,6 +692,37 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         count: stageCounts[s.id] ?? 0,
       }))
       .filter((s) => s.count > 0);
+
+    // per-line funnel — each line sees only its own variants + common stages,
+    // counted from that line's own pipeline rows (common stages are NOT shared
+    // across lines here; a candidate is counted under its requirement's line).
+    const stageForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
+
+    const byServiceLine = Object.values(lineAgg)
+      .sort((a, b) => b.total - a.total)
+      .map((la) => ({
+        serviceLineId: la.serviceLineId,
+        name: la.name,
+        total: la.total,
+        submitted: la.submitted,
+        offered: la.offered,
+        joined: la.joined,
+        funnel: stageForLine(la.serviceLineId)
+          .map((s) => ({
+            stageId: s.id,
+            label: s.label,
+            order: s.order,
+            count: la.stageCounts[s.id] ?? 0,
+          }))
+          .filter((s) => s.count > 0),
+      }));
+
+    const byBusinessUnit = Object.values(buAgg).sort(
+      (a, b) => b.total - a.total
+    );
 
     const timeSeries = Object.entries(series)
       .map(([bucket, count]) => ({ bucket, count }))
@@ -647,6 +749,8 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           joinRate: offered > 0 ? +((joined / offered) * 100).toFixed(1) : 0,
         },
         funnel,
+        byServiceLine,
+        byBusinessUnit,
         dispositionCounts,
         timeSeries,
         timeGranularity: bucketByHour ? "hour" : "day",
@@ -656,6 +760,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         window: windowLabel(q),
         granularity: bucketByHour ? "hour" : "day",
         scope: (req as any).scopeFilter?.type ?? "ALL",
+        multiLine: byServiceLine.length > 1,
       },
     });
   } catch (err) {
@@ -672,7 +777,150 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Aggregate a set of pipeline rows into per-recruiter stat rows.
+// Pulled out so we can run it once for a flat view or once per service line.
+function buildRecruiterRows(pipes: any[]) {
+  type ReqStats = {
+    requirementId: string;
+    reqCode: string;
+    title: string;
+    status: string;
+    totalOpenings: number;
+    client: { id: string; name: string } | null;
+    serviceLine: { id: string; name: string } | null;
+    businessUnit: { id: string; name: string } | null;
+    sourced: number;
+    submitted: number;
+    offered: number;
+    joined: number;
+    dropped: number;
+    active: number;
+    stageCounts: Record<string, number>;
+  };
+  type RecAgg = {
+    id: string;
+    name: string;
+    email: string;
+    sourced: number;
+    submitted: number;
+    offered: number;
+    joined: number;
+    dropped: number;
+    active: number;
+    submitTimeMins: number[];
+    stageCounts: Record<string, number>;
+    reqMap: Record<string, ReqStats>;
+  };
+
+  const map: Record<string, RecAgg> = {};
+
+  for (const p of pipes) {
+    const rid = p.recruiterId;
+    if (!map[rid]) {
+      map[rid] = {
+        id: rid,
+        name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+        email: p.recruiter.email,
+        sourced: 0,
+        submitted: 0,
+        offered: 0,
+        joined: 0,
+        dropped: 0,
+        active: 0,
+        submitTimeMins: [],
+        stageCounts: {},
+        reqMap: {},
+      };
+    }
+    const r = map[rid];
+    r.sourced++;
+    r.stageCounts[p.currentStageId] =
+      (r.stageCounts[p.currentStageId] ?? 0) + 1;
+    if (p.submittedAt) r.submitted++;
+    if (p.offerStatus) r.offered++;
+    if (isJoined(p)) r.joined++;
+    if (isDropped(p)) r.dropped++;
+    if (isActive(p)) r.active++;
+    if (p.submittedAt) {
+      r.submitTimeMins.push(
+        (p.stageHistory ?? []).reduce(
+          (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
+          0
+        )
+      );
+    }
+
+    const rq = p.requirement;
+    const reqId = p.requirementId;
+    if (!r.reqMap[reqId]) {
+      r.reqMap[reqId] = {
+        requirementId: reqId,
+        reqCode: rq?.reqCode ?? "",
+        title: rq?.title ?? "",
+        status: rq?.status ?? "",
+        totalOpenings: rq?.totalOpenings ?? 0,
+        client: rq?.client ?? null,
+        serviceLine: rq?.serviceLine ?? null,
+        businessUnit: rq?.businessUnit ?? null,
+        sourced: 0,
+        submitted: 0,
+        offered: 0,
+        joined: 0,
+        dropped: 0,
+        active: 0,
+        stageCounts: {},
+      };
+    }
+    const rqs = r.reqMap[reqId];
+    rqs.sourced++;
+    rqs.stageCounts[p.currentStageId] =
+      (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
+    if (p.submittedAt) rqs.submitted++;
+    if (p.offerStatus) rqs.offered++;
+    if (isJoined(p)) rqs.joined++;
+    if (isDropped(p)) rqs.dropped++;
+    if (isActive(p)) rqs.active++;
+  }
+
+  return Object.values(map)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      sourced: r.sourced,
+      submitted: r.submitted,
+      offered: r.offered,
+      joined: r.joined,
+      dropped: r.dropped,
+      active: r.active,
+      submissionRate:
+        r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
+      offerRate:
+        r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
+      joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
+      avgTimeToSubmitDays:
+        r.submitTimeMins.length > 0
+          ? +(
+              r.submitTimeMins.reduce((a, b) => a + b, 0) /
+              r.submitTimeMins.length /
+              1440
+            ).toFixed(1)
+          : null,
+      stageCounts: r.stageCounts,
+      requirementBreakdown: Object.values(r.reqMap)
+        .sort((a, b) => b.sourced - a.sourced)
+        .map((rq) => ({ ...rq })),
+    }))
+    .sort((a, b) => b.sourced - a.sourced);
+}
+
 // GET /reports/recruiters
+// Always returns groups[] — one per service line — for a tab-based UI.
+// A recruiter belongs to exactly ONE service line, resolved as:
+//   1. User.serviceline (their tagged line)
+//   2. fallback: the dominant service line across requirements they've sourced
+// All of that recruiter's candidates sit under their line, with that line's
+// stage columns (its variants + common). Never mixed across lines.
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
@@ -709,6 +957,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
             title: true,
             status: true,
             totalOpenings: true,
+            serviceLineId: true,
             client: { select: { id: true, name: true } },
             serviceLine: { select: { id: true, name: true } },
             businessUnit: { select: { id: true, name: true } },
@@ -717,152 +966,101 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       },
     });
 
-    type ReqStats = {
-      requirementId: string;
-      reqCode: string;
-      title: string;
-      status: string;
-      totalOpenings: number;
-      client: { id: string; name: string } | null;
-      serviceLine: { id: string; name: string } | null;
-      businessUnit: { id: string; name: string } | null;
-      sourced: number;
-      submitted: number;
-      offered: number;
-      joined: number;
-      dropped: number;
-      active: number;
-      stageCounts: Record<string, number>;
-    };
-    type RecAgg = {
-      id: string;
-      name: string;
-      email: string;
-      sourced: number;
-      submitted: number;
-      offered: number;
-      joined: number;
-      dropped: number;
-      active: number;
-      submitTimeMins: number[];
-      stageCounts: Record<string, number>;
-      reqMap: Record<string, ReqStats>;
+    const commonMeta = {
+      scope: (req as any).scopeFilter?.type ?? "ALL",
+      window: windowLabel(q),
+      standardOnly,
     };
 
-    const map: Record<string, RecAgg> = {};
+    const stagesForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
 
+    // ── Resolve each recruiter's service line ────────────────────────────────
+    const recruiterIds = [...new Set(pipelines.map((p) => p.recruiterId))];
+
+    // 1. from the User table (their tagged line)
+    const users =
+      recruiterIds.length > 0
+        ? await prisma.user.findMany({
+            where: { id: { in: recruiterIds } },
+            select: {
+              id: true,
+              servicelineId: true,
+              serviceline: { select: { id: true, name: true } },
+            },
+          })
+        : [];
+    const userLine = new Map<string, { id: string; name: string } | null>();
+    for (const u of users) userLine.set(u.id, u.serviceline ?? null);
+
+    // 2. fallback tally — dominant requirement line, only for recruiters
+    //    whose User row has no service line tagged.
+    const fallbackTally = new Map<
+      string,
+      Map<string, { name: string; count: number }>
+    >();
     for (const p of pipelines) {
       const rid = p.recruiterId;
-      if (!map[rid]) {
-        map[rid] = {
-          id: rid,
-          name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
-          email: p.recruiter.email,
-          sourced: 0,
-          submitted: 0,
-          offered: 0,
-          joined: 0,
-          dropped: 0,
-          active: 0,
-          submitTimeMins: [],
-          stageCounts: {},
-          reqMap: {},
-        };
-      }
-      const r = map[rid];
-      r.sourced++;
-      r.stageCounts[p.currentStageId] =
-        (r.stageCounts[p.currentStageId] ?? 0) + 1;
-      if (p.submittedAt) r.submitted++;
-      if (p.offerStatus) r.offered++;
-      if (isJoined(p)) r.joined++;
-      if (isDropped(p)) r.dropped++;
-      if (isActive(p)) r.active++;
-      if (p.submittedAt) {
-        r.submitTimeMins.push(
-          (p.stageHistory ?? []).reduce(
-            (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0
-          )
-        );
-      }
-
-      const rq = (p as any).requirement;
-      const reqId = p.requirementId;
-      if (!r.reqMap[reqId]) {
-        r.reqMap[reqId] = {
-          requirementId: reqId,
-          reqCode: rq?.reqCode ?? "",
-          title: rq?.title ?? "",
-          status: rq?.status ?? "",
-          totalOpenings: rq?.totalOpenings ?? 0,
-          client: rq?.client ?? null,
-          serviceLine: rq?.serviceLine ?? null,
-          businessUnit: rq?.businessUnit ?? null,
-          sourced: 0,
-          submitted: 0,
-          offered: 0,
-          joined: 0,
-          dropped: 0,
-          active: 0,
-          stageCounts: {},
-        };
-      }
-      const rqs = r.reqMap[reqId];
-      rqs.sourced++;
-      rqs.stageCounts[p.currentStageId] =
-        (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
-      if (p.submittedAt) rqs.submitted++;
-      if (p.offerStatus) rqs.offered++;
-      if (isJoined(p)) rqs.joined++;
-      if (isDropped(p)) rqs.dropped++;
-      if (isActive(p)) rqs.active++;
+      if (userLine.get(rid)) continue; // already resolved from User
+      const sl = (p as any).requirement?.serviceLine ?? null;
+      if (!sl) continue;
+      if (!fallbackTally.has(rid)) fallbackTally.set(rid, new Map());
+      const t = fallbackTally.get(rid)!;
+      const e = t.get(sl.id) ?? { name: sl.name, count: 0 };
+      e.count++;
+      t.set(sl.id, e);
     }
 
-    const stageOut = stageMetaOut(stages, standardOnly);
+    const resolveLine = (rid: string): { id: string; name: string } | null => {
+      const fromUser = userLine.get(rid);
+      if (fromUser) return fromUser;
+      const t = fallbackTally.get(rid);
+      if (t && t.size) {
+        let best: { id: string; name: string; count: number } | null = null;
+        for (const [id, { name, count }] of t) {
+          if (!best || count > best.count) best = { id, name, count };
+        }
+        if (best) return { id: best.id, name: best.name };
+      }
+      return null;
+    };
 
-    const data = Object.values(map).map((r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      sourced: r.sourced,
-      submitted: r.submitted,
-      offered: r.offered,
-      joined: r.joined,
-      dropped: r.dropped,
-      active: r.active,
-      submissionRate:
-        r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
-      offerRate:
-        r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
-      joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
-      avgTimeToSubmitDays:
-        r.submitTimeMins.length > 0
-          ? +(
-              r.submitTimeMins.reduce((a, b) => a + b, 0) /
-              r.submitTimeMins.length /
-              1440
-            ).toFixed(1)
-          : null,
-      // real-stage counts keyed by stageId
-      stageCounts: r.stageCounts,
-      requirementBreakdown: Object.values(r.reqMap)
-        .sort((a, b) => b.sourced - a.sourced)
-        .map((rq) => ({ ...rq })),
-    }));
+    // ── Partition pipelines by the recruiter's resolved line ─────────────────
+    const byLine = new Map<string, any[]>();
+    const lineMeta = new Map<string, { id: string; name: string } | null>();
+    for (const p of pipelines) {
+      const line = resolveLine(p.recruiterId);
+      const key = line?.id ?? "__none__";
+      if (!byLine.has(key)) {
+        byLine.set(key, []);
+        lineMeta.set(key, line);
+      }
+      byLine.get(key)!.push(p);
+    }
 
-    data.sort((a, b) => b.sourced - a.sourced);
+    const groups = [...byLine.entries()]
+      .map(([key, pipes]) => {
+        const sl = lineMeta.get(key) ?? null;
+        const data = buildRecruiterRows(pipes);
+        return {
+          serviceLine: sl, // null → "Unassigned"
+          stages: stageMetaOut(stagesForLine(sl?.id ?? null), standardOnly),
+          data,
+          total: data.length,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.data.reduce((s, r) => s + r.sourced, 0) -
+          a.data.reduce((s, r) => s + r.sourced, 0)
+      );
 
     return res.json({
       success: true,
-      data,
-      total: data.length,
-      meta: {
-        stages: stageOut,
-        scope: (req as any).scopeFilter?.type ?? "ALL",
-        window: windowLabel(q),
-        standardOnly,
-      },
+      groups,
+      meta: { ...commonMeta, multiLine: groups.length > 1 },
     });
   } catch (err) {
     console.error("getRecruiterReport:", err);
@@ -1085,57 +1283,46 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     const stages = await fetchScopedStages(q.serviceLineId);
     const stageIdSet = new Set(stages.map((s) => s.id));
 
-    const page = parseInt(q.page ?? "1", 10);
-    const limit = Math.min(parseInt(q.limit ?? "25", 10), 100);
-    const skip = (page - 1) * limit;
-
-    const [total, requirements] = await Promise.all([
-      prisma.requirement.count({ where: reqWhere }),
-      prisma.requirement.findMany({
-        where: reqWhere,
-        select: {
-          id: true,
-          reqCode: true,
-          title: true,
-          status: true,
-          priority: true,
-          jobType: true,
-          remoteType: true,
-          totalOpenings: true,
-          city: true,
-          country: true,
-          respondBy: true,
-          isRespondByBreached: true,
-          isTurnaroundBreached: true,
-          createdAt: true,
-          deletedAt: true,
-          client: { select: { id: true, name: true } },
-          clientSpoc: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-          businessUnit: { select: { id: true, name: true } },
-          serviceLine: { select: { id: true, name: true } },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          _count: { select: { pipelines: true, assignments: true } },
+    // Reports are already bounded by the date window, so no pagination —
+    // we return the whole window (capped) so grouping stays accurate.
+    const requirements = await prisma.requirement.findMany({
+      where: reqWhere,
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        priority: true,
+        jobType: true,
+        remoteType: true,
+        totalOpenings: true,
+        city: true,
+        country: true,
+        respondBy: true,
+        isRespondByBreached: true,
+        isTurnaroundBreached: true,
+        createdAt: true,
+        deletedAt: true,
+        client: { select: { id: true, name: true } },
+        clientSpoc: {
+          select: { id: true, firstName: true, lastName: true, email: true },
         },
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-      }),
-    ]);
+        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+        _count: { select: { pipelines: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+    });
+
+    const commonMeta = { window: windowLabel(q), standardOnly };
 
     if (!requirements.length) {
       return res.json({
         success: true,
-        data: [],
-        meta: {
-          total,
-          page,
-          limit,
-          pages: Math.ceil(total / limit),
-          stages: stageMetaOut(stages, standardOnly),
-          window: windowLabel(q),
-        },
+        groups: [],
+        meta: { ...commonMeta, total: 0, multiLine: false },
       });
     }
 
@@ -1155,28 +1342,46 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
     }
 
-    const data = requirements.map((r) => {
+    const rows = requirements.map((r) => {
       const counts = countsByReq[r.id] ?? {};
       const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
-      return {
-        ...r,
-        totalCandidates,
-        stageCounts: counts, // keyed by stageId
-      };
+      return { ...r, totalCandidates, stageCounts: counts };
     });
+
+    const stagesForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
+
+    // Partition rows by service line — always grouped (one tab per line).
+    const byLine = new Map<string, any[]>();
+    const lineMeta = new Map<string, { id: string; name: string } | null>();
+    for (const r of rows) {
+      const sl = r.serviceLine ?? null;
+      const key = sl?.id ?? "__none__";
+      if (!byLine.has(key)) {
+        byLine.set(key, []);
+        lineMeta.set(key, sl);
+      }
+      byLine.get(key)!.push(r);
+    }
+
+    const groups = [...byLine.entries()]
+      .map(([key, rws]) => {
+        const sl = lineMeta.get(key) ?? null;
+        return {
+          serviceLine: sl,
+          stages: stageMetaOut(stagesForLine(sl?.id ?? null), standardOnly),
+          data: rws,
+          total: rws.length,
+        };
+      })
+      .sort((a, b) => b.data.length - a.data.length);
 
     return res.json({
       success: true,
-      data,
-      meta: {
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
-        stages: stageMetaOut(stages, standardOnly),
-        window: windowLabel(q),
-        standardOnly,
-      },
+      groups,
+      meta: { ...commonMeta, multiLine: groups.length > 1 },
     });
   } catch (err) {
     console.error("getRequirementReport:", err);
