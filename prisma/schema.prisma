@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")   // pooled — used by the app at runtime
+  directUrl = env("DIRECT_URL")     // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -878,6 +879,70 @@ model RequirementDocument {
 // candidateServiceId = Candidate Service UUID — stored as plain string, no FK.
 // One row per candidate per requirement — frozen at link time, never mutated.
 // ─────────────────────────────────────────────────────────────────────────────
+// File: schema.prisma
+// Path: prisma/schema.prisma  (core service — append near CandidateSnapshot)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE INDEX  (core-side read model / search projection)
+// Source of truth = Candidate Service `Candidate`. This is a denormalized,
+// always-fresh mirror for search + filter. One row per candidate.
+// PK = candidateServiceId, so /candidates/:id detail still resolves against
+// Candidate Service unchanged. Kept in sync via syncCandidateToCore
+// (upsert, guarded by sourceUpdatedAt). NOT frozen — unlike CandidateSnapshot.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CandidateIndex {
+  id String @id // = Candidate.id from Candidate Service, no @default
+
+  // ── Identity ──
+  fullName  String
+  firstName String?
+  lastName  String?
+  email     String  @unique
+  phone     String?
+
+  // ── Cached profile (mirrors Candidate.cached* + parsed rollups) ──
+  currentTitle    String?  // ← cachedCurrentTitle
+  currentCompany  String?  // ← cachedCurrentCompany
+  totalExpYears   Float?   // ← cachedTotalExpYears
+  topSkills       String[] // ← cachedTopSkills (RAW, for display)
+  normalizedSkills String[] // ← from CandidateSkill.normalizedSkill (GIN filter target)
+  locationCity    String?  // ← cachedLocationCity
+  locationState   String?  // ← cachedLocationState
+
+  // ── Recruiter filters (mirrored from source) ──
+  isImmediateJoiner Boolean @default(false)
+  noticePeriodDays  Int?
+
+  // ── Flags / provenance ──
+  source       String  // string mirror of CandidateSource — do NOT redefine enum here
+  isActive     Boolean @default(true)
+  isBlocked    Boolean @default(false)
+  doNotContact Boolean @default(false)
+
+  // ── Optional list-level resume link (active ResumeFile.url) ──
+  resumeUrl String?
+
+  // ── Sort / sync bookkeeping ──
+  lastActivityAt  DateTime // ← mirrors Candidate.lastActivityAt (default sort)
+  sourceUpdatedAt DateTime // ← Candidate.updatedAt — out-of-order sync guard
+  syncedAt        DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // trgm GIN indexes added via raw SQL migration (fullName/email/company/title)
+  @@index([normalizedSkills], type: Gin)
+  @@index([topSkills], type: Gin)
+  @@index([source])
+  @@index([isActive, isBlocked]) // mirrors source composite index
+  @@index([doNotContact])
+  @@index([isImmediateJoiner])
+  @@index([totalExpYears])
+  @@index([lastActivityAt])
+  @@index([createdAt])
+}
+
 
 model CandidateSnapshot {
   id                 String @id @default(uuid())
@@ -1126,7 +1191,7 @@ enum CanonicalStage {
   SHORTLISTED
   REJECTED
   DECLINED
-  
+
   INTERVIEW
   INTERVIEW_SCHEDULED
   INTERVIEW_HOLD
