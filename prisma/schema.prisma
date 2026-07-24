@@ -4,8 +4,8 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL")   // pooled — used by the app at runtime
-  directUrl = env("DIRECT_URL")     // direct — used by migrate/introspect
+  url       = env("DATABASE_URL") // pooled — used by the app at runtime
+  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,7 +138,8 @@ model BusinessUnit {
 
   createdAt DateTime @default(now())
 
-  users  User[]
+  users User[]
+
   @@index([isActive])
   @@index([parentBUId])
   @@index([ancestorIds], type: Gin)
@@ -159,7 +160,8 @@ model ServiceLine {
   pipelineStages PipelineStage[]
 
   createdAt DateTime @default(now())
-  users  User[]
+  users     User[]
+
   @@index([isActive])
 }
 
@@ -268,16 +270,15 @@ model User {
 
   jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
 
+  canAssignTo     UserAssignableTo[] @relation("CanAssignTo")
+  assignableBy    UserAssignableTo[] @relation("AssignableBy")
+  assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
 
- canAssignTo    UserAssignableTo[] @relation("CanAssignTo")
- assignableBy   UserAssignableTo[] @relation("AssignableBy")
- assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
-
-
- buId String?
- bu BusinessUnit? @relation(fields: [buId], references: [id])
- servicelineId String?
- serviceline ServiceLine? @relation(fields: [servicelineId], references: [id])
+  buId          String?
+  bu            BusinessUnit? @relation(fields: [buId], references: [id])
+  servicelineId String?
+  serviceline   ServiceLine?  @relation(fields: [servicelineId], references: [id])
+  authLogs      AuthLogs[]
 
   @@index([email])
   @@index([isActive])
@@ -287,17 +288,47 @@ model User {
   @@index([teamLeadId])
 }
 
+enum AuthLogType {
+  LOGIN
+  LOGOUT
+  REFRESH
+  PASSWORD_RESET
+  PASSWORD_CHANGE
+  EMAIL_VERIFICATION
+  EMAIL_CHANGE
+  PHONE_VERIFICATION
+
+  ACCOUNT_CREATED
+  ACCOUNT_DEACTIVATED
+  ACCOUNT_REACTIVATED
+  FAILED_LOGIN
+}
+
+model AuthLogs {
+  id        String      @id @default(uuid())
+  userId    String
+  ip        String?
+  userAgent String?
+  type      AuthLogType @default(LOGIN)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
 
 model UserAssignableTo {
-  id        String   @id @default(uuid())
-  userId    String   // the one who can assign
-  targetId  String   // the extra user they can assign to
-  
-  user      User     @relation("CanAssignTo", fields: [userId], references: [id])
-  target    User     @relation("AssignableBy", fields: [targetId], references: [id])
+  id       String @id @default(uuid())
+  userId   String // the one who can assign
+  targetId String // the extra user they can assign to
+
+  user   User @relation("CanAssignTo", fields: [userId], references: [id])
+  target User @relation("AssignableBy", fields: [targetId], references: [id])
 
   addedById String
-  addedBy   User     @relation("AssignableAddedBy", fields: [addedById], references: [id])
+  addedBy   User   @relation("AssignableAddedBy", fields: [addedById], references: [id])
 
   createdAt DateTime @default(now())
 
@@ -384,7 +415,6 @@ model RolePermission {
   @@unique([roleId, module])
 }
 
-
 enum AgreementType {
   BAND
   FIXED
@@ -422,7 +452,7 @@ model Client {
   notes        ClientNote[]
   assignments  RequirementAssignment[]
 
-  agreementType   AgreementType?  @default(FIXED)
+  agreementType   AgreementType? @default(FIXED)
   percentageValue Decimal?
 
   bands Band[]
@@ -441,8 +471,8 @@ model Band {
   clientId String
   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-  name       String?
-  code       String
+  name String?
+  code String
 
   rangeFrom Decimal?
   rangeTo   Decimal?
@@ -460,7 +490,7 @@ model Band {
 //   clientId      String
 //   client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
 //   agreementType AgreementType
-  
+
 //   startDate     DateTime
 //   endDate       DateTime
 //   createdAt     DateTime @default(now())
@@ -902,20 +932,20 @@ model CandidateIndex {
   phone     String?
 
   // ── Cached profile (mirrors Candidate.cached* + parsed rollups) ──
-  currentTitle    String?  // ← cachedCurrentTitle
-  currentCompany  String?  // ← cachedCurrentCompany
-  totalExpYears   Float?   // ← cachedTotalExpYears
-  topSkills       String[] // ← cachedTopSkills (RAW, for display)
+  currentTitle     String? // ← cachedCurrentTitle
+  currentCompany   String? // ← cachedCurrentCompany
+  totalExpYears    Float? // ← cachedTotalExpYears
+  topSkills        String[] // ← cachedTopSkills (RAW, for display)
   normalizedSkills String[] // ← from CandidateSkill.normalizedSkill (GIN filter target)
-  locationCity    String?  // ← cachedLocationCity
-  locationState   String?  // ← cachedLocationState
+  locationCity     String? // ← cachedLocationCity
+  locationState    String? // ← cachedLocationState
 
   // ── Recruiter filters (mirrored from source) ──
   isImmediateJoiner Boolean @default(false)
   noticePeriodDays  Int?
 
   // ── Flags / provenance ──
-  source       String  // string mirror of CandidateSource — do NOT redefine enum here
+  source       String // string mirror of CandidateSource — do NOT redefine enum here
   isActive     Boolean @default(true)
   isBlocked    Boolean @default(false)
   doNotContact Boolean @default(false)
@@ -942,7 +972,6 @@ model CandidateIndex {
   @@index([lastActivityAt])
   @@index([createdAt])
 }
-
 
 model CandidateSnapshot {
   id                 String @id @default(uuid())
@@ -1040,7 +1069,7 @@ model RequirementCandidatePipeline {
   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
 
   // ── Offer
-  offeredCtc     Float?       // formal offer number
+  offeredCtc     Float? // formal offer number
   salaryCurrency String?      @default("INR")
   salaryType     SalaryType?
   offeredAt      DateTime?
@@ -1048,20 +1077,20 @@ model RequirementCandidatePipeline {
   offeredBy      User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
   offerStatus    OfferStatus?
 
-  noticePeriod   String?
+  noticePeriod String?
 
   // ── CTC breakdown
-  currentCtc    Float?   // what candidate earns now at current company
-  expectedCtc   Float?   // what candidate asked for
-  negotiatedCtc Float?   // what was agreed during negotiation
-  ctcNotes      String?  // free text — any CTC context
+  currentCtc    Float? // what candidate earns now at current company
+  expectedCtc   Float? // what candidate asked for
+  negotiatedCtc Float? // what was agreed during negotiation
+  ctcNotes      String? // free text — any CTC context
 
   // ── Joining
   lastWorkingDate     DateTime? // LWD at current company
   expectedJoiningDate DateTime? // when we expect them to join
   actualJoiningDate   DateTime? // when they actually joined
-  monthOfJoining      String?   // "June 2025" — derived on write, stored for reporting
-  remainingDaysToJoin Int?      // computed on write — negative means overdue, null = no date set
+  monthOfJoining      String? // "June 2025" — derived on write, stored for reporting
+  remainingDaysToJoin Int? // computed on write — negative means overdue, null = no date set
 
   // ── Rejection
   isRejected      Boolean   @default(false)
@@ -1094,8 +1123,6 @@ model RequirementCandidatePipeline {
   @@index([monthOfJoining])
   @@index([disposition])
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE LOG
@@ -1204,7 +1231,6 @@ enum CanonicalStage {
   JOINED
   DROPPED
 
-
   TRAINING_STARTED
   TRAINING_CANCELLED
   TRAINING_HOLD
@@ -1222,7 +1248,7 @@ model PipelineStage {
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
 
-  isStandard     Boolean         @default(false)
+  isStandard Boolean @default(false)
 
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
@@ -1235,9 +1261,6 @@ model PipelineStage {
   @@index([order])
   @@index([canonicalStage])
 }
-
-
-
 
 enum MigrationStagingType {
   UNMAPPED_CREATOR // Requirement's "Created By" email has no matching User
