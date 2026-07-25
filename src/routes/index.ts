@@ -18,10 +18,12 @@ import jdRoutes from "./jd.routes";
 import assignmentRoutes from "./assignment.routes";
 import candidateRoutes from "./candidate.routes";
 import reportRoutes from "./reports.routes";
+import authLogs from "./auth-logs.routes";
 
 const router = Router();
 
 router.use("/reports", reportRoutes);
+router.use("/auth-logs", authLogs);
 router.use("/modules", moduleRoutes);
 router.use("/jd", jdRoutes);
 router.use("/internal", internalRoutes);
