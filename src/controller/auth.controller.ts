@@ -13,6 +13,7 @@ import { setTokenCookies } from "@/middleware/auth";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import env from "@/config/env";
+import { logAuthEvent } from "@/services/authLog.service";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -92,6 +93,7 @@ export const login = async (req: Request, res: Response) => {
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
     if (!isPasswordValid) {
       console.log("🔴 [LOGIN] Invalid password for:", email);
+      await logAuthEvent(user.id, "FAILED_LOGIN", req);
       return res.status(401).json({ message: "Invalid password" });
     }
     console.log("🟢 [LOGIN] Password valid");
@@ -136,6 +138,7 @@ export const login = async (req: Request, res: Response) => {
       req,
     });
     console.log("🟢 [LOGIN] Audit log created");
+    await logAuthEvent(user.id, "LOGIN", req);
 
     const { passwordHash, ...safeUser } = user;
 
@@ -273,6 +276,7 @@ export const logout = async (req: Request, res: Response) => {
       recordId: userId,
       req,
     });
+    await logAuthEvent(userId, "LOGOUT", req);
 
     res.clearCookie("accessToken", {
       httpOnly: true,

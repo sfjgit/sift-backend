@@ -26,6 +26,7 @@ export const SYSTEM_MODULES = [
   "service-lines",
   "pipeline-stages",
   "audit-logs",
+  "auth-logs",
   "reports",
   "settings",
   // "assignments",
@@ -72,7 +73,7 @@ export const getScopes = async (_req: Request, res: Response) => {
 
 function toPermissionData(
   p: CreateRoleInput["permissions"][number],
-  roleId?: string
+  roleId?: string,
 ) {
   return {
     ...(roleId ? { roleId } : {}),
@@ -183,7 +184,7 @@ export const getRoleById = async (req: Request, res: Response) => {
     // Merge DB permissions with full module list — modules with no saved
     // permission get default "no access" values so the matrix always has all rows
     const permissionsByModule = Object.fromEntries(
-      role.permissions.map((p) => [p.module, p])
+      role.permissions.map((p) => [p.module, p]),
     );
 
     const fullPermissions = SYSTEM_MODULES.map((module) => ({
@@ -234,7 +235,7 @@ export const createRole = async (req: Request, res: Response) => {
 
     // Only persist rows where at least one action is enabled
     const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete,
     );
 
     const role = await prisma.role.create({
@@ -313,7 +314,7 @@ export const updateRole = async (req: Request, res: Response) => {
     }
 
     const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete,
     );
 
     const updated = await prisma.$transaction(async (tx) => {
