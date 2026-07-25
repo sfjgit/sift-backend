@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ enum NotificationType {
   ISSUE_RAISED
   DEADLINE_BREACHED
   DEADLINE_REMINDER
+  INTERVIEW_SCHEDULED
 }
 
 enum NotificationReferenceType {
@@ -95,6 +96,7 @@ enum NotificationReferenceType {
   ASSIGNMENT
   NOTE
   DOCUMENT
+  PIPELINE
 }
 
 enum ClientStatus {
@@ -279,6 +281,8 @@ model User {
   servicelineId String?
   serviceline   ServiceLine?  @relation(fields: [servicelineId], references: [id])
   authLogs      AuthLogs[]
+
+  createdInterviews CandidateInterviewSchedule[] @relation("InterviewScheduledBy")
 
   @@index([email])
   @@index([isActive])
@@ -1114,6 +1118,10 @@ model RequirementCandidatePipeline {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  //interview
+  interviewSchedules CandidateInterviewSchedule[]
+
+
   @@index([requirementId, currentStageId])
   @@index([recruiterId])
   @@index([assignmentId])
@@ -1238,6 +1246,36 @@ enum CanonicalStage {
   TRAINING_COMPLETED
 }
 
+enum InterviewMode {
+  ONLINE
+  OFFLINE
+  TELEPHONIC
+}
+model CandidateInterviewSchedule {
+  id String @id @default(uuid())
+
+  pipelineId String
+  pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  stageId String
+  stage   PipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  roundNumber Int
+  scheduledAt DateTime
+  durationMins Int
+  mode         InterviewMode
+  status       CanonicalStage
+
+  createdById String
+  createdBy   User @relation("InterviewScheduledBy", fields: [createdById], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pipelineId]) 
+  @@index([stageId])
+  @@index([scheduledAt])
+}
+
 model PipelineStage {
   id             String          @id @default(uuid())
   code           String
@@ -1257,6 +1295,8 @@ model PipelineStage {
   createdAt     DateTime     @default(now())
   serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
   serviceLineId String?
+
+  interviewSchedules CandidateInterviewSchedule[]
 
   @@index([order])
   @@index([canonicalStage])
