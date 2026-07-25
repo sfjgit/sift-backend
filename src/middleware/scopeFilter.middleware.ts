@@ -54,7 +54,7 @@ export const scopeFilter =
       }
 
       const permission = user.role.permissions.find(
-        (p: any) => p.module === module
+        (p: any) => p.module === module,
       );
 
       if (!permission || !permission.canView) {
@@ -289,5 +289,27 @@ export function assignmentScopeWhere(scope: ScopeFilter): any {
       };
     default:
       return { assignedToId: scope.userId };
+  }
+}
+
+/** Auth logs scope — module = "auth-logs" */
+export function authLogScopeWhere(scope: ScopeFilter): any {
+  switch (scope.type) {
+    case "ALL":
+      return {};
+    case "OWN":
+      return { userId: scope.userId };
+    case "TEAM":
+      return { userId: { in: scope.teamMemberIds ?? [scope.userId] } };
+    case "REPORTING":
+      return { userId: { in: scope.subordinateIds ?? [scope.userId] } };
+    case "REPORTING_LINE":
+      return { userId: { in: scope.reportingLineIds ?? [scope.userId] } };
+    case "DEPARTMENT":
+      return { user: { departmentId: scope.departmentId } };
+    case "BU":
+      return { userId: { in: scope.subordinateIds ?? [scope.userId] } };
+    default:
+      return { userId: scope.userId };
   }
 }
