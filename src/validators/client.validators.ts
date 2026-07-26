@@ -12,6 +12,23 @@ export const createClientSchema = z.object({
   address: z.string().max(500).optional().nullable(),
   businessUnitId: z.string().optional().nullable(),
   parentClientId: z.string().optional().nullable(),
+  agreementType: z.enum(["BAND", "FIXED"]),
+  notes: z.string().max(500).optional().nullable(),
+  percentage: z.number().min(0).max(100).optional().nullable(),
+  status: z.enum(["PENDING", "ACTIVE", "INACTIVE"]).default("PENDING"),
+  bands: z
+    .array(
+      z.object({
+        name: z.string().min(1, "Name is required").max(100).trim().optional(),
+        experience: z.number().min(0).optional().nullable(),
+        rangeFrom: z.number().min(0).optional().nullable(),
+        rangeTo: z.number().min(0).optional().nullable(),
+        code: z.string().min(1, "Code is required").max(100).trim(),
+        value: z.number().min(0).optional().nullable(),
+      })
+    )
+    .optional()
+    .nullable(),
 });
 
 export const updateClientSchema = createClientSchema.partial();

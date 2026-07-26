@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // pooled — used by the app at runtime
+  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ enum NotificationType {
   ISSUE_RAISED
   DEADLINE_BREACHED
   DEADLINE_REMINDER
+  INTERVIEW_SCHEDULED
 }
 
 enum NotificationReferenceType {
@@ -94,6 +96,7 @@ enum NotificationReferenceType {
   ASSIGNMENT
   NOTE
   DOCUMENT
+  PIPELINE
 }
 
 enum ClientStatus {
@@ -137,7 +140,8 @@ model BusinessUnit {
 
   createdAt DateTime @default(now())
 
-  users  User[]
+  users User[]
+
   @@index([isActive])
   @@index([parentBUId])
   @@index([ancestorIds], type: Gin)
@@ -158,7 +162,8 @@ model ServiceLine {
   pipelineStages PipelineStage[]
 
   createdAt DateTime @default(now())
-  users  User[]
+  users     User[]
+
   @@index([isActive])
 }
 
@@ -267,16 +272,17 @@ model User {
 
   jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
 
+  canAssignTo     UserAssignableTo[] @relation("CanAssignTo")
+  assignableBy    UserAssignableTo[] @relation("AssignableBy")
+  assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
 
- canAssignTo    UserAssignableTo[] @relation("CanAssignTo")
- assignableBy   UserAssignableTo[] @relation("AssignableBy")
- assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
+  buId          String?
+  bu            BusinessUnit? @relation(fields: [buId], references: [id])
+  servicelineId String?
+  serviceline   ServiceLine?  @relation(fields: [servicelineId], references: [id])
+  authLogs      AuthLogs[]
 
-
- buId String?
- bu BusinessUnit? @relation(fields: [buId], references: [id])
- servicelineId String?
- serviceline ServiceLine? @relation(fields: [servicelineId], references: [id])
+  createdInterviews CandidateInterviewSchedule[] @relation("InterviewScheduledBy")
 
   @@index([email])
   @@index([isActive])
@@ -286,17 +292,47 @@ model User {
   @@index([teamLeadId])
 }
 
+enum AuthLogType {
+  LOGIN
+  LOGOUT
+  REFRESH
+  PASSWORD_RESET
+  PASSWORD_CHANGE
+  EMAIL_VERIFICATION
+  EMAIL_CHANGE
+  PHONE_VERIFICATION
+
+  ACCOUNT_CREATED
+  ACCOUNT_DEACTIVATED
+  ACCOUNT_REACTIVATED
+  FAILED_LOGIN
+}
+
+model AuthLogs {
+  id        String      @id @default(uuid())
+  userId    String
+  ip        String?
+  userAgent String?
+  type      AuthLogType @default(LOGIN)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
 
 model UserAssignableTo {
-  id        String   @id @default(uuid())
-  userId    String   // the one who can assign
-  targetId  String   // the extra user they can assign to
-  
-  user      User     @relation("CanAssignTo", fields: [userId], references: [id])
-  target    User     @relation("AssignableBy", fields: [targetId], references: [id])
+  id       String @id @default(uuid())
+  userId   String // the one who can assign
+  targetId String // the extra user they can assign to
+
+  user   User @relation("CanAssignTo", fields: [userId], references: [id])
+  target User @relation("AssignableBy", fields: [targetId], references: [id])
 
   addedById String
-  addedBy   User     @relation("AssignableAddedBy", fields: [addedById], references: [id])
+  addedBy   User   @relation("AssignableAddedBy", fields: [addedById], references: [id])
 
   createdAt DateTime @default(now())
 
@@ -383,9 +419,10 @@ model RolePermission {
   @@unique([roleId, module])
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CLIENT
-// ─────────────────────────────────────────────────────────────────────────────
+enum AgreementType {
+  BAND
+  FIXED
+}
 
 model Client {
   id       String       @id @default(uuid())
@@ -419,6 +456,11 @@ model Client {
   notes        ClientNote[]
   assignments  RequirementAssignment[]
 
+  agreementType   AgreementType? @default(FIXED)
+  percentageValue Decimal?
+
+  bands Band[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -426,6 +468,37 @@ model Client {
   @@index([businessUnitId])
   @@index([deletedAt])
 }
+
+model Band {
+  id String @id @default(uuid())
+
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name String?
+  code String
+
+  rangeFrom Decimal?
+  rangeTo   Decimal?
+  value     Decimal?
+
+  experience Decimal?
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+}
+
+// model ClientAgreement {
+//   id            String      @id @default(uuid())
+//   clientId      String
+//   client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+//   agreementType AgreementType
+
+//   startDate     DateTime
+//   endDate       DateTime
+//   createdAt     DateTime @default(now())
+// }
 
 model ClientSpoc {
   id String @id @default(uuid())
@@ -840,6 +913,69 @@ model RequirementDocument {
 // candidateServiceId = Candidate Service UUID — stored as plain string, no FK.
 // One row per candidate per requirement — frozen at link time, never mutated.
 // ─────────────────────────────────────────────────────────────────────────────
+// File: schema.prisma
+// Path: prisma/schema.prisma  (core service — append near CandidateSnapshot)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE INDEX  (core-side read model / search projection)
+// Source of truth = Candidate Service `Candidate`. This is a denormalized,
+// always-fresh mirror for search + filter. One row per candidate.
+// PK = candidateServiceId, so /candidates/:id detail still resolves against
+// Candidate Service unchanged. Kept in sync via syncCandidateToCore
+// (upsert, guarded by sourceUpdatedAt). NOT frozen — unlike CandidateSnapshot.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CandidateIndex {
+  id String @id // = Candidate.id from Candidate Service, no @default
+
+  // ── Identity ──
+  fullName  String
+  firstName String?
+  lastName  String?
+  email     String  @unique
+  phone     String?
+
+  // ── Cached profile (mirrors Candidate.cached* + parsed rollups) ──
+  currentTitle     String? // ← cachedCurrentTitle
+  currentCompany   String? // ← cachedCurrentCompany
+  totalExpYears    Float? // ← cachedTotalExpYears
+  topSkills        String[] // ← cachedTopSkills (RAW, for display)
+  normalizedSkills String[] // ← from CandidateSkill.normalizedSkill (GIN filter target)
+  locationCity     String? // ← cachedLocationCity
+  locationState    String? // ← cachedLocationState
+
+  // ── Recruiter filters (mirrored from source) ──
+  isImmediateJoiner Boolean @default(false)
+  noticePeriodDays  Int?
+
+  // ── Flags / provenance ──
+  source       String // string mirror of CandidateSource — do NOT redefine enum here
+  isActive     Boolean @default(true)
+  isBlocked    Boolean @default(false)
+  doNotContact Boolean @default(false)
+
+  // ── Optional list-level resume link (active ResumeFile.url) ──
+  resumeUrl String?
+
+  // ── Sort / sync bookkeeping ──
+  lastActivityAt  DateTime // ← mirrors Candidate.lastActivityAt (default sort)
+  sourceUpdatedAt DateTime // ← Candidate.updatedAt — out-of-order sync guard
+  syncedAt        DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // trgm GIN indexes added via raw SQL migration (fullName/email/company/title)
+  @@index([normalizedSkills], type: Gin)
+  @@index([topSkills], type: Gin)
+  @@index([source])
+  @@index([isActive, isBlocked]) // mirrors source composite index
+  @@index([doNotContact])
+  @@index([isImmediateJoiner])
+  @@index([totalExpYears])
+  @@index([lastActivityAt])
+  @@index([createdAt])
+}
 
 model CandidateSnapshot {
   id                 String @id @default(uuid())
@@ -937,7 +1073,7 @@ model RequirementCandidatePipeline {
   submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
 
   // ── Offer
-  offeredCtc     Float?       // formal offer number
+  offeredCtc     Float? // formal offer number
   salaryCurrency String?      @default("INR")
   salaryType     SalaryType?
   offeredAt      DateTime?
@@ -945,18 +1081,20 @@ model RequirementCandidatePipeline {
   offeredBy      User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
   offerStatus    OfferStatus?
 
+  noticePeriod String?
+
   // ── CTC breakdown
-  currentCtc    Float?   // what candidate earns now at current company
-  expectedCtc   Float?   // what candidate asked for
-  negotiatedCtc Float?   // what was agreed during negotiation
-  ctcNotes      String?  // free text — any CTC context
+  currentCtc    Float? // what candidate earns now at current company
+  expectedCtc   Float? // what candidate asked for
+  negotiatedCtc Float? // what was agreed during negotiation
+  ctcNotes      String? // free text — any CTC context
 
   // ── Joining
   lastWorkingDate     DateTime? // LWD at current company
   expectedJoiningDate DateTime? // when we expect them to join
   actualJoiningDate   DateTime? // when they actually joined
-  monthOfJoining      String?   // "June 2025" — derived on write, stored for reporting
-  remainingDaysToJoin Int?      // computed on write — negative means overdue, null = no date set
+  monthOfJoining      String? // "June 2025" — derived on write, stored for reporting
+  remainingDaysToJoin Int? // computed on write — negative means overdue, null = no date set
 
   // ── Rejection
   isRejected      Boolean   @default(false)
@@ -980,6 +1118,10 @@ model RequirementCandidatePipeline {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  //interview
+  interviewSchedules CandidateInterviewSchedule[]
+
+
   @@index([requirementId, currentStageId])
   @@index([recruiterId])
   @@index([assignmentId])
@@ -989,8 +1131,6 @@ model RequirementCandidatePipeline {
   @@index([monthOfJoining])
   @@index([disposition])
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE LOG
@@ -1086,12 +1226,54 @@ enum CanonicalStage {
   SHORTLISTED
   REJECTED
   DECLINED
+
   INTERVIEW
+  INTERVIEW_SCHEDULED
+  INTERVIEW_HOLD
+  INTERVIEW_RESCHEDULED
+  INTERVIEW_CANCELLED
+
   OFFER_IN_PROGRESS
   OFFERED
   HIRED
   JOINED
   DROPPED
+
+  TRAINING_STARTED
+  TRAINING_CANCELLED
+  TRAINING_HOLD
+  TRAINING_IN_PROGRESS
+  TRAINING_COMPLETED
+}
+
+enum InterviewMode {
+  ONLINE
+  OFFLINE
+  TELEPHONIC
+}
+model CandidateInterviewSchedule {
+  id String @id @default(uuid())
+
+  pipelineId String
+  pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  stageId String
+  stage   PipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  roundNumber Int
+  scheduledAt DateTime
+  durationMins Int
+  mode         InterviewMode
+  status       CanonicalStage
+
+  createdById String
+  createdBy   User @relation("InterviewScheduledBy", fields: [createdById], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pipelineId]) 
+  @@index([stageId])
+  @@index([scheduledAt])
 }
 
 model PipelineStage {
@@ -1104,6 +1286,8 @@ model PipelineStage {
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
 
+  isStandard Boolean @default(false)
+
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
   stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
@@ -1112,12 +1296,11 @@ model PipelineStage {
   serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
   serviceLineId String?
 
+  interviewSchedules CandidateInterviewSchedule[]
+
   @@index([order])
   @@index([canonicalStage])
 }
-
-
-
 
 enum MigrationStagingType {
   UNMAPPED_CREATOR // Requirement's "Created By" email has no matching User

@@ -3,29 +3,65 @@
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
-import { CanonicalStage } from "@prisma/client";
+import { CanonicalStage, Prisma } from "@prisma/client";
+
+// File: pipelineStage.controller.ts
+// Path: src/modules/pipeline-stages/pipelineStage.controller.ts
+
+// import { Prisma } from "@prisma/client";
+// import { Request, Response } from "express";
+// import { prisma } from "..."; // keep your existing prisma import
+
+// ─────────────────────────────────────────────────────────────────────────────
+// select — everything that matters and can be edited from the settings UI
+// NOTE: assumes ServiceLine has a `name` field; rename below if yours differs.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const stageSelect = {
   id: true,
   code: true,
   label: true,
   order: true,
+  canonicalStage: true,
   isMandatory: true,
   isTerminal: true,
   isActive: true,
-  canonicalStage: true,
-} as const;
+  isStandard: true, // new — used later to fetch "standard" stages only
+  serviceLineId: true, // null == common / unscoped
+  serviceLine: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+  createdAt: true,
+} satisfies Prisma.PipelineStageSelect;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /pipeline-stages
+//   ?includeInactive=true  -> also return isActive:false rows
+//   ?standardOnly=true     -> only isStandard:true rows
+//   ?serviceLineId=<uuid>  -> that service line's rows + all common (null) rows
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getPipelineStages = async (req: Request, res: Response) => {
   try {
-    const { includeInactive } = req.query as Record<string, string | undefined>;
+    const { includeInactive, serviceLineId, standardOnly } =
+      req.query as Record<string, string | undefined>;
+
+    const where: Prisma.PipelineStageWhereInput = {};
+
+    if (includeInactive !== "true") where.isActive = true;
+    if (standardOnly === "true") where.isStandard = true;
+
+    // When scoped to a service line, always fold in the common (unscoped) stages.
+    // Anything without a serviceLineId is treated as shared across all lines.
+    if (serviceLineId) {
+      where.OR = [{ serviceLineId }, { serviceLineId: null }];
+    }
 
     const stages = await prisma.pipelineStage.findMany({
-      where: includeInactive === "true" ? {} : { isActive: true },
+      where,
       orderBy: { order: "asc" },
       select: stageSelect,
     });
@@ -44,6 +80,14 @@ export const getPipelineStages = async (req: Request, res: Response) => {
 // full state replace — frontend sends complete ordered array
 // order derived from array index — never trusted from payload
 // ─────────────────────────────────────────────────────────────────────────────
+// File: pipelineStage.controller.ts
+// Path: src/controller/pipelineStage.controller.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /pipeline-stages/reorder
+// full state replace — frontend sends complete ordered array
+// order derived from array index — never trusted from payload
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const reorderPipelineStages = async (req: Request, res: Response) => {
   try {
@@ -56,8 +100,10 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
         isMandatory: boolean;
         isTerminal: boolean;
         isActive: boolean;
+        isStandard: boolean;
         isNew: boolean;
         canonicalStage: CanonicalStage | null;
+        serviceLineId: string | null;
       }[];
     };
 
@@ -105,6 +151,8 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
             isMandatory: s.isMandatory,
             isTerminal: s.isTerminal,
             isActive: s.isActive,
+            isStandard: s.isStandard,
+            serviceLineId: s.serviceLineId ?? null,
             ...(s.canonicalStage ? { canonicalStage: s.canonicalStage } : {}),
           },
           select: { id: true },
@@ -138,6 +186,8 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
             isMandatory: s.isMandatory,
             isTerminal: s.isTerminal,
             isActive: s.isActive,
+            isStandard: s.isStandard,
+            serviceLineId: s.serviceLineId ?? null,
             canonicalStage: s.canonicalStage ?? null,
           },
         });
@@ -158,16 +208,26 @@ export const reorderPipelineStages = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /pipeline-stages/:id
-// label, isMandatory, isActive only — canonicalStage via reorder only
+// single-row quick edit — canonicalStage / order still go through reorder only
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const updatePipelineStage = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { label, isMandatory, isActive } = req.body as {
+    const {
+      label,
+      isMandatory,
+      isTerminal,
+      isActive,
+      isStandard,
+      serviceLineId,
+    } = req.body as {
       label?: string;
       isMandatory?: boolean;
+      isTerminal?: boolean;
       isActive?: boolean;
+      isStandard?: boolean;
+      serviceLineId?: string | null;
     };
 
     const existing = await prisma.pipelineStage.findUnique({
@@ -184,7 +244,11 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
       data: {
         ...(label !== undefined && { label: label.trim() }),
         ...(isMandatory !== undefined && { isMandatory }),
+        ...(isTerminal !== undefined && { isTerminal }),
         ...(isActive !== undefined && { isActive }),
+        ...(isStandard !== undefined && { isStandard }),
+        // serviceLineId can legitimately be set to null (→ common), so check key presence
+        ...(serviceLineId !== undefined && { serviceLineId }),
       },
       select: stageSelect,
     });
@@ -195,6 +259,46 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to update stage" });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /pipeline-stages/:id
+// label, isMandatory, isActive only — canonicalStage via reorder only
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export const updatePipelineStage = async (req: Request, res: Response) => {
+//   try {
+//     const { id } = req.params;
+//     const { label, isMandatory, isActive } = req.body as {
+//       label?: string;
+//       isMandatory?: boolean;
+//       isActive?: boolean;
+//     };
+
+//     const existing = await prisma.pipelineStage.findUnique({
+//       where: { id },
+//       select: { id: true },
+//     });
+//     if (!existing) {
+//       res.status(404).json({ success: false, message: "Stage not found" });
+//       return;
+//     }
+
+//     const updated = await prisma.pipelineStage.update({
+//       where: { id },
+//       data: {
+//         ...(label !== undefined && { label: label.trim() }),
+//         ...(isMandatory !== undefined && { isMandatory }),
+//         ...(isActive !== undefined && { isActive }),
+//       },
+//       select: stageSelect,
+//     });
+
+//     res.json({ success: true, message: "Stage updated", data: updated });
+//   } catch (err) {
+//     console.error("updatePipelineStage:", err);
+//     res.status(500).json({ success: false, message: "Failed to update stage" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /pipeline-stages/:id

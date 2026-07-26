@@ -1,5 +1,5 @@
-// File: requirement.routes.patch.ts
-// Path: src/routes/requirement.routes.ts
+// File: requirements.routes.patch.ts
+// Path: src/routes/requirements.routes.ts
 //
 // ADDITIONS ONLY — splice these into the existing routes file.
 // Two changes:
@@ -79,7 +79,8 @@ import {
   getRequirementStats,
   getRequirementCandidates,
   getRequirementCandidateById,
-  exportRequirements, // ← NEW
+  exportRequirements,
+  bulkUploadRequirementsController,
 } from "@/controller/requirement.controller";
 import {
   pushCandidate,
@@ -100,6 +101,7 @@ import {
   resolveDocument,
 } from "@/controller/requirementExtras.controller";
 import { upload } from "@/services/s3.service";
+import { bulkUploadMulter } from "@/middleware/bulkUploadMulter";
 
 const router = Router();
 const scope = scopeFilter("requirements");
@@ -122,7 +124,18 @@ router.post(
   scope,
   checkPermission("canAdd"),
   validate.body(createRequirementSchema),
-  createRequirement
+  createRequirement,
+);
+
+//bulk-requirement upload
+//requirements/bulk-upload
+router.post(
+  "/bulk-upload",
+  authenticateUser,
+  scope,
+  checkPermission("canAdd"),
+  bulkUploadMulter.single("file"),
+  bulkUploadRequirementsController,
 );
 
 // ── single — basic (used by edit forms etc.)
@@ -137,7 +150,7 @@ router.put(
   scope,
   checkPermission("canEdit"),
   validate.body(updateRequirementSchema),
-  updateRequirement
+  updateRequirement,
 );
 router.patch(
   "/:id/status",
@@ -145,14 +158,14 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(updateRequirementStatusSchema),
-  updateRequirementStatus
+  updateRequirementStatus,
 );
 router.delete(
   "/:id",
   authenticateUser,
   scope,
   checkPermission("canDelete"),
-  deleteRequirement
+  deleteRequirement,
 );
 
 // ── tree view
@@ -165,14 +178,14 @@ router.post(
   scope,
   checkPermission("canEdit"),
   validate.body(createAssignmentSchema),
-  createAssignment
+  createAssignment,
 );
 router.delete(
   "/:id/assignments/:assignmentId",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  removeAssignment
+  removeAssignment,
 );
 
 // ── candidates
@@ -180,19 +193,19 @@ router.get(
   "/:id/candidates",
   authenticateUser,
   scopeFilter("candidates"),
-  getRequirementCandidates
+  getRequirementCandidates,
 );
 router.get(
   "/:id/candidates/:pipelineId",
   authenticateUser,
   scopeFilter("candidates"),
-  getRequirementCandidateById
+  getRequirementCandidateById,
 );
 router.post(
   "/:id/candidates",
   authenticateUser,
   validate.body(pushCandidateSchema),
-  pushCandidate
+  pushCandidate,
 );
 
 // ── stage transitions
@@ -202,7 +215,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(updatePipelineStageSchema),
-  updatePipelineStage
+  updatePipelineStage,
 );
 router.patch(
   "/:id/candidates/:pipelineId/submit",
@@ -210,7 +223,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(submitCandidateSchema),
-  submitCandidate
+  submitCandidate,
 );
 router.patch(
   "/:id/candidates/:pipelineId/offer",
@@ -218,7 +231,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(rollOfferSchema),
-  rollOffer
+  rollOffer,
 );
 router.patch(
   "/:id/candidates/:pipelineId/offer/status",
@@ -226,7 +239,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(updateOfferStatusSchema),
-  updateOfferStatus
+  updateOfferStatus,
 );
 router.patch(
   "/:id/candidates/:pipelineId/reject",
@@ -234,7 +247,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(rejectCandidateSchema),
-  rejectCandidate
+  rejectCandidate,
 );
 router.patch(
   "/:id/candidates/:pipelineId/withdraw",
@@ -242,7 +255,7 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(withdrawCandidateSchema),
-  withdrawCandidate
+  withdrawCandidate,
 );
 router.patch(
   "/:id/candidates/:pipelineId/hold",
@@ -250,13 +263,13 @@ router.patch(
   scopeFilter("candidates"),
   checkPermission("canEdit"),
   validate.body(holdCandidateSchema),
-  holdCandidate
+  holdCandidate,
 );
 router.get(
   "/:id/candidates/:pipelineId/timeline",
   authenticateUser,
   scopeFilter("candidates"),
-  getPipelineTimeline
+  getPipelineTimeline,
 );
 
 // ── notes
@@ -265,7 +278,7 @@ router.post(
   authenticateUser,
   scope,
   validate.body(addNoteSchema),
-  addNote
+  addNote,
 );
 router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteNote);
 
@@ -276,14 +289,14 @@ router.post(
   authenticateUser,
   scope,
   upload.single("file"),
-  addDocument
+  addDocument,
 );
 router.patch(
   "/:id/documents/:docId/resolve",
   authenticateUser,
   scope,
   checkPermission("canEdit"),
-  resolveDocument
+  resolveDocument,
 );
 
 // ── activity log

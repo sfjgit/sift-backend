@@ -22,7 +22,7 @@ export const createUserBody = z.object({
   lastName: z.string().min(1).max(100).trim(),
   middleName: z.string().max(100).trim().optional().nullable(),
   // schema field is nickName (camelCase) — matches User.nickName
-  nickName: z.string().max(100).trim().optional().nullable(),
+  // nickName: z.string().max(100).trim().optional().nullable(),
   displayName: z.string().max(100).trim().optional().nullable(),
   employeeId: z.string().max(50).trim().optional().nullable(),
   phone: z.string().max(20).trim().optional().nullable(),

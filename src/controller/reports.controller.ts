@@ -6,24 +6,114 @@ import ExcelJS from "exceljs";
 import prisma from "@/utils/prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: resolve scoped user IDs from req.scopeFilter
-// Middleware already resolved everything — just read it.
-// Returns null = entire org (ALL / superAdmin), string[] = scoped list
+// DATE / TIME WINDOW RESOLVER
+// Precedence:  hours  →  named range  →  explicit fromDate/toDate
+//   ?hours=8            last 8 hours (also 12 / 24 / any custom int)
+//   ?range=today        start-of-today  → now
+//   ?range=yesterday    full previous day (00:00 → 23:59:59.999)
+//   ?range=last7        last 7 days (incl. today)
+//   ?range=last30       last 30 days
+//   ?range=thisMonth    1st of month → now
+//   ?fromDate&?toDate    explicit; a date-only toDate auto-extends to end of day
+// Returns a Prisma range object { gte?, lte? } or {} for no filter.
+// NOTE: uses server local time. If server runs UTC, treat inputs accordingly.
 // ─────────────────────────────────────────────────────────────────────────────
 
+function startOfDay(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfDay(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+function startOfMonth(d: Date): Date {
+  const x = new Date(d);
+  x.setDate(1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+// true when the string carries no time component (e.g. "2026-07-22")
+function isDateOnly(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
+}
+
+interface DateWindow {
+  gte?: Date;
+  lte?: Date;
+}
+
+function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
+  const now = new Date();
+
+  // 1. rolling hour window
+  if (q.hours) {
+    const h = parseInt(q.hours, 10);
+    if (!Number.isNaN(h) && h > 0) {
+      return { gte: new Date(now.getTime() - h * 60 * 60 * 1000), lte: now };
+    }
+  }
+
+  // 2. named presets
+  switch (q.range) {
+    case "today":
+      return { gte: startOfDay(now), lte: now };
+    case "yesterday": {
+      const y = addDays(now, -1);
+      return { gte: startOfDay(y), lte: endOfDay(y) };
+    }
+    case "last7":
+      return { gte: startOfDay(addDays(now, -6)), lte: now };
+    case "last30":
+      return { gte: startOfDay(addDays(now, -29)), lte: now };
+    case "thisMonth":
+      return { gte: startOfMonth(now), lte: now };
+    default:
+      break;
+  }
+
+  // 3. explicit from/to
+  const w: DateWindow = {};
+  if (q.fromDate) {
+    w.gte = isDateOnly(q.fromDate)
+      ? startOfDay(new Date(q.fromDate))
+      : new Date(q.fromDate);
+  }
+  if (q.toDate) {
+    w.lte = isDateOnly(q.toDate)
+      ? endOfDay(new Date(q.toDate))
+      : new Date(q.toDate);
+  }
+  return w;
+}
+
+// human label for the window — printed into the export filename + sheet meta
+function windowLabel(q: Record<string, string | undefined>): string {
+  if (q.hours) return `last-${q.hours}h`;
+  if (q.range) return q.range;
+  if (q.fromDate || q.toDate) {
+    return `${q.fromDate ?? "start"}_to_${q.toDate ?? "now"}`;
+  }
+  return "all-time";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: BFS downward from userId — returns self + all reportees recursively
-// SuperAdmin → null (no filter, entire org)
-// Everyone else → self + full subtree below them in org chart
-// Applied uniformly: a recruiter with no reportees gets [userId] only.
-// A TL/DM gets themselves + everyone below. Simple, no scope branching.
+// SCOPE: BFS downward from userId — self + all reportees recursively
+// SuperAdmin → null (no filter, entire org). Everyone else → self + subtree.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function resolveOrgTreeDown(
   userId: string,
   isSuperAdmin: boolean
 ): Promise<string[] | null> {
-  if (isSuperAdmin) return null; // superAdmin sees everything
+  if (isSuperAdmin) return null;
 
   const visited = new Set<string>([userId]);
   let frontier = [userId];
@@ -33,7 +123,7 @@ async function resolveOrgTreeDown(
       where: {
         reportingToId: { in: frontier },
         isActive: true,
-        id: { notIn: [...visited] }, // avoid cycles
+        id: { notIn: [...visited] },
       },
       select: { id: true },
     });
@@ -45,59 +135,97 @@ async function resolveOrgTreeDown(
       }
     }
   }
-
   return [...visited];
 }
 
-// Wrapper that reads from req — used for pipeline/assignment scope
 async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
   return resolveOrgTreeDown(req.user!.id, req.user!.isSuperAdmin);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: build requirement where from query filters (no BU — too complex)
+// REQUIREMENT WHERE builder — folds in the resolved date window on createdAt
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildReqWhere(q: Record<string, string>): Record<string, any> {
+function buildReqWhere(
+  q: Record<string, string | undefined>
+): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
   if (q.clientId) where.clientId = q.clientId;
   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+  if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
   if (q.status) where.status = q.status;
   if (q.priority) where.priority = q.priority;
-  if (q.fromDate || q.toDate) {
+
+  const win = resolveDateWindow(q);
+  if (win.gte || win.lte) {
     where.createdAt = {};
-    if (q.fromDate) where.createdAt.gte = new Date(q.fromDate);
-    if (q.toDate) where.createdAt.lte = new Date(q.toDate);
+    if (win.gte) where.createdAt.gte = win.gte;
+    if (win.lte) where.createdAt.lte = win.lte;
   }
   return where;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: fetch all pipeline stages from DB (never hardcoded)
+// STAGES — real PipelineStage rows, scoped by service line.
+// serviceLineId === null  → common (all lines)
+// serviceLineId === <id>  → variant, only that line
+// When a serviceLineId filter is present we merge common + that line's stages.
+// Otherwise every active stage is returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchAllStages() {
+const STAGE_SELECT = {
+  id: true,
+  code: true,
+  label: true,
+  order: true,
+  isStandard: true,
+  isTerminal: true,
+  canonicalStage: true,
+  serviceLineId: true,
+  serviceLine: { select: { id: true, name: true } },
+} as const;
+
+async function fetchScopedStages(serviceLineId?: string) {
+  const where: Record<string, any> = { isActive: true };
+  if (serviceLineId) {
+    where.OR = [{ serviceLineId: null }, { serviceLineId }];
+  }
   return prisma.pipelineStage.findMany({
-    where: { isActive: true },
-    select: {
-      id: true,
-      code: true,
-      label: true,
-      order: true,
-      canonicalStage: true,
-    },
+    where,
     orderBy: { order: "asc" },
+    select: STAGE_SELECT,
   });
 }
 
-async function fetchCanonicalKeys() {
-  const rows = await prisma.pipelineStage.findMany({
-    where: { isActive: true, canonicalStage: { not: null } },
-    select: { canonicalStage: true },
-    distinct: ["canonicalStage"],
-    orderBy: { order: "asc" },
-  });
-  return [...new Set(rows.map((r) => r.canonicalStage as string))];
+type StageMeta = Awaited<ReturnType<typeof fetchScopedStages>>[number];
+
+function stageMetaOut(stages: StageMeta[], standardOnly: boolean) {
+  const list = standardOnly ? stages.filter((s) => s.isStandard) : stages;
+  return list.map((s) => ({
+    id: s.id,
+    code: s.code,
+    label: s.label,
+    order: s.order,
+    isStandard: s.isStandard,
+    isTerminal: s.isTerminal,
+    canonicalStage: s.canonicalStage ?? null,
+    serviceLineId: s.serviceLineId ?? null,
+    serviceLine: s.serviceLine ?? null,
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DISPOSITION HELPERS  (business enums, not display config)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isJoined(p: any): boolean {
+  return p.disposition === "PLACED" || !!p.actualJoiningDate;
+}
+function isDropped(p: any): boolean {
+  return p.disposition === "DROPPED" || p.isRejected || p.isWithdrawn;
+}
+function isActive(p: any): boolean {
+  return p.disposition === "ACTIVE";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +242,7 @@ function formatAging(mins: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: Excel header styling
+// EXCEL styling
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HDR_FILL: ExcelJS.Fill = {
@@ -150,6 +278,11 @@ function humanKey(key: string) {
     .join(" ");
 }
 
+function spocName(spoc: any): string {
+  if (!spoc) return "";
+  return `${spoc.firstName ?? ""} ${spoc.lastName ?? ""}`.trim();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE SELECT for candidate detail sheet (used in all exports)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +291,7 @@ const PIPELINE_DETAIL_SELECT = {
   id: true,
   requirementId: true,
   recruiterId: true,
+  currentStageId: true,
   disposition: true,
   isRejected: true,
   isWithdrawn: true,
@@ -177,6 +311,7 @@ const PIPELINE_DETAIL_SELECT = {
   remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
+  noticePeriod: true,
   currentStage: {
     select: {
       id: true,
@@ -203,9 +338,31 @@ const PIPELINE_DETAIL_SELECT = {
   },
 } as const;
 
+// Requirement fields resolved for the candidate sheet lookup.
+// Client / SPOC / Service Line / BU are the important new additions.
+const REQ_LOOKUP_SELECT = {
+  id: true,
+  reqCode: true,
+  title: true,
+  status: true,
+  createdAt: true,
+  deletedAt: true,
+  client: { select: { id: true, name: true } },
+  clientSpoc: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      designation: true,
+    },
+  },
+  serviceLine: { select: { id: true, name: true } },
+  businessUnit: { select: { id: true, name: true } },
+} as const;
+
 // ─────────────────────────────────────────────────────────────────────────────
-// UTIL: build candidate detail sheet (Sheet 2 in all exports)
-// All new fields included: CTC breakdown, LWD, joining dates, month of joining
+// SHEET 2 (always): candidate detail — now with client / spoc / SL / BU
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildCandidateSheet(
@@ -219,31 +376,39 @@ function buildCandidateSheet(
 
   sheet.columns = [
     { header: "Req Code", key: "reqCode", width: 14 },
-    { header: "Requirement", key: "reqTitle", width: 36 },
+    { header: "Requirement", key: "reqTitle", width: 34 },
+    // client context — the important new block
+    { header: "Client", key: "client", width: 24 },
+    { header: "Client SPOC", key: "spoc", width: 22 },
+    { header: "SPOC Email", key: "spocEmail", width: 26 },
+    { header: "SPOC Designation", key: "spocDesig", width: 20 },
+    { header: "Service Line", key: "serviceLine", width: 18 },
+    { header: "Business Unit", key: "bu", width: 20 },
+    // candidate
     { header: "Candidate Name", key: "name", width: 26 },
     { header: "Email", key: "email", width: 30 },
     { header: "Phone", key: "phone", width: 16 },
     { header: "Current Title", key: "title", width: 24 },
     { header: "Current Company", key: "company", width: 22 },
     { header: "Exp (yrs)", key: "exp", width: 10 },
-    { header: "Top Skills", key: "skills", width: 36 },
+    { header: "Top Skills", key: "skills", width: 34 },
     { header: "Recruiter", key: "recruiter", width: 22 },
-    { header: "Current Stage", key: "stage", width: 22 },
-    { header: "Stage Group", key: "canonical", width: 20 },
+    { header: "Current Stage", key: "stage", width: 24 },
     { header: "Status", key: "disposition", width: 14 },
     { header: "Added On", key: "addedOn", width: 16 },
     { header: "Days in Pipeline", key: "pipelineDays", width: 16 },
     { header: "Stage Aging", key: "aging", width: 12 },
     { header: "Submitted At", key: "submittedAt", width: 18 },
     { header: "Offer Status", key: "offerStatus", width: 14 },
-    // CTC breakdown — new fields
+    // CTC breakdown
     { header: "Current CTC", key: "currentCtc", width: 14 },
     { header: "Expected CTC", key: "expectedCtc", width: 14 },
     { header: "Negotiated CTC", key: "negotiatedCtc", width: 14 },
     { header: "Offered CTC", key: "offeredCtc", width: 14 },
     { header: "Currency", key: "currency", width: 10 },
     { header: "Salary Type", key: "salaryType", width: 12 },
-    // Joining — new fields
+    // Joining
+    { header: "Notice Period", key: "noticePeriod", width: 14 },
     { header: "Last Working Day", key: "lwd", width: 16 },
     { header: "Expected Joining", key: "expectedJoining", width: 16 },
     { header: "Actual Joining", key: "actualJoining", width: 16 },
@@ -252,6 +417,9 @@ function buildCandidateSheet(
     { header: "Rejected?", key: "rejected", width: 10 },
     { header: "Withdrawn?", key: "withdrawn", width: 10 },
     { header: "On Hold?", key: "onHold", width: 10 },
+    // requirement audit
+    { header: "Req Created", key: "reqCreated", width: 16 },
+    { header: "Req Deleted", key: "reqDeleted", width: 16 },
   ];
 
   styleHdr(sheet.getRow(1));
@@ -271,6 +439,12 @@ function buildCandidateSheet(
     const row = sheet.addRow({
       reqCode: req?.reqCode ?? "",
       reqTitle: req?.title ?? "",
+      client: req?.client?.name ?? "",
+      spoc: spocName(req?.clientSpoc),
+      spocEmail: req?.clientSpoc?.email ?? "",
+      spocDesig: req?.clientSpoc?.designation ?? "",
+      serviceLine: req?.serviceLine?.name ?? "",
+      bu: req?.businessUnit?.name ?? "",
       name: p.snapshot?.fullName ?? "",
       email: p.snapshot?.email ?? "",
       phone: p.snapshot?.phone ?? "",
@@ -282,23 +456,19 @@ function buildCandidateSheet(
         ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
         : "",
       stage: p.currentStage?.label ?? "",
-      canonical: p.currentStage?.canonicalStage
-        ? humanKey(p.currentStage.canonicalStage)
-        : "",
       disposition: p.disposition,
       addedOn: new Date(p.createdAt),
       pipelineDays: Math.floor(totalMins / 1440),
       aging: formatAging(stageAgeMins),
       submittedAt: p.submittedAt ? new Date(p.submittedAt) : "",
       offerStatus: p.offerStatus ?? "",
-      // CTC
       currentCtc: p.currentCtc ?? "",
       expectedCtc: p.expectedCtc ?? "",
       negotiatedCtc: p.negotiatedCtc ?? "",
       offeredCtc: p.offeredCtc ?? "",
       currency: p.salaryCurrency ?? "",
       salaryType: p.salaryType ?? "",
-      // Joining
+      noticePeriod: p.noticePeriod ?? "",
       lwd: p.lastWorkingDate ? new Date(p.lastWorkingDate) : "",
       expectedJoining: p.expectedJoiningDate
         ? new Date(p.expectedJoiningDate)
@@ -309,6 +479,8 @@ function buildCandidateSheet(
       rejected: p.isRejected ? "Yes" : "No",
       withdrawn: p.isWithdrawn ? "Yes" : "No",
       onHold: p.isOnHold ? "Yes" : "No",
+      reqCreated: req?.createdAt ? new Date(req.createdAt) : "",
+      reqDeleted: req?.deletedAt ? new Date(req.deletedAt) : "",
     });
 
     row.height = 18;
@@ -319,6 +491,8 @@ function buildCandidateSheet(
       row.getCell("expectedJoining").numFmt = "dd-mmm-yyyy";
     if (p.actualJoiningDate)
       row.getCell("actualJoining").numFmt = "dd-mmm-yyyy";
+    if (req?.createdAt) row.getCell("reqCreated").numFmt = "dd-mmm-yyyy hh:mm";
+    if (req?.deletedAt) row.getCell("reqDeleted").numFmt = "dd-mmm-yyyy hh:mm";
 
     if (p.isRejected || p.isWithdrawn) {
       row.eachCell((c) => {
@@ -333,21 +507,428 @@ function buildCandidateSheet(
   };
 }
 
+// parse ?ids=a,b,c → string[] (deduped, trimmed). Empty → null.
+function parseIds(raw?: string): string[] | null {
+  if (!raw) return null;
+  const arr = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return arr.length ? [...new Set(arr)] : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ███████████████████████████████████████████████████████████████████████████
-// 1. RECRUITER REPORT
+// 0. OVERVIEW  —  monitoring dashboard feed (KPIs, funnel, time-series, leaders)
+// GET /reports/overview
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
+export const getReportsOverview = async (req: Request, res: Response) => {
+  try {
+    const q = req.query as Record<string, string>;
+    const win = resolveDateWindow(q);
+    const scopedUserIds = await resolveScopedUserIds(req);
+
+    const reqWhere = buildReqWhere(q);
+    // Unfiltered → every stage (needed to build per-line funnels). Filtered → that line + common.
+    const stages = await fetchScopedStages(q.serviceLineId);
+
+    const pipelineWhere: Record<string, any> = { requirement: reqWhere };
+    if (scopedUserIds !== null) {
+      pipelineWhere.recruiterId = { in: scopedUserIds };
+    }
+
+    const pipelines = await prisma.requirementCandidatePipeline.findMany({
+      where: pipelineWhere,
+      select: {
+        recruiterId: true,
+        currentStageId: true,
+        disposition: true,
+        isRejected: true,
+        isWithdrawn: true,
+        submittedAt: true,
+        actualJoiningDate: true,
+        offerStatus: true,
+        createdAt: true,
+        recruiter: { select: { id: true, firstName: true, lastName: true } },
+        requirement: {
+          select: {
+            serviceLineId: true,
+            serviceLine: { select: { id: true, name: true } },
+            businessUnitId: true,
+            businessUnit: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    const total = pipelines.length;
+    let submitted = 0;
+    let offered = 0;
+    let joined = 0;
+    let dropped = 0;
+    let active = 0;
+
+    const NONE = "__none__";
+    const stageCounts: Record<string, number> = Object.fromEntries(
+      stages.map((s) => [s.id, 0])
+    );
+    const dispositionCounts: Record<string, number> = {};
+    const recruiterAgg: Record<
+      string,
+      { id: string; name: string; sourced: number; joined: number }
+    > = {};
+
+    // per service line
+    type LineAgg = {
+      serviceLineId: string | null;
+      name: string;
+      total: number;
+      submitted: number;
+      offered: number;
+      joined: number;
+      stageCounts: Record<string, number>;
+    };
+    const lineAgg: Record<string, LineAgg> = {};
+
+    // per business unit
+    type BuAgg = {
+      businessUnitId: string | null;
+      name: string;
+      total: number;
+      joined: number;
+    };
+    const buAgg: Record<string, BuAgg> = {};
+
+    // time-series bucketing — hourly if window ≤ 2 days, else daily
+    const spanMs =
+      win.gte && win.lte ? win.lte.getTime() - win.gte.getTime() : Infinity;
+    const bucketByHour = spanMs <= 2 * 24 * 60 * 60 * 1000;
+    const series: Record<string, number> = {};
+    const bucketKey = (d: Date) => {
+      if (bucketByHour) {
+        const x = new Date(d);
+        x.setMinutes(0, 0, 0);
+        return x.toISOString();
+      }
+      return startOfDay(d).toISOString();
+    };
+
+    for (const p of pipelines) {
+      const rq = (p as any).requirement;
+      const lineId: string | null = rq?.serviceLineId ?? null;
+      const lineKey = lineId ?? NONE;
+      const buId: string | null = rq?.businessUnitId ?? null;
+      const buKey = buId ?? NONE;
+
+      if (p.currentStageId in stageCounts) stageCounts[p.currentStageId]++;
+      dispositionCounts[p.disposition] =
+        (dispositionCounts[p.disposition] ?? 0) + 1;
+      const isJ = isJoined(p);
+      if (p.submittedAt) submitted++;
+      if (p.offerStatus) offered++;
+      if (isJ) joined++;
+      if (isDropped(p)) dropped++;
+      if (isActive(p)) active++;
+
+      const k = bucketKey(new Date(p.createdAt));
+      series[k] = (series[k] ?? 0) + 1;
+
+      const rid = p.recruiterId;
+      if (!recruiterAgg[rid]) {
+        recruiterAgg[rid] = {
+          id: rid,
+          name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+          sourced: 0,
+          joined: 0,
+        };
+      }
+      recruiterAgg[rid].sourced++;
+      if (isJ) recruiterAgg[rid].joined++;
+
+      // service line bucket
+      if (!lineAgg[lineKey]) {
+        lineAgg[lineKey] = {
+          serviceLineId: lineId,
+          name: rq?.serviceLine?.name ?? "Unassigned",
+          total: 0,
+          submitted: 0,
+          offered: 0,
+          joined: 0,
+          stageCounts: {},
+        };
+      }
+      const la = lineAgg[lineKey];
+      la.total++;
+      if (p.submittedAt) la.submitted++;
+      if (p.offerStatus) la.offered++;
+      if (isJ) la.joined++;
+      la.stageCounts[p.currentStageId] =
+        (la.stageCounts[p.currentStageId] ?? 0) + 1;
+
+      // business unit bucket
+      if (!buAgg[buKey]) {
+        buAgg[buKey] = {
+          businessUnitId: buId,
+          name: rq?.businessUnit?.name ?? "Unassigned",
+          total: 0,
+          joined: 0,
+        };
+      }
+      buAgg[buKey].total++;
+      if (isJ) buAgg[buKey].joined++;
+    }
+
+    // global funnel (all stages, ordered)
+    const funnel = stages
+      .map((s) => ({
+        stageId: s.id,
+        code: s.code,
+        label: s.label,
+        order: s.order,
+        isStandard: s.isStandard,
+        serviceLine: s.serviceLine ?? null,
+        count: stageCounts[s.id] ?? 0,
+      }))
+      .filter((s) => s.count > 0);
+
+    // per-line funnel — each line sees only its own variants + common stages,
+    // counted from that line's own pipeline rows (common stages are NOT shared
+    // across lines here; a candidate is counted under its requirement's line).
+    const stageForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
+
+    const byServiceLine = Object.values(lineAgg)
+      .sort((a, b) => b.total - a.total)
+      .map((la) => ({
+        serviceLineId: la.serviceLineId,
+        name: la.name,
+        total: la.total,
+        submitted: la.submitted,
+        offered: la.offered,
+        joined: la.joined,
+        funnel: stageForLine(la.serviceLineId)
+          .map((s) => ({
+            stageId: s.id,
+            label: s.label,
+            order: s.order,
+            count: la.stageCounts[s.id] ?? 0,
+          }))
+          .filter((s) => s.count > 0),
+      }));
+
+    const byBusinessUnit = Object.values(buAgg).sort(
+      (a, b) => b.total - a.total
+    );
+
+    const timeSeries = Object.entries(series)
+      .map(([bucket, count]) => ({ bucket, count }))
+      .sort((a, b) => a.bucket.localeCompare(b.bucket));
+
+    const leaderboard = Object.values(recruiterAgg)
+      .sort((a, b) => b.sourced - a.sourced)
+      .slice(0, 10);
+
+    return res.json({
+      success: true,
+      data: {
+        kpis: {
+          total,
+          submitted,
+          offered,
+          joined,
+          dropped,
+          active,
+          submissionRate:
+            total > 0 ? +((submitted / total) * 100).toFixed(1) : 0,
+          offerRate:
+            submitted > 0 ? +((offered / submitted) * 100).toFixed(1) : 0,
+          joinRate: offered > 0 ? +((joined / offered) * 100).toFixed(1) : 0,
+        },
+        funnel,
+        byServiceLine,
+        byBusinessUnit,
+        dispositionCounts,
+        timeSeries,
+        timeGranularity: bucketByHour ? "hour" : "day",
+        leaderboard,
+      },
+      meta: {
+        window: windowLabel(q),
+        granularity: bucketByHour ? "hour" : "day",
+        scope: (req as any).scopeFilter?.type ?? "ALL",
+        multiLine: byServiceLine.length > 1,
+      },
+    });
+  } catch (err) {
+    console.error("getReportsOverview:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch overview" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ███████████████████████████████████████████████████████████████████████████
+// 1. RECRUITER REPORT  (real service-line stages, per-requirement drill-down)
+// ███████████████████████████████████████████████████████████████████████████
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Aggregate a set of pipeline rows into per-recruiter stat rows.
+// Pulled out so we can run it once for a flat view or once per service line.
+function buildRecruiterRows(pipes: any[]) {
+  type ReqStats = {
+    requirementId: string;
+    reqCode: string;
+    title: string;
+    status: string;
+    totalOpenings: number;
+    client: { id: string; name: string } | null;
+    serviceLine: { id: string; name: string } | null;
+    businessUnit: { id: string; name: string } | null;
+    sourced: number;
+    submitted: number;
+    offered: number;
+    joined: number;
+    dropped: number;
+    active: number;
+    stageCounts: Record<string, number>;
+  };
+  type RecAgg = {
+    id: string;
+    name: string;
+    email: string;
+    sourced: number;
+    submitted: number;
+    offered: number;
+    joined: number;
+    dropped: number;
+    active: number;
+    submitTimeMins: number[];
+    stageCounts: Record<string, number>;
+    reqMap: Record<string, ReqStats>;
+  };
+
+  const map: Record<string, RecAgg> = {};
+
+  for (const p of pipes) {
+    const rid = p.recruiterId;
+    if (!map[rid]) {
+      map[rid] = {
+        id: rid,
+        name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+        email: p.recruiter.email,
+        sourced: 0,
+        submitted: 0,
+        offered: 0,
+        joined: 0,
+        dropped: 0,
+        active: 0,
+        submitTimeMins: [],
+        stageCounts: {},
+        reqMap: {},
+      };
+    }
+    const r = map[rid];
+    r.sourced++;
+    r.stageCounts[p.currentStageId] =
+      (r.stageCounts[p.currentStageId] ?? 0) + 1;
+    if (p.submittedAt) r.submitted++;
+    if (p.offerStatus) r.offered++;
+    if (isJoined(p)) r.joined++;
+    if (isDropped(p)) r.dropped++;
+    if (isActive(p)) r.active++;
+    if (p.submittedAt) {
+      r.submitTimeMins.push(
+        (p.stageHistory ?? []).reduce(
+          (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
+          0
+        )
+      );
+    }
+
+    const rq = p.requirement;
+    const reqId = p.requirementId;
+    if (!r.reqMap[reqId]) {
+      r.reqMap[reqId] = {
+        requirementId: reqId,
+        reqCode: rq?.reqCode ?? "",
+        title: rq?.title ?? "",
+        status: rq?.status ?? "",
+        totalOpenings: rq?.totalOpenings ?? 0,
+        client: rq?.client ?? null,
+        serviceLine: rq?.serviceLine ?? null,
+        businessUnit: rq?.businessUnit ?? null,
+        sourced: 0,
+        submitted: 0,
+        offered: 0,
+        joined: 0,
+        dropped: 0,
+        active: 0,
+        stageCounts: {},
+      };
+    }
+    const rqs = r.reqMap[reqId];
+    rqs.sourced++;
+    rqs.stageCounts[p.currentStageId] =
+      (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
+    if (p.submittedAt) rqs.submitted++;
+    if (p.offerStatus) rqs.offered++;
+    if (isJoined(p)) rqs.joined++;
+    if (isDropped(p)) rqs.dropped++;
+    if (isActive(p)) rqs.active++;
+  }
+
+  return Object.values(map)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      sourced: r.sourced,
+      submitted: r.submitted,
+      offered: r.offered,
+      joined: r.joined,
+      dropped: r.dropped,
+      active: r.active,
+      submissionRate:
+        r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
+      offerRate:
+        r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
+      joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
+      avgTimeToSubmitDays:
+        r.submitTimeMins.length > 0
+          ? +(
+              r.submitTimeMins.reduce((a, b) => a + b, 0) /
+              r.submitTimeMins.length /
+              1440
+            ).toFixed(1)
+          : null,
+      stageCounts: r.stageCounts,
+      requirementBreakdown: Object.values(r.reqMap)
+        .sort((a, b) => b.sourced - a.sourced)
+        .map((rq) => ({ ...rq })),
+    }))
+    .sort((a, b) => b.sourced - a.sourced);
+}
+
 // GET /reports/recruiters
+// Always returns groups[] — one per service line — for a tab-based UI.
+// A recruiter belongs to exactly ONE service line, resolved as:
+//   1. User.serviceline (their tagged line)
+//   2. fallback: the dominant service line across requirements they've sourced
+// All of that recruiter's candidates sit under their line, with that line's
+// stage columns (its variants + common). Never mixed across lines.
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
-    const { clientId, serviceLineId, fromDate, toDate, recruiterId } =
-      req.query as Record<string, string>;
+    const q = req.query as Record<string, string>;
+    const { recruiterId, requirementId } = q;
+    const standardOnly = q.standardOnly === "true";
 
     const scopedUserIds = await resolveScopedUserIds(req);
 
-    // Optional drill-down into a single recruiter
     let recruiterFilter: Record<string, any> = {};
     if (recruiterId) {
       if (scopedUserIds !== null && !scopedUserIds.includes(recruiterId)) {
@@ -360,20 +941,10 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       recruiterFilter = { recruiterId: { in: scopedUserIds } };
     }
 
-    const reqWhere = buildReqWhere({
-      clientId,
-      serviceLineId,
-      fromDate,
-      toDate,
-    } as any);
-    const allStages = await fetchAllStages();
-    const canonicalKeys = [
-      ...new Set(
-        allStages
-          .filter((s) => s.canonicalStage !== null)
-          .map((s) => s.canonicalStage as string)
-      ),
-    ];
+    const reqWhere = buildReqWhere(q);
+    if (requirementId) reqWhere.id = requirementId; // within-a-requirement filter
+
+    const stages = await fetchScopedStages(q.serviceLineId);
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirement: reqWhere, ...recruiterFilter },
@@ -386,189 +957,110 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
             title: true,
             status: true,
             totalOpenings: true,
+            serviceLineId: true,
             client: { select: { id: true, name: true } },
-            businessUnit: { select: { id: true, name: true } },
             serviceLine: { select: { id: true, name: true } },
+            businessUnit: { select: { id: true, name: true } },
           },
         },
       },
     });
 
-    // Aggregate per recruiter
-    type ReqStats = {
-      requirementId: string;
-      reqCode: string;
-      title: string;
-      status: string;
-      totalOpenings: number;
-      client: { id: string; name: string } | null;
-      businessUnit: { id: string; name: string } | null;
-      serviceLine: { id: string; name: string } | null;
-      sourced: number;
-      submitted: number;
-      joined: number;
-      dropped: number;
-      active: number;
-      canonicalCounts: Record<string, number>;
-    };
-    type RecAgg = {
-      id: string;
-      name: string;
-      email: string;
-      sourced: number;
-      submitted: number;
-      joined: number;
-      dropped: number;
-      active: number;
-      submitTimeMins: number[];
-      stageCounts: Record<string, number>;
-      canonicalCounts: Record<string, number>;
-      reqMap: Record<string, ReqStats>;
+    const commonMeta = {
+      scope: (req as any).scopeFilter?.type ?? "ALL",
+      window: windowLabel(q),
+      standardOnly,
     };
 
-    const map: Record<string, RecAgg> = {};
+    const stagesForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
 
+    // ── Resolve each recruiter's service line ────────────────────────────────
+    const recruiterIds = [...new Set(pipelines.map((p) => p.recruiterId))];
+
+    // 1. from the User table (their tagged line)
+    const users =
+      recruiterIds.length > 0
+        ? await prisma.user.findMany({
+            where: { id: { in: recruiterIds } },
+            select: {
+              id: true,
+              servicelineId: true,
+              serviceline: { select: { id: true, name: true } },
+            },
+          })
+        : [];
+    const userLine = new Map<string, { id: string; name: string } | null>();
+    for (const u of users) userLine.set(u.id, u.serviceline ?? null);
+
+    // 2. fallback tally — dominant requirement line, only for recruiters
+    //    whose User row has no service line tagged.
+    const fallbackTally = new Map<
+      string,
+      Map<string, { name: string; count: number }>
+    >();
     for (const p of pipelines) {
       const rid = p.recruiterId;
-      if (!map[rid]) {
-        map[rid] = {
-          id: rid,
-          name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
-          email: p.recruiter.email,
-          sourced: 0,
-          submitted: 0,
-          joined: 0,
-          dropped: 0,
-          active: 0,
-          submitTimeMins: [],
-          stageCounts: Object.fromEntries(allStages.map((s) => [s.id, 0])),
-          canonicalCounts: {},
-          reqMap: {},
-        };
-      }
-      const r = map[rid];
-      r.sourced++;
-
-      if (p.currentStageId in r.stageCounts) r.stageCounts[p.currentStageId]++;
-      const canonical = p.currentStage?.canonicalStage ?? null;
-      if (canonical)
-        r.canonicalCounts[canonical] = (r.canonicalCounts[canonical] ?? 0) + 1;
-
-      if (p.submittedAt) r.submitted++;
-      if (p.disposition === "PLACED" || p.actualJoiningDate) r.joined++;
-      if (p.disposition === "DROPPED" || p.isRejected || p.isWithdrawn)
-        r.dropped++;
-      if (p.disposition === "ACTIVE") r.active++;
-      if (p.submittedAt) {
-        r.submitTimeMins.push(
-          (p.stageHistory ?? []).reduce(
-            (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0
-          )
-        );
-      }
-
-      // Per-requirement breakdown
-      const req = (p as any).requirement;
-      const reqId = p.requirementId;
-      if (!r.reqMap[reqId]) {
-        r.reqMap[reqId] = {
-          requirementId: reqId,
-          reqCode: req?.reqCode ?? "",
-          title: req?.title ?? "",
-          status: req?.status ?? "",
-          totalOpenings: req?.totalOpenings ?? 0,
-          client: req?.client ?? null,
-          businessUnit: req?.businessUnit ?? null,
-          serviceLine: req?.serviceLine ?? null,
-          sourced: 0,
-          submitted: 0,
-          joined: 0,
-          dropped: 0,
-          active: 0,
-          canonicalCounts: {},
-        };
-      }
-      const rq = r.reqMap[reqId];
-      rq.sourced++;
-      if (canonical)
-        rq.canonicalCounts[canonical] =
-          (rq.canonicalCounts[canonical] ?? 0) + 1;
-      if (p.submittedAt) rq.submitted++;
-      if (p.disposition === "PLACED" || p.actualJoiningDate) rq.joined++;
-      if (p.disposition === "DROPPED" || p.isRejected || p.isWithdrawn)
-        rq.dropped++;
-      if (p.disposition === "ACTIVE") rq.active++;
+      if (userLine.get(rid)) continue; // already resolved from User
+      const sl = (p as any).requirement?.serviceLine ?? null;
+      if (!sl) continue;
+      if (!fallbackTally.has(rid)) fallbackTally.set(rid, new Map());
+      const t = fallbackTally.get(rid)!;
+      const e = t.get(sl.id) ?? { name: sl.name, count: 0 };
+      e.count++;
+      t.set(sl.id, e);
     }
 
-    const data = Object.values(map).map((r) => {
-      const offered =
-        (r.canonicalCounts["OFFERED"] ?? 0) +
-        (r.canonicalCounts["OFFER_IN_PROGRESS"] ?? 0);
-      return {
-        id: r.id,
-        name: r.name,
-        email: r.email,
-        sourced: r.sourced,
-        submitted: r.submitted,
-        shortlisted: r.canonicalCounts["SHORTLISTED"] ?? 0,
-        offered,
-        joined: r.joined,
-        dropped: r.dropped,
-        active: r.active,
-        submissionRate:
-          r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
-        offerRate:
-          r.submitted > 0 ? +((offered / r.submitted) * 100).toFixed(1) : 0,
-        joinRate: offered > 0 ? +((r.joined / offered) * 100).toFixed(1) : 0,
-        avgTimeToSubmitDays:
-          r.submitTimeMins.length > 0
-            ? +(
-                r.submitTimeMins.reduce((a, b) => a + b, 0) /
-                r.submitTimeMins.length /
-                1440
-              ).toFixed(1)
-            : null,
-        canonicalStageCounts: r.canonicalCounts,
-        stageBreakdown: allStages
-          .map((s) => ({
-            stageId: s.id,
-            code: s.code,
-            label: s.label,
-            order: s.order,
-            canonicalStage: s.canonicalStage ?? null,
-            count: r.stageCounts[s.id] ?? 0,
-          }))
-          .filter((s) => s.count > 0),
-        requirementBreakdown: Object.values(r.reqMap)
-          .sort((a, b) => b.sourced - a.sourced)
-          .map((rq) => ({
-            ...rq,
-            offered:
-              (rq.canonicalCounts["OFFERED"] ?? 0) +
-              (rq.canonicalCounts["OFFER_IN_PROGRESS"] ?? 0),
-            shortlisted: rq.canonicalCounts["SHORTLISTED"] ?? 0,
-          })),
-      };
-    });
+    const resolveLine = (rid: string): { id: string; name: string } | null => {
+      const fromUser = userLine.get(rid);
+      if (fromUser) return fromUser;
+      const t = fallbackTally.get(rid);
+      if (t && t.size) {
+        let best: { id: string; name: string; count: number } | null = null;
+        for (const [id, { name, count }] of t) {
+          if (!best || count > best.count) best = { id, name, count };
+        }
+        if (best) return { id: best.id, name: best.name };
+      }
+      return null;
+    };
 
-    data.sort((a, b) => b.sourced - a.sourced);
+    // ── Partition pipelines by the recruiter's resolved line ─────────────────
+    const byLine = new Map<string, any[]>();
+    const lineMeta = new Map<string, { id: string; name: string } | null>();
+    for (const p of pipelines) {
+      const line = resolveLine(p.recruiterId);
+      const key = line?.id ?? "__none__";
+      if (!byLine.has(key)) {
+        byLine.set(key, []);
+        lineMeta.set(key, line);
+      }
+      byLine.get(key)!.push(p);
+    }
+
+    const groups = [...byLine.entries()]
+      .map(([key, pipes]) => {
+        const sl = lineMeta.get(key) ?? null;
+        const data = buildRecruiterRows(pipes);
+        return {
+          serviceLine: sl, // null → "Unassigned"
+          stages: stageMetaOut(stagesForLine(sl?.id ?? null), standardOnly),
+          data,
+          total: data.length,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.data.reduce((s, r) => s + r.sourced, 0) -
+          a.data.reduce((s, r) => s + r.sourced, 0)
+      );
 
     return res.json({
       success: true,
-      data,
-      total: data.length,
-      meta: {
-        stages: allStages.map((s) => ({
-          id: s.id,
-          code: s.code,
-          label: s.label,
-          order: s.order,
-          canonicalStage: s.canonicalStage ?? null,
-        })),
-        canonicalKeys,
-        scope: req.scopeFilter?.type ?? "ALL",
-      },
+      groups,
+      meta: { ...commonMeta, multiLine: groups.length > 1 },
     });
   } catch (err) {
     console.error("getRecruiterReport:", err);
@@ -578,64 +1070,60 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/recruiters/export
+// GET /reports/recruiters/export   ( ?ids=recId1,recId2  → only those recruiters )
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
-    const { clientId, serviceLineId, fromDate, toDate, recruiterId } =
-      req.query as Record<string, string>;
-    const view = (req.query.view as string) ?? "summary";
+    const q = req.query as Record<string, string>;
+    const selectedIds = parseIds(q.ids);
+    const standardOnly = q.standardOnly === "true";
 
     const scopedUserIds = await resolveScopedUserIds(req);
+
+    // resolve the recruiter id filter: selected ∩ scope
     let recruiterFilter: Record<string, any> = {};
-    if (recruiterId) {
-      if (scopedUserIds !== null && !scopedUserIds.includes(recruiterId)) {
-        return res
-          .status(403)
-          .json({ success: false, message: "Recruiter not in your scope" });
-      }
-      recruiterFilter = { recruiterId };
+    let allowedIds: string[] | null = scopedUserIds;
+    if (selectedIds) {
+      allowedIds =
+        scopedUserIds === null
+          ? selectedIds
+          : selectedIds.filter((id) => scopedUserIds.includes(id));
+      recruiterFilter = { recruiterId: { in: allowedIds } };
     } else if (scopedUserIds !== null) {
       recruiterFilter = { recruiterId: { in: scopedUserIds } };
     }
+    if (q.recruiterId) recruiterFilter = { recruiterId: q.recruiterId };
 
-    const reqWhere = buildReqWhere({
-      clientId,
-      serviceLineId,
-      fromDate,
-      toDate,
-    } as any);
-    const allStages = await fetchAllStages();
-    const canonicalKeys = [
-      ...new Set(
-        allStages
-          .filter((s) => s.canonicalStage !== null)
-          .map((s) => s.canonicalStage as string)
-      ),
-    ];
+    const reqWhere = buildReqWhere(q);
+    if (q.requirementId) reqWhere.id = q.requirementId;
+
+    const stages = await fetchScopedStages(q.serviceLineId);
+    const activeStages = standardOnly
+      ? stages.filter((s) => s.isStandard)
+      : stages;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirement: reqWhere, ...recruiterFilter },
       select: {
         ...PIPELINE_DETAIL_SELECT,
-        requirement: { select: { id: true, reqCode: true, title: true } },
+        requirement: { select: REQ_LOOKUP_SELECT },
       },
       orderBy: [{ recruiterId: "asc" }, { createdAt: "asc" }],
       take: 5000,
     });
 
-    // Aggregate per recruiter for Sheet 1
+    // per-recruiter aggregation for sheet 1
     type Agg = {
       name: string;
       email: string;
       sourced: number;
       submitted: number;
+      offered: number;
       joined: number;
       dropped: number;
       active: number;
       submitTimeMins: number[];
       requirementIds: Set<string>;
       stageCounts: Record<string, number>;
-      canonicalCounts: Record<string, number>;
     };
     const recruiterMap: Record<string, Agg> = {};
 
@@ -647,27 +1135,25 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
           email: p.recruiter.email,
           sourced: 0,
           submitted: 0,
+          offered: 0,
           joined: 0,
           dropped: 0,
           active: 0,
           submitTimeMins: [],
           requirementIds: new Set(),
-          stageCounts: Object.fromEntries(allStages.map((s) => [s.id, 0])),
-          canonicalCounts: {},
+          stageCounts: {},
         };
       }
       const r = recruiterMap[rid];
       r.requirementIds.add(p.requirementId);
       r.sourced++;
-      if (p.currentStageId in r.stageCounts) r.stageCounts[p.currentStageId]++;
-      const canonical = p.currentStage?.canonicalStage ?? null;
-      if (canonical)
-        r.canonicalCounts[canonical] = (r.canonicalCounts[canonical] ?? 0) + 1;
+      r.stageCounts[p.currentStageId] =
+        (r.stageCounts[p.currentStageId] ?? 0) + 1;
       if (p.submittedAt) r.submitted++;
-      if (p.disposition === "PLACED" || p.actualJoiningDate) r.joined++;
-      if (p.disposition === "DROPPED" || p.isRejected || p.isWithdrawn)
-        r.dropped++;
-      if (p.disposition === "ACTIVE") r.active++;
+      if (p.offerStatus) r.offered++;
+      if (isJoined(p)) r.joined++;
+      if (isDropped(p)) r.dropped++;
+      if (isActive(p)) r.active++;
       if (p.submittedAt) {
         r.submitTimeMins.push(
           (p.stageHistory ?? []).reduce(
@@ -682,22 +1168,11 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       (a, b) => b.sourced - a.sourced
     );
 
-    // Active stages for pipeline view
-    const activeStageIds = new Set<string>();
-    if (view === "pipeline") {
-      for (const r of summaryRows) {
-        for (const [sid, cnt] of Object.entries(r.stageCounts)) {
-          if (cnt > 0) activeStageIds.add(sid);
-        }
-      }
-    }
-    const activeStages = allStages.filter((s) => activeStageIds.has(s.id));
-
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // Sheet 1: Recruiter summary
+    // Sheet 1: recruiter summary — dynamic real-stage columns
     const sheet1 = workbook.addWorksheet("Recruiter Summary", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -706,24 +1181,21 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       { header: "Email", key: "email", width: 30 },
       { header: "Requirements", key: "reqs", width: 14 },
       { header: "Sourced", key: "sourced", width: 12 },
+      { header: "Submitted", key: "submitted", width: 12 },
     ];
-    const dynamicCols =
-      view === "pipeline"
-        ? activeStages.map((s) => ({
-            header: s.label,
-            key: `stage_${s.id}`,
-            width: 16,
-          }))
-        : canonicalKeys.map((key) => ({
-            header: humanKey(key),
-            key: `canonical_${key}`,
-            width: 16,
-          }));
+    const stageCols = activeStages.map((s) => ({
+      header: s.label,
+      key: `stage_${s.id}`,
+      width: 16,
+    }));
     const fixedRight = [
+      { header: "Offered", key: "offered", width: 12 },
+      { header: "Joined", key: "joined", width: 12 },
+      { header: "Dropped", key: "dropped", width: 12 },
       { header: "Active", key: "active", width: 12 },
       { header: "Avg Days to Submit", key: "avgDays", width: 18 },
     ];
-    sheet1.columns = [...fixedLeft, ...dynamicCols, ...fixedRight];
+    sheet1.columns = [...fixedLeft, ...stageCols, ...fixedRight];
     styleHdr(sheet1.getRow(1));
 
     for (const r of summaryRows) {
@@ -736,51 +1208,45 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
             ).toFixed(1)
           : "";
       const dynVals: Record<string, number> = {};
-      if (view === "pipeline") {
-        for (const s of activeStages)
-          dynVals[`stage_${s.id}`] = r.stageCounts[s.id] ?? 0;
-      } else {
-        for (const key of canonicalKeys)
-          dynVals[`canonical_${key}`] = r.canonicalCounts[key] ?? 0;
-      }
+      for (const s of activeStages)
+        dynVals[`stage_${s.id}`] = r.stageCounts[s.id] ?? 0;
+
       sheet1.addRow({
         name: r.name,
         email: r.email,
         reqs: r.requirementIds.size,
         sourced: r.sourced,
+        submitted: r.submitted,
         ...dynVals,
+        offered: r.offered,
+        joined: r.joined,
+        dropped: r.dropped,
         active: r.active,
         avgDays,
       }).height = 18;
     }
     sheet1.autoFilter = {
       from: { row: 1, column: 1 },
-      to: {
-        row: 1,
-        column: fixedLeft.length + dynamicCols.length + fixedRight.length,
-      },
+      to: { row: 1, column: sheet1.columnCount },
     };
 
-    // Sheet 2: All candidates
+    // Sheet 2: candidates
     const reqLookup = Object.fromEntries(
       pipelines.map((p) => [p.requirementId, (p as any).requirement])
     );
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
-    const viewLabel =
-      view === "pipeline"
-        ? "all-stages"
-        : view === "funnel"
-        ? "stage-funnel"
-        : "summary";
     const dateStr = new Date().toISOString().split("T")[0];
+    const scopeTag = selectedIds ? "selected" : "all";
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="recruiter-report-${viewLabel}-${dateStr}.xlsx"`
+      `attachment; filename="recruiter-report-${scopeTag}-${windowLabel(
+        q
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -794,9 +1260,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ███████████████████████████████████████████████████████████████████████████
-// 2. REQUIREMENT REPORT
-// List all requirements with per-requirement candidate stats
-// Per-row download via GET /reports/requirements/:id/export
+// 2. REQUIREMENT REPORT  (real service-line stages, selectable export)
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -804,9 +1268,8 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
+    const standardOnly = q.standardOnly === "true";
 
-    // Scope: only requirements created by self + reportees (full org tree down)
-    // SuperAdmin gets all. A recruiter gets only their own.
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
       req.user!.isSuperAdmin
@@ -817,57 +1280,54 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         ? { ...baseReqWhere, createdById: { in: creatorIds } }
         : baseReqWhere;
 
-    const canonicalKeys = await fetchCanonicalKeys();
-    const allStages = await fetchAllStages();
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+    const stages = await fetchScopedStages(q.serviceLineId);
+    const stageIdSet = new Set(stages.map((s) => s.id));
 
-    const page = parseInt(q.page ?? "1");
-    const limit = Math.min(parseInt(q.limit ?? "25"), 100);
-    const skip = (page - 1) * limit;
-
-    const [total, requirements] = await Promise.all([
-      prisma.requirement.count({ where: reqWhere }),
-      prisma.requirement.findMany({
-        where: reqWhere,
-        select: {
-          id: true,
-          reqCode: true,
-          title: true,
-          status: true,
-          priority: true,
-          jobType: true,
-          remoteType: true,
-          totalOpenings: true,
-          city: true,
-          country: true,
-          respondBy: true,
-          isRespondByBreached: true,
-          isTurnaroundBreached: true,
-          createdAt: true,
-          client: { select: { id: true, name: true } },
-          businessUnit: { select: { id: true, name: true } },
-          serviceLine: { select: { id: true, name: true } },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          _count: { select: { pipelines: true, assignments: true } },
+    // Reports are already bounded by the date window, so no pagination —
+    // we return the whole window (capped) so grouping stays accurate.
+    const requirements = await prisma.requirement.findMany({
+      where: reqWhere,
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        priority: true,
+        jobType: true,
+        remoteType: true,
+        totalOpenings: true,
+        city: true,
+        country: true,
+        respondBy: true,
+        isRespondByBreached: true,
+        isTurnaroundBreached: true,
+        createdAt: true,
+        deletedAt: true,
+        client: { select: { id: true, name: true } },
+        clientSpoc: {
+          select: { id: true, firstName: true, lastName: true, email: true },
         },
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-      }),
-    ]);
+        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+        _count: { select: { pipelines: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+    });
+
+    const commonMeta = { window: windowLabel(q), standardOnly };
 
     if (!requirements.length) {
       return res.json({
         success: true,
-        data: [],
-        meta: { total, page, limit, pages: Math.ceil(total / limit) },
-        canonicalKeys,
+        groups: [],
+        meta: { ...commonMeta, total: 0, multiLine: false },
       });
     }
 
     const reqIds = requirements.map((r) => r.id);
 
-    // Pipeline stage counts per requirement
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
@@ -876,34 +1336,52 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const countsByReq: Record<string, Record<string, number>> = {};
     for (const sc of stageCounts as any[]) {
-      const stage = stageById[sc.currentStageId];
-      if (!stage?.canonicalStage) continue;
+      if (!stageIdSet.has(sc.currentStageId)) continue;
       if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
-      countsByReq[sc.requirementId][stage.canonicalStage] =
-        (countsByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
-        sc._count.id;
+      countsByReq[sc.requirementId][sc.currentStageId] =
+        (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
     }
 
-    const data = requirements.map((r) => {
-      const canonical = countsByReq[r.id] ?? {};
-      const totalCandidates = Object.values(canonical).reduce(
-        (s, n) => s + n,
-        0
-      );
-      return {
-        ...r,
-        totalCandidates,
-        canonicalStageCounts: Object.fromEntries(
-          canonicalKeys.map((k) => [k, canonical[k] ?? 0])
-        ),
-      };
+    const rows = requirements.map((r) => {
+      const counts = countsByReq[r.id] ?? {};
+      const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
+      return { ...r, totalCandidates, stageCounts: counts };
     });
+
+    const stagesForLine = (lineId: string | null) =>
+      stages.filter(
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+      );
+
+    // Partition rows by service line — always grouped (one tab per line).
+    const byLine = new Map<string, any[]>();
+    const lineMeta = new Map<string, { id: string; name: string } | null>();
+    for (const r of rows) {
+      const sl = r.serviceLine ?? null;
+      const key = sl?.id ?? "__none__";
+      if (!byLine.has(key)) {
+        byLine.set(key, []);
+        lineMeta.set(key, sl);
+      }
+      byLine.get(key)!.push(r);
+    }
+
+    const groups = [...byLine.entries()]
+      .map(([key, rws]) => {
+        const sl = lineMeta.get(key) ?? null;
+        return {
+          serviceLine: sl,
+          stages: stageMetaOut(stagesForLine(sl?.id ?? null), standardOnly),
+          data: rws,
+          total: rws.length,
+        };
+      })
+      .sort((a, b) => b.data.length - a.data.length);
 
     return res.json({
       success: true,
-      data,
-      meta: { total, page, limit, pages: Math.ceil(total / limit) },
-      canonicalKeys,
+      groups,
+      meta: { ...commonMeta, multiLine: groups.length > 1 },
     });
   } catch (err) {
     console.error("getRequirementReport:", err);
@@ -913,14 +1391,14 @@ export const getRequirementReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/requirements/export  OR  /reports/requirements/:id/export
+// GET /reports/requirements/export   ( ?ids=  OR  /:id/export )
 export const exportRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
-    const singleId = req.params.id ?? null; // set when /requirements/:id/export
+    const singleId = req.params.id ?? null;
+    const selectedIds = parseIds(q.ids);
+    const standardOnly = q.standardOnly === "true";
 
-    // Single requirement export — no scope filter needed (direct ID access)
-    // Bulk export — scope to requirements created by self + reportees
     let baseWhere: Record<string, any>;
     if (singleId) {
       baseWhere = { id: singleId, deletedAt: null };
@@ -934,11 +1412,14 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         creatorIds !== null
           ? { ...reqFilter, createdById: { in: creatorIds } }
           : reqFilter;
+      if (selectedIds) baseWhere.id = { in: selectedIds };
     }
 
-    const canonicalKeys = await fetchCanonicalKeys();
-    const allStages = await fetchAllStages();
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+    const stages = await fetchScopedStages(q.serviceLineId);
+    const activeStages = standardOnly
+      ? stages.filter((s) => s.isStandard)
+      : stages;
+    const stageIdSet = new Set(stages.map((s) => s.id));
 
     const requirements = await prisma.requirement.findMany({
       where: baseWhere,
@@ -958,9 +1439,19 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         isRespondByBreached: true,
         isTurnaroundBreached: true,
         createdAt: true,
-        client: { select: { name: true } },
-        businessUnit: { select: { name: true } },
-        serviceLine: { select: { name: true } },
+        deletedAt: true,
+        client: { select: { id: true, name: true } },
+        clientSpoc: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            designation: true,
+          },
+        },
+        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
         createdBy: { select: { firstName: true, lastName: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -975,24 +1466,19 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
     const reqIds = requirements.map((r) => r.id);
 
-    // Stage counts for Sheet 1
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
       _count: { id: true },
     });
-    const canonicalByReq: Record<string, Record<string, number>> = {};
+    const countsByReq: Record<string, Record<string, number>> = {};
     for (const sc of stageCounts as any[]) {
-      const stage = stageById[sc.currentStageId];
-      if (!stage?.canonicalStage) continue;
-      if (!canonicalByReq[sc.requirementId])
-        canonicalByReq[sc.requirementId] = {};
-      canonicalByReq[sc.requirementId][stage.canonicalStage] =
-        (canonicalByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
-        sc._count.id;
+      if (!stageIdSet.has(sc.currentStageId)) continue;
+      if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
+      countsByReq[sc.requirementId][sc.currentStageId] =
+        (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
     }
 
-    // All pipeline rows for Sheet 2
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirementId: { in: reqIds } },
       select: PIPELINE_DETAIL_SELECT,
@@ -1003,17 +1489,19 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // Sheet 1: Requirements
+    // Sheet 1: requirements — 2-row header (detail group + stage group)
     const sheet1 = workbook.addWorksheet("Requirements", {
       views: [{ state: "frozen", ySplit: 2 }],
     });
 
     const fixedCols = [
       { header: "Req Code", key: "reqCode", width: 14 },
-      { header: "Title", key: "title", width: 40 },
+      { header: "Title", key: "title", width: 38 },
       { header: "Status", key: "status", width: 16 },
       { header: "Priority", key: "priority", width: 12 },
       { header: "Client", key: "client", width: 24 },
+      { header: "Client SPOC", key: "spoc", width: 22 },
+      { header: "SPOC Email", key: "spocEmail", width: 26 },
       { header: "Business Unit", key: "bu", width: 22 },
       { header: "Service Line", key: "sl", width: 20 },
       { header: "City", key: "city", width: 16 },
@@ -1023,38 +1511,39 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Total Openings", key: "openings", width: 14 },
       { header: "Created By", key: "createdBy", width: 22 },
       { header: "Created Date", key: "createdAt", width: 18 },
+      { header: "Deleted Date", key: "deletedAt", width: 18 },
       { header: "Days Open", key: "daysOpen", width: 12 },
       { header: "Respond By", key: "respondBy", width: 18 },
       { header: "SLA Breached?", key: "breached", width: 14 },
       { header: "Total Candidates", key: "total", width: 16 },
     ];
-    const canonicalCols = canonicalKeys.map((key) => ({
-      header: humanKey(key),
-      key: `cs_${key}`,
+    const stageCols = activeStages.map((s) => ({
+      header: s.label,
+      key: `stage_${s.id}`,
       width: 14,
     }));
-    sheet1.columns = [...fixedCols, ...canonicalCols];
+    sheet1.columns = [...fixedCols, ...stageCols];
 
-    // Group header row 1
+    // group header row 1
     const groupRow = sheet1.getRow(1);
     groupRow.getCell(1).value = "Requirement Details";
-    if (canonicalCols.length > 0) {
+    if (stageCols.length > 0) {
       groupRow.getCell(fixedCols.length + 1).value = "Pipeline Stages";
       sheet1.mergeCells(1, 1, 1, fixedCols.length);
       sheet1.mergeCells(
         1,
         fixedCols.length + 1,
         1,
-        fixedCols.length + canonicalCols.length
+        fixedCols.length + stageCols.length
       );
     }
     styleHdr(groupRow);
-    if (canonicalCols.length > 0)
+    if (stageCols.length > 0)
       groupRow.getCell(fixedCols.length + 1).fill = SUB_FILL;
 
-    // Column header row 2
+    // column header row 2
     const colHdr = sheet1.getRow(2);
-    [...fixedCols, ...canonicalCols].forEach((col, i) => {
+    [...fixedCols, ...stageCols].forEach((col, i) => {
       colHdr.getCell(i + 1).value = col.header;
     });
     styleHdr(colHdr, SUB_FILL);
@@ -1069,46 +1558,48 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       CANCELLED: "FF5E6C84",
     };
 
-    for (const req of requirements) {
-      const canonical = canonicalByReq[req.id] ?? {};
-      const totalCandidates = Object.values(canonical).reduce(
-        (s, n) => s + n,
-        0
-      );
+    for (const r of requirements) {
+      const counts = countsByReq[r.id] ?? {};
+      const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(req.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86400000
       );
 
       const rowData: Record<string, any> = {
-        reqCode: req.reqCode,
-        title: req.title,
-        status: req.status,
-        priority: req.priority,
-        client: req.client?.name ?? "",
-        bu: req.businessUnit?.name ?? "",
-        sl: req.serviceLine?.name ?? "",
-        city: req.city ?? "",
-        country: req.country ?? "",
-        jobType: req.jobType,
-        remote: req.remoteType,
-        openings: req.totalOpenings,
-        createdBy: `${req.createdBy.firstName} ${req.createdBy.lastName}`,
-        createdAt: new Date(req.createdAt),
+        reqCode: r.reqCode,
+        title: r.title,
+        status: r.status,
+        priority: r.priority,
+        client: r.client?.name ?? "",
+        spoc: spocName(r.clientSpoc),
+        spocEmail: r.clientSpoc?.email ?? "",
+        bu: r.businessUnit?.name ?? "",
+        sl: r.serviceLine?.name ?? "",
+        city: r.city ?? "",
+        country: r.country ?? "",
+        jobType: r.jobType,
+        remote: r.remoteType,
+        openings: r.totalOpenings,
+        createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
+        createdAt: new Date(r.createdAt),
+        deletedAt: r.deletedAt ? new Date(r.deletedAt) : "",
         daysOpen,
-        respondBy: req.respondBy ? new Date(req.respondBy) : "",
+        respondBy: r.respondBy ? new Date(r.respondBy) : "",
         breached:
-          req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
+          r.isRespondByBreached || r.isTurnaroundBreached ? "Yes" : "No",
         total: totalCandidates,
       };
-      for (const key of canonicalKeys)
-        rowData[`cs_${key}`] = canonical[key] ?? 0;
+      for (const s of activeStages)
+        rowData[`stage_${s.id}`] = counts[s.id] ?? 0;
 
       const dataRow = sheet1.addRow(rowData);
       dataRow.height = 20;
-      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy";
-      if (req.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
+      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy hh:mm";
+      if (r.deletedAt)
+        dataRow.getCell("deletedAt").numFmt = "dd-mmm-yyyy hh:mm";
+      if (r.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
 
-      const sc = STATUS_COLORS[req.status];
+      const sc = STATUS_COLORS[r.status];
       if (sc) {
         dataRow.getCell("status").fill = {
           type: "pattern",
@@ -1120,7 +1611,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
           bold: true,
         };
       }
-      if (req.isRespondByBreached || req.isTurnaroundBreached) {
+      if (r.isRespondByBreached || r.isTurnaroundBreached) {
         dataRow.getCell("breached").fill = {
           type: "pattern",
           pattern: "solid",
@@ -1134,14 +1625,18 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     }
     sheet1.autoFilter = {
       from: { row: 2, column: 1 },
-      to: { row: 2, column: fixedCols.length + canonicalCols.length },
+      to: { row: 2, column: fixedCols.length + stageCols.length },
     };
 
-    // Sheet 2: Candidates
+    // Sheet 2: candidates
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
-    const suffix = singleId ? requirements[0]?.reqCode ?? singleId : "all";
+    const suffix = singleId
+      ? requirements[0]?.reqCode ?? singleId
+      : selectedIds
+      ? "selected"
+      : "all";
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
@@ -1163,328 +1658,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ███████████████████████████████████████████████████████████████████████████
-// 3. ASSIGNMENT REPORT
-// Same pattern as requirement report — list assignments with candidate stats
-// Per-row download via GET /reports/assignments/:id/export
-// ███████████████████████████████████████████████████████████████████████████
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET /reports/assignments
-export const getAssignmentReport = async (req: Request, res: Response) => {
-  try {
-    const q = req.query as Record<string, string>;
-    const scopedUserIds = await resolveScopedUserIds(req);
-    const canonicalKeys = await fetchCanonicalKeys();
-    const allStages = await fetchAllStages();
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-    const page = parseInt(q.page ?? "1");
-    const limit = Math.min(parseInt(q.limit ?? "25"), 100);
-    const skip = (page - 1) * limit;
-
-    const assignmentWhere: Record<string, any> = { status: "ACTIVE" };
-    if (scopedUserIds !== null)
-      assignmentWhere.assignedToId = { in: scopedUserIds };
-    if (q.requirementId) assignmentWhere.requirementId = q.requirementId;
-    if (q.status) assignmentWhere.status = q.status;
-
-    const [total, assignments] = await Promise.all([
-      prisma.requirementAssignment.count({ where: assignmentWhere }),
-      prisma.requirementAssignment.findMany({
-        where: assignmentWhere,
-        select: {
-          id: true,
-          depth: true,
-          status: true,
-          allocatedOpenings: true,
-          deadline: true,
-          assignedAt: true,
-          assignedTo: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              employeeId: true,
-              role: { select: { name: true } },
-            },
-          },
-          assignedBy: { select: { id: true, firstName: true, lastName: true } },
-          requirement: {
-            select: {
-              id: true,
-              reqCode: true,
-              title: true,
-              status: true,
-              priority: true,
-              totalOpenings: true,
-              client: { select: { id: true, name: true } },
-              serviceLine: { select: { id: true, name: true } },
-              businessUnit: { select: { id: true, name: true } },
-            },
-          },
-          _count: { select: { pipelines: true } },
-        },
-        orderBy: { assignedAt: "desc" },
-        skip,
-        take: limit,
-      }),
-    ]);
-
-    if (!assignments.length) {
-      return res.json({
-        success: true,
-        data: [],
-        meta: { total, page, limit, pages: Math.ceil(total / limit) },
-        canonicalKeys,
-      });
-    }
-
-    const assignmentIds = assignments.map((a) => a.id);
-
-    // Pipeline stage counts per assignment
-    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
-      by: ["assignmentId", "currentStageId"],
-      where: { assignmentId: { in: assignmentIds } },
-      _count: { id: true },
-    });
-
-    const countsByAssignment: Record<string, Record<string, number>> = {};
-    for (const sc of stageCounts as any[]) {
-      if (!sc.assignmentId) continue;
-      const stage = stageById[sc.currentStageId];
-      if (!stage?.canonicalStage) continue;
-      if (!countsByAssignment[sc.assignmentId])
-        countsByAssignment[sc.assignmentId] = {};
-      countsByAssignment[sc.assignmentId][stage.canonicalStage] =
-        (countsByAssignment[sc.assignmentId][stage.canonicalStage] ?? 0) +
-        sc._count.id;
-    }
-
-    const data = assignments.map((a) => {
-      const canonical = countsByAssignment[a.id] ?? {};
-      const totalCandidates = Object.values(canonical).reduce(
-        (s, n) => s + n,
-        0
-      );
-      return {
-        ...a,
-        totalCandidates,
-        canonicalStageCounts: Object.fromEntries(
-          canonicalKeys.map((k) => [k, canonical[k] ?? 0])
-        ),
-      };
-    });
-
-    return res.json({
-      success: true,
-      data,
-      meta: { total, page, limit, pages: Math.ceil(total / limit) },
-      canonicalKeys,
-    });
-  } catch (err) {
-    console.error("getAssignmentReport:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch assignment report" });
-  }
-};
-
-// GET /reports/assignments/export  OR  /reports/assignments/:id/export
-export const exportAssignmentReport = async (req: Request, res: Response) => {
-  try {
-    const q = req.query as Record<string, string>;
-    const singleId = req.params.id ?? null;
-    const scopedUserIds = await resolveScopedUserIds(req);
-
-    const canonicalKeys = await fetchCanonicalKeys();
-
-    const assignmentWhere: Record<string, any> = {};
-    if (singleId) {
-      assignmentWhere.id = singleId;
-    } else {
-      assignmentWhere.status = "ACTIVE";
-      if (scopedUserIds !== null)
-        assignmentWhere.assignedToId = { in: scopedUserIds };
-      if (q.requirementId) assignmentWhere.requirementId = q.requirementId;
-    }
-
-    const assignments = await prisma.requirementAssignment.findMany({
-      where: assignmentWhere,
-      select: {
-        id: true,
-        depth: true,
-        status: true,
-        allocatedOpenings: true,
-        deadline: true,
-        assignedAt: true,
-        assignedTo: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            employeeId: true,
-            role: { select: { name: true } },
-          },
-        },
-        assignedBy: { select: { id: true, firstName: true, lastName: true } },
-        requirement: {
-          select: {
-            id: true,
-            reqCode: true,
-            title: true,
-            status: true,
-            totalOpenings: true,
-            client: { select: { name: true } },
-            serviceLine: { select: { name: true } },
-            businessUnit: { select: { name: true } },
-          },
-        },
-      },
-      orderBy: { assignedAt: "desc" },
-      take: 1000,
-    });
-
-    if (!assignments.length) {
-      return res
-        .status(404)
-        .json({ success: false, message: "No assignments found" });
-    }
-
-    const assignmentIds = assignments.map((a) => a.id);
-
-    // Stage counts for Sheet 1
-    const allStages = await fetchAllStages();
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
-      by: ["assignmentId", "currentStageId"],
-      where: { assignmentId: { in: assignmentIds } },
-      _count: { id: true },
-    });
-    const canonicalByAssignment: Record<string, Record<string, number>> = {};
-    for (const sc of stageCounts as any[]) {
-      if (!sc.assignmentId) continue;
-      const stage = stageById[sc.currentStageId];
-      if (!stage?.canonicalStage) continue;
-      if (!canonicalByAssignment[sc.assignmentId])
-        canonicalByAssignment[sc.assignmentId] = {};
-      canonicalByAssignment[sc.assignmentId][stage.canonicalStage] =
-        (canonicalByAssignment[sc.assignmentId][stage.canonicalStage] ?? 0) +
-        sc._count.id;
-    }
-
-    // All pipeline rows for Sheet 2
-    const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { assignmentId: { in: assignmentIds } },
-      select: PIPELINE_DETAIL_SELECT,
-      orderBy: { createdAt: "asc" },
-    });
-
-    const workbook = new ExcelJS.Workbook();
-    workbook.creator = "TalentOS";
-    workbook.created = new Date();
-
-    // Sheet 1: Assignment summary
-    const sheet1 = workbook.addWorksheet("Assignments", {
-      views: [{ state: "frozen", ySplit: 1 }],
-    });
-    const canonicalCols = canonicalKeys.map((key) => ({
-      header: humanKey(key),
-      key: `cs_${key}`,
-      width: 14,
-    }));
-    sheet1.columns = [
-      { header: "Req Code", key: "reqCode", width: 14 },
-      { header: "Requirement", key: "reqTitle", width: 36 },
-      { header: "Req Status", key: "reqStatus", width: 14 },
-      { header: "Client", key: "client", width: 22 },
-      { header: "Service Line", key: "sl", width: 20 },
-      { header: "Business Unit", key: "bu", width: 20 },
-      { header: "Assigned To", key: "assignedTo", width: 24 },
-      { header: "Employee ID", key: "empId", width: 14 },
-      { header: "Role", key: "role", width: 18 },
-      { header: "Assigned By", key: "assignedBy", width: 22 },
-      { header: "Depth", key: "depth", width: 10 },
-      { header: "Status", key: "status", width: 14 },
-      { header: "Allocated Openings", key: "allocated", width: 16 },
-      { header: "Total Openings", key: "totalOpen", width: 14 },
-      { header: "Deadline", key: "deadline", width: 16 },
-      { header: "Assigned On", key: "assignedAt", width: 16 },
-      { header: "Total Candidates", key: "total", width: 16 },
-      ...canonicalCols,
-    ];
-    styleHdr(sheet1.getRow(1));
-
-    for (const a of assignments) {
-      const canonical = canonicalByAssignment[a.id] ?? {};
-      const totalCandidates = Object.values(canonical).reduce(
-        (s, n) => s + n,
-        0
-      );
-      const dynVals: Record<string, number> = {};
-      for (const key of canonicalKeys)
-        dynVals[`cs_${key}`] = canonical[key] ?? 0;
-
-      const row = sheet1.addRow({
-        reqCode: (a as any).requirement?.reqCode ?? "",
-        reqTitle: (a as any).requirement?.title ?? "",
-        reqStatus: (a as any).requirement?.status ?? "",
-        client: (a as any).requirement?.client?.name ?? "",
-        sl: (a as any).requirement?.serviceLine?.name ?? "",
-        bu: (a as any).requirement?.businessUnit?.name ?? "",
-        assignedTo: `${a.assignedTo.firstName} ${a.assignedTo.lastName}`,
-        empId: a.assignedTo.employeeId ?? "",
-        role: (a.assignedTo as any).role?.name ?? "",
-        assignedBy: `${a.assignedBy.firstName} ${a.assignedBy.lastName}`,
-        depth: a.depth,
-        status: a.status,
-        allocated: a.allocatedOpenings ?? "",
-        totalOpen: (a as any).requirement?.totalOpenings ?? "",
-        deadline: a.deadline ? new Date(a.deadline) : "",
-        assignedAt: new Date(a.assignedAt),
-        total: totalCandidates,
-        ...dynVals,
-      });
-      row.height = 18;
-      row.getCell("assignedAt").numFmt = "dd-mmm-yyyy";
-      if (a.deadline) row.getCell("deadline").numFmt = "dd-mmm-yyyy";
-    }
-    sheet1.autoFilter = {
-      from: { row: 1, column: 1 },
-      to: { row: 1, column: sheet1.columnCount },
-    };
-
-    // Sheet 2: Candidates
-    const reqLookup: Record<string, any> = {};
-    for (const a of assignments) {
-      const req = (a as any).requirement;
-      if (req) reqLookup[req.id] = req;
-    }
-    buildCandidateSheet(workbook, pipelines, reqLookup);
-
-    const suffix = singleId ?? "all";
-    const dateStr = new Date().toISOString().split("T")[0];
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="assignments-${suffix}-${dateStr}.xlsx"`
-    );
-    await workbook.xlsx.write(res);
-    res.end();
-  } catch (err) {
-    console.error("exportAssignmentReport:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to export assignment report" });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ███████████████████████████████████████████████████████████████████████████
-// 4. CANDIDATE FUNNEL REPORT
+// 3. CANDIDATE FUNNEL REPORT  (real stages)
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1493,29 +1667,32 @@ export const getCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const reqWhere = buildReqWhere(q);
-    const canonicalKeys = await fetchCanonicalKeys();
+    const scopedUserIds = await resolveScopedUserIds(req);
+    const stages = await fetchScopedStages(q.serviceLineId);
+
+    const where: Record<string, any> = { requirement: reqWhere };
+    if (scopedUserIds !== null) where.recruiterId = { in: scopedUserIds };
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { requirement: reqWhere },
+      where,
       select: {
+        currentStageId: true,
         disposition: true,
         isRejected: true,
         isWithdrawn: true,
         stageUpdatedAt: true,
-        currentStage: { select: { canonicalStage: true } },
         stageHistory: { select: { timeInPrevStageMins: true } },
       },
     });
 
-    const funnelCounts: Record<string, number> = Object.fromEntries(
-      canonicalKeys.map((k) => [k, 0])
+    const stageCounts: Record<string, number> = Object.fromEntries(
+      stages.map((s) => [s.id, 0])
     );
     const dispositionCounts: Record<string, number> = {};
     let totalAgingMins = 0;
 
     for (const p of pipelines) {
-      const canonical = p.currentStage?.canonicalStage;
-      if (canonical && canonical in funnelCounts) funnelCounts[canonical]++;
+      if (p.currentStageId in stageCounts) stageCounts[p.currentStageId]++;
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
       const stageAge = Math.floor(
@@ -1533,16 +1710,26 @@ export const getCandidateReport = async (req: Request, res: Response) => {
       success: true,
       data: {
         totalCandidates: total,
-        funnelByCanonicalStage: canonicalKeys.map((stage) => ({
-          stage,
-          count: funnelCounts[stage],
-          pct:
-            total > 0 ? +((funnelCounts[stage] / total) * 100).toFixed(1) : 0,
-        })),
+        funnelByStage: stages
+          .map((s) => ({
+            stageId: s.id,
+            code: s.code,
+            label: s.label,
+            order: s.order,
+            isStandard: s.isStandard,
+            serviceLine: s.serviceLine ?? null,
+            count: stageCounts[s.id] ?? 0,
+            pct:
+              total > 0
+                ? +(((stageCounts[s.id] ?? 0) / total) * 100).toFixed(1)
+                : 0,
+          }))
+          .filter((s) => s.count > 0),
         dispositionSummary: dispositionCounts,
         avgPipelineDays:
           total > 0 ? +(totalAgingMins / total / 1440).toFixed(1) : 0,
       },
+      meta: { window: windowLabel(q) },
     });
   } catch (err) {
     console.error("getCandidateReport:", err);
@@ -1557,19 +1744,18 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const reqWhere = buildReqWhere(q);
+    const scopedUserIds = await resolveScopedUserIds(req);
 
-    const stageFilter = q.canonicalStage
-      ? { currentStage: { canonicalStage: q.canonicalStage as any } }
-      : {};
-    const dispositionFilter = q.disposition
-      ? { disposition: q.disposition as any }
-      : {};
+    const where: Record<string, any> = { requirement: reqWhere };
+    if (scopedUserIds !== null) where.recruiterId = { in: scopedUserIds };
+    if (q.stageId) where.currentStageId = q.stageId;
+    if (q.disposition) where.disposition = q.disposition as any;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { requirement: reqWhere, ...stageFilter, ...dispositionFilter },
+      where,
       select: {
         ...PIPELINE_DETAIL_SELECT,
-        requirement: { select: { id: true, reqCode: true, title: true } },
+        requirement: { select: REQ_LOOKUP_SELECT },
       },
       orderBy: { createdAt: "desc" },
       take: 5000,
@@ -1591,7 +1777,9 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="candidate-report-${dateStr}.xlsx"`
+      `attachment; filename="candidate-report-${windowLabel(
+        q
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
