@@ -8,6 +8,7 @@ import { syncCandidateToCore } from "@/controller/internal.controller";
 import { z } from "zod";
 import { config } from "dotenv";
 import { validate } from "@/validators/validator";
+import { resolveRecruiters } from "@/controller/internalUsers.controller";
 
 const router = Router();
 
@@ -17,7 +18,7 @@ config();
 const requireInternalSecret = (
   req: Request,
   res: Response,
-  next: NextFunction,
+  next: NextFunction
 ) => {
   const secret = req.headers["x-internal-secret"];
   if (!secret || secret !== process.env.INTERNAL_SECRET) {
@@ -64,7 +65,9 @@ router.post(
   "/candidates/sync",
   requireInternalSecret,
   // validate.body(syncSchema),
-  syncCandidateToCore,
+  syncCandidateToCore
 );
+
+router.post("/users/resolve", resolveRecruiters);
 
 export default router;
