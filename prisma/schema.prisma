@@ -676,6 +676,13 @@ model Requirement {
   parsedJDId String?
   parsedJD   ParsedJDLibrary? @relation(fields: [parsedJDId], references: [id])
 
+
+  // ── Website integration ──
+
+  requirementCategoryId String?
+  requirementCategory   RequirementCategory? @relation(fields: [requirementCategoryId], references: [id])
+
+
   // ── Child relations ───────────────────────────────────────────────────────
   assignments        RequirementAssignment[]
   candidateSnapshots CandidateSnapshot[]
@@ -700,6 +707,7 @@ model Requirement {
   @@index([deletedAt])
   @@index([closureReason])
   @@index([targetDate])
+  @@index([requirementCategoryId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1351,3 +1359,28 @@ model MigrationStaging {
   @@index([type, status])
   @@index([sourceRow])
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUIREMENT CATEGORY
+// Flat lookup for grouping/filtering requirements on the SFJ website.
+// Deliberately shallow — the ONLY link is an optional FK from Requirement.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RequirementCategory {
+  id          String  @id @default(uuid())
+  name        String  @unique // "Engineering", "Sales", "IT & Software"
+  slug        String  @unique // "engineering" — website filter / URL key
+  description String?
+  order       Int? // display order on the careers page
+  isActive    Boolean @default(true) // toggle visibility on the website
+
+  requirements Requirement[] // shallow back-relation — the only relation it has
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+
