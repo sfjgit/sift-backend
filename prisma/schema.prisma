@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1290,7 +1290,7 @@ model CandidateInterviewSchedule {
   scheduledAt DateTime
   durationMins Int
   mode         InterviewMode
-  status       CanonicalStage
+  // status       CanonicalStage
 
   createdById String
   createdBy   User @relation("InterviewScheduledBy", fields: [createdById], references: [id])
