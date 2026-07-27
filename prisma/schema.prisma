@@ -89,6 +89,7 @@ enum NotificationType {
   DEADLINE_BREACHED
   DEADLINE_REMINDER
   INTERVIEW_SCHEDULED
+  INTERVIEW_RESCHEDULED
 }
 
 enum NotificationReferenceType {

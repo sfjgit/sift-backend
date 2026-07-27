@@ -8,7 +8,11 @@ import {
   UpdateDispositionInput,
   UpdatePipelineDetailsInput,
 } from "@/validators/requirement.validators";
-import { Prisma } from "@prisma/client";
+import {
+  NotificationReferenceType,
+  NotificationType,
+  Prisma,
+} from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
@@ -86,7 +90,7 @@ function computeTimeInStage(stageUpdatedAt: Date): number {
 }
 async function syncDispositionAndClosure(
   tx: Prisma.TransactionClient,
-  pipelineId: string
+  pipelineId: string,
 ) {
   const p = await tx.requirementCandidatePipeline.findUniqueOrThrow({
     where: { id: pipelineId },
@@ -504,7 +508,7 @@ export const getPipelineTimeline = async (req: Request, res: Response) => {
 
     const totalMins = pipeline.stageHistory.reduce(
       (acc, log) => acc + (log.timeInPrevStageMins ?? 0),
-      0
+      0,
     );
     res.json({
       success: true,
@@ -657,10 +661,18 @@ export const pushCandidate = async (req: Request, res: Response) => {
 // Move candidate to a different stage — forward only, mandatory skip needs reason
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Canonical stages that force an interview-scheduling step. Single source of truth.
+const INTERVIEW_SCHEDULING_STAGES = [
+  "INTERVIEW_SCHEDULED",
+  "INTERVIEW_RESCHEDULED",
+] as const;
+const requiresInterviewSchedule = (c: string | null | undefined) =>
+  !!c && (INTERVIEW_SCHEDULING_STAGES as readonly string[]).includes(c);
+
 export const moveCandidateStage = async (req: Request, res: Response) => {
   try {
     const { pipelineId } = req.params;
-    const { stageId, note } = req.body;
+    const { stageId, note, interview } = req.body; // ← interview destructured
     const actorId = req.user!.id;
 
     const pipeline = await findPipeline(pipelineId);
@@ -704,6 +716,34 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
 
+    // ── Interview scheduling gate ──
+    const needsInterview = requiresInterviewSchedule(
+      targetStage.canonicalStage,
+    );
+    const isReschedule = targetStage.canonicalStage === "INTERVIEW_RESCHEDULED";
+    if (needsInterview) {
+      if (!interview?.scheduledAt) {
+        res.status(422).json({
+          success: false,
+          code: "INTERVIEW_REQUIRED",
+          message: "Interview date & time are required to move to this stage",
+        });
+        return;
+      }
+      if (Number.isNaN(new Date(interview.scheduledAt).getTime())) {
+        res
+          .status(422)
+          .json({ success: false, message: "Invalid interview date/time" });
+        return;
+      }
+      if (!interview.mode) {
+        res
+          .status(422)
+          .json({ success: false, message: "Interview mode is required" });
+        return;
+      }
+    }
+
     const isMovingForward = targetStage.order > pipeline.currentStage.order;
     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
 
@@ -728,17 +768,14 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
           fromStageId: pipeline.currentStageId,
           toStageId: stageId,
           changedById: actorId,
-          timeInPrevStageMins: timeInPrevStageMins,
+          timeInPrevStageMins,
           note: note ?? null,
-          // canonicalStage fields from schema
           fromCanonicalStage: pipeline.currentStage.canonicalStage ?? null,
           toCanonicalStage: targetStage.canonicalStage ?? null,
         },
       });
 
-      // 3. If moving forward to INTERVIEW canonical stage
-      //    → increment interviewsCount on the recruiter's assignment
-      //    (interviewsCount lives on RequirementAssignment, not Requirement)
+      // 3. Interview counter — moving forward into INTERVIEW canonical stage
       if (isMovingForward && targetStage.canonicalStage === "INTERVIEW") {
         await tx.requirementAssignment.updateMany({
           where: {
@@ -750,42 +787,79 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
         });
       }
 
-      // 4. If moving forward to terminal stage
-      //    → increment filledOpenings on the assignment only
-      // if (isMovingForward && targetStage.isTerminal && pipeline.assignmentId) {
-      //   await tx.requirementAssignment.update({
-      //     where: { id: pipeline.assignmentId },
-      //     data: { filledOpenings: { increment: 1 } },
-      //   });
-      // }
-
-      // 5. If moving BACKWARD from terminal stage
-      //    → undo filledOpenings on the assignment
-      //   if (
-      //     !isMovingForward &&
-      //     pipeline.currentStage.isTerminal &&
-      //     pipeline.assignmentId
-      //   ) {
-      //     await tx.requirementAssignment.update({
-      //       where: { id: pipeline.assignmentId },
-      //       data: { filledOpenings: { decrement: 1 } },
-      //     });
-      //   }
-      // });
-
+      // 4. Terminal boundary sync
       const crossesTerminalBoundary =
         targetStage.isTerminal || pipeline.currentStage.isTerminal;
-
       if (crossesTerminalBoundary) {
         await syncDispositionAndClosure(tx, pipelineId);
       }
-    });
+
+      // 5. ── Interview schedule row + notify recruiter & lead ──
+      if (needsInterview) {
+        // roundNumber = next round for this pipeline
+        const priorCount = await tx.candidateInterviewSchedule.count({
+          where: { pipelineId },
+        });
+
+        await tx.candidateInterviewSchedule.create({
+          data: {
+            pipelineId,
+            stageId,
+            roundNumber: interview.roundNumber ?? priorCount + 1,
+            scheduledAt: new Date(interview.scheduledAt),
+            durationMins: interview.durationMins ?? null,
+            mode: interview.mode, // required
+            createdById: actorId,
+          },
+        });
+
+        // recruiter + their team lead (falls back to just recruiter if no lead)
+        const recruiter = await tx.user.findUnique({
+          where: { id: pipeline.recruiterId },
+          select: { teamLeadId: true, reportingToId: true },
+        });
+        const recipients = [
+          ...new Set(
+            [
+              pipeline.recruiterId,
+              recruiter?.teamLeadId,
+              recruiter?.reportingToId,
+            ].filter((v): v is string => !!v),
+          ),
+        ];
+
+        // candidate name for the copy
+        const snap = await tx.candidateSnapshot.findFirst({
+          where: { pipeline: { id: pipelineId } },
+          select: { fullName: true },
+        });
+        const name = snap?.fullName ?? "Candidate";
+
+        const when = new Date(interview.scheduledAt).toLocaleString("en-IN", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+        const verb = isReschedule ? "rescheduled" : "scheduled";
+
+        await tx.notification.createMany({
+          data: recipients.map((uid) => ({
+            userId: uid,
+            type: isReschedule
+              ? NotificationType.INTERVIEW_RESCHEDULED
+              : NotificationType.INTERVIEW_SCHEDULED,
+            title: `Interview ${verb} — ${name}`,
+            body: `${targetStage.label} on ${when} (${interview.mode})`,
+            referenceId: pipelineId,
+            referenceType: NotificationReferenceType.PIPELINE,
+            isRead: false,
+          })),
+        });
+      }
+    }); // ← transaction closes HERE, after the interview block
 
     res.json({
       success: true,
-      message: `Stage ${isMovingForward ? "moved to" : "rolled back to"} ${
-        targetStage.label
-      }`,
+      message: `Stage ${isMovingForward ? "moved to" : "rolled back to"} ${targetStage.label}`,
       data: {
         pipelineId,
         stageCode: targetStage.code,
@@ -798,6 +872,148 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to update stage" });
   }
 };
+
+// export const moveCandidateStage = async (req: Request, res: Response) => {
+//   try {
+//     const { pipelineId } = req.params;
+//     const { stageId, note } = req.body;
+//     const actorId = req.user!.id;
+
+//     const pipeline = await findPipeline(pipelineId);
+//     if (!pipeline) {
+//       res
+//         .status(404)
+//         .json({ success: false, message: "Pipeline entry not found" });
+//       return;
+//     }
+
+//     if (pipeline.isRejected || pipeline.isWithdrawn) {
+//       res.status(400).json({
+//         success: false,
+//         message: "Cannot move stage on a rejected or withdrawn candidate",
+//       });
+//       return;
+//     }
+
+//     if (pipeline.currentStageId === stageId) {
+//       res.status(400).json({
+//         success: false,
+//         message: "Candidate is already at this stage",
+//       });
+//       return;
+//     }
+
+//     const targetStage = await prisma.pipelineStage.findUnique({
+//       where: { id: stageId },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         isTerminal: true,
+//         canonicalStage: true,
+//       },
+//     });
+
+//     if (!targetStage) {
+//       res.status(404).json({ success: false, message: "Stage not found" });
+//       return;
+//     }
+
+//     const isMovingForward = targetStage.order > pipeline.currentStage.order;
+//     const timeInPrevStageMins = computeTimeInStage(pipeline.stageUpdatedAt);
+
+//     await prisma.$transaction(async (tx) => {
+//       // 1. Move the stage
+//       await tx.requirementCandidatePipeline.update({
+//         where: { id: pipelineId },
+//         data: {
+//           currentStageId: stageId,
+//           stageUpdatedAt: new Date(),
+//           stageUpdatedById: actorId,
+//           isOnHold: false,
+//           onHoldAt: null,
+//           onHoldReason: null,
+//         },
+//       });
+
+//       // 2. Write stage history log — always, forward or backward
+//       await tx.candidatePipelineStageLog.create({
+//         data: {
+//           pipelineId,
+//           fromStageId: pipeline.currentStageId,
+//           toStageId: stageId,
+//           changedById: actorId,
+//           timeInPrevStageMins: timeInPrevStageMins,
+//           note: note ?? null,
+//           // canonicalStage fields from schema
+//           fromCanonicalStage: pipeline.currentStage.canonicalStage ?? null,
+//           toCanonicalStage: targetStage.canonicalStage ?? null,
+//         },
+//       });
+
+//       // 3. If moving forward to INTERVIEW canonical stage
+//       //    → increment interviewsCount on the recruiter's assignment
+//       //    (interviewsCount lives on RequirementAssignment, not Requirement)
+//       if (isMovingForward && targetStage.canonicalStage === "INTERVIEW") {
+//         await tx.requirementAssignment.updateMany({
+//           where: {
+//             requirementId: pipeline.requirementId,
+//             assignedToId: pipeline.recruiterId,
+//             status: "ACTIVE",
+//           },
+//           data: { interviewsCount: { increment: 1 } },
+//         });
+//       }
+
+//       // 4. If moving forward to terminal stage
+//       //    → increment filledOpenings on the assignment only
+//       // if (isMovingForward && targetStage.isTerminal && pipeline.assignmentId) {
+//       //   await tx.requirementAssignment.update({
+//       //     where: { id: pipeline.assignmentId },
+//       //     data: { filledOpenings: { increment: 1 } },
+//       //   });
+//       // }
+
+//       // 5. If moving BACKWARD from terminal stage
+//       //    → undo filledOpenings on the assignment
+//       //   if (
+//       //     !isMovingForward &&
+//       //     pipeline.currentStage.isTerminal &&
+//       //     pipeline.assignmentId
+//       //   ) {
+//       //     await tx.requirementAssignment.update({
+//       //       where: { id: pipeline.assignmentId },
+//       //       data: { filledOpenings: { decrement: 1 } },
+//       //     });
+//       //   }
+//       // });
+
+//       const crossesTerminalBoundary =
+//         targetStage.isTerminal || pipeline.currentStage.isTerminal;
+
+//       if (crossesTerminalBoundary) {
+//         await syncDispositionAndClosure(tx, pipelineId);
+//       }
+//     });
+
+//     res.json({
+//       success: true,
+//       message: `Stage ${isMovingForward ? "moved to" : "rolled back to"} ${
+//         targetStage.label
+//       }`,
+//       data: {
+//         pipelineId,
+//         stageCode: targetStage.code,
+//         stageLabel: targetStage.label,
+//         direction: isMovingForward ? "forward" : "backward",
+//       },
+//     });
+//   } catch (err) {
+//     console.error("moveCandidateStage:", err);
+//     res.status(500).json({ success: false, message: "Failed to update stage" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /pipeline/:pipelineId/submit
@@ -1311,7 +1527,8 @@ export const updatePipelineDetails = async (req: Request, res: Response) => {
         data.monthOfJoining = null;
         data.remainingDaysToJoin = pipeline.expectedJoiningDate
           ? Math.floor(
-              (pipeline.expectedJoiningDate.getTime() - Date.now()) / 86_400_000
+              (pipeline.expectedJoiningDate.getTime() - Date.now()) /
+                86_400_000,
             )
           : null;
       }
@@ -1511,7 +1728,7 @@ export const updatePipelineStage = async (req: Request, res: Response) => {
     }
 
     const activePipelineCount = await prisma.requirementCandidatePipeline.count(
-      { where: { currentStageId: stageId } }
+      { where: { currentStageId: stageId } },
     );
 
     const updated = await prisma.pipelineStage.update({
@@ -1571,7 +1788,7 @@ export const deletePipelineStage = async (req: Request, res: Response) => {
     }
 
     const activePipelineCount = await prisma.requirementCandidatePipeline.count(
-      { where: { currentStageId: stageId } }
+      { where: { currentStageId: stageId } },
     );
     if (activePipelineCount > 0) {
       res.status(409).json({
