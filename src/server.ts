@@ -14,7 +14,8 @@ dotenv.config();
 const app = express();
 
 // Trust proxy for accurate IP addresses
-app.set("trust proxy", 1);
+//app.set("trust proxy", 1);
+app.set("trust proxy", true);
 
 // // Add request timing and logging
 app.use(requestTimer);
@@ -57,7 +58,7 @@ app.use(
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
-  })
+  }),
 );
 
 // Helmet - sets various HTTP headers for security
@@ -72,7 +73,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
   handler: (req, res) => {
     loggers.warn(
-      `Rate limit exceeded for IP: ${req.ip} on ${req.method} ${req.originalUrl}`
+      `Rate limit exceeded for IP: ${req.ip} on ${req.method} ${req.originalUrl}`,
     );
     res.status(429).json({
       success: false,
@@ -97,7 +98,7 @@ app.use(
         throw new Error("Invalid JSON");
       }
     },
-  })
+  }),
 );
 
 // HTTP request logging
@@ -113,7 +114,7 @@ app.use(
     loggers.info("Root route accessed");
     next();
   },
-  router
+  router,
 );
 
 app.get("/", (_req, res) => {
