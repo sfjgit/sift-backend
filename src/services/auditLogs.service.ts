@@ -1,3 +1,6 @@
+// File: auditLog.ts
+// Path: src/utils/audit/auditLog.ts
+
 import prisma from "@/utils/prisma/client";
 import { Request } from "express";
 
@@ -6,10 +9,19 @@ interface AuditLogParams {
   action: string;
   module: string;
   recordId: string;
-  oldData?: any;
-  newData?: any;
+  oldData?: unknown;
+  newData?: unknown;
   req?: Request;
 }
+
+const extractClientIp = (req?: Request): string | null => {
+  if (!req) return null;
+  // req.ip already respects `trust proxy`; fall back to raw XFF head if unset
+  if (req.ip) return req.ip;
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string") return xff.split(",")[0].trim();
+  return null;
+};
 
 export const createAuditLog = async ({
   actorId,
@@ -27,10 +39,10 @@ export const createAuditLog = async ({
         action,
         module,
         recordId,
-        oldData,
-        newData,
-        ip: req?.ip,
-        userAgent: req?.headers["user-agent"] as string,
+        oldData: oldData as any,
+        newData: newData as any,
+        ip: extractClientIp(req),
+        userAgent: (req?.headers["user-agent"] as string) ?? null,
       },
     });
   } catch (error) {

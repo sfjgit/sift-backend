@@ -32,6 +32,45 @@ export const SYSTEM_MODULES = [
   // "assignments",
 ] as const;
 
+// File: role.controller.ts
+// Path: src/controllers/role.controller.ts
+
+// import { prisma } from '@/lib/prisma';
+import { getEnumValues, toLabel } from "@/utils/enum.util";
+// import type { Request, Response } from 'express';
+
+// ── GET /roles/canonical-options ────────────────────────────────────────────
+// Feeds the dropdown. Values come from the schema, not a hardcoded list.
+export const getCanonicalOptions = async (_req: Request, res: Response) => {
+  const options = getEnumValues("RoleCanonical").map((v) => ({
+    value: v,
+    label: toLabel(v),
+  }));
+  return res.json({ data: options });
+};
+
+// ── PATCH /roles/:id/canonical ──────────────────────────────────────────────
+export const updateRoleCanonical = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { canonical } = req.body as { canonical?: string };
+
+  // validate against the same dynamic source — no drift possible
+  const allowed = getEnumValues("RoleCanonical");
+  if (!canonical || !allowed.includes(canonical)) {
+    return res
+      .status(400)
+      .json({ message: `Invalid canonical value: ${canonical}` });
+  }
+
+  const role = await prisma.role.update({
+    where: { id },
+    data: { canonical: canonical as any }, // validated above; safe cast
+    select: { id: true, canonical: true },
+  });
+
+  return res.json({ data: role });
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /roles/modules
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,7 +112,7 @@ export const getScopes = async (_req: Request, res: Response) => {
 
 function toPermissionData(
   p: CreateRoleInput["permissions"][number],
-  roleId?: string,
+  roleId?: string
 ) {
   return {
     ...(roleId ? { roleId } : {}),
@@ -102,6 +141,7 @@ export const listRoles = async (_req: Request, res: Response) => {
         name: true,
         description: true,
         isSystem: true,
+        canonical: true, // <- added
         createdAt: true,
         updatedAt: true,
         _count: { select: { users: true, permissions: true } },
@@ -184,7 +224,7 @@ export const getRoleById = async (req: Request, res: Response) => {
     // Merge DB permissions with full module list — modules with no saved
     // permission get default "no access" values so the matrix always has all rows
     const permissionsByModule = Object.fromEntries(
-      role.permissions.map((p) => [p.module, p]),
+      role.permissions.map((p) => [p.module, p])
     );
 
     const fullPermissions = SYSTEM_MODULES.map((module) => ({
@@ -235,7 +275,7 @@ export const createRole = async (req: Request, res: Response) => {
 
     // Only persist rows where at least one action is enabled
     const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete,
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
     );
 
     const role = await prisma.role.create({
@@ -314,7 +354,7 @@ export const updateRole = async (req: Request, res: Response) => {
     }
 
     const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete,
+      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
     );
 
     const updated = await prisma.$transaction(async (tx) => {

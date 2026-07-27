@@ -18,6 +18,8 @@ import {
   deleteRole,
   getModules,
   getScopes,
+  getCanonicalOptions,
+  updateRoleCanonical,
 } from "@/controller/role.controller";
 import { validate } from "@/validators/validator";
 
@@ -25,6 +27,9 @@ const router = Router();
 
 router.use(authenticateUser);
 router.use(scopeFilter("roles")); // roles live under settings module
+
+// keep the static route ABOVE any '/:id' route so it doesn't get swallowed
+router.get("/canonical-options", getCanonicalOptions);
 
 // ── Utility — before /:id ────────────────────────────────────────────────────
 router.get("/modules", getModules);
@@ -39,6 +44,8 @@ router.post(
   validate.body(createRoleBody),
   createRole
 );
+
+router.patch("/:id/canonical", updateRoleCanonical);
 
 // ── Get by ID ────────────────────────────────────────────────────────────────
 router.get("/:id", validate.params(roleIdParams), getRoleById);

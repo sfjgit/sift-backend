@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -371,6 +371,22 @@ model RefreshToken {
 // ROLES & PERMISSIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
+enum RoleCanonical {
+  ADMIN
+  SUPER_ADMIN
+
+  CSM
+  SR_CSM
+
+  RECRUITER
+  DELIVERY_LEAD
+  DELIVERY_MANAGER
+
+  DEVELOPER
+  UNMAPPED
+}
+
+
 model Role {
   id          String  @id @default(uuid())
   name        String  @unique
@@ -379,6 +395,8 @@ model Role {
 
   users       User[]
   permissions RolePermission[]
+
+   canonical   RoleCanonical? @default(UNMAPPED)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
