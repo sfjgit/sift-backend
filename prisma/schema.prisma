@@ -1402,3 +1402,101 @@ model RequirementCategory {
 }
 
 
+enum NaukriPromiseStatus {
+  PENDING   // promise made, not yet judged
+  KEPT      // next-day gap closed
+  BROKEN    // next-day gap still there
+  NONE      // no promise made that day
+}
+
+enum MemeCategory {
+  HAPPY
+  CELEBRATE   // promise kept / perfect day
+  ANGRY
+  SHAME       // gap / promise broken
+  SAD
+  NEUTRAL
+}
+
+enum NaukriMsgAuthor {
+  SYSTEM
+  RECRUITER
+  MANAGER
+}
+
+// one row per recruiter per day — the accountability record (survives re-reconcile)
+model NaukriRecruiterDaily {
+  id          String   @id @default(uuid())
+  reportDate  DateTime @db.Date
+  recruiterId String
+
+  // cached snapshot of the numbers pulled from candidate-service (for history display)
+  naukriConsumed Int?
+  atsCaptured    Int?
+  difference     Int?
+
+  // recruiter's written explanation for the gap
+  reason   String?
+  reasonAt DateTime?
+
+  // promise mechanic
+  promiseMade   Boolean             @default(false)
+  promiseText   String?
+  promiseMadeAt DateTime?
+  promiseStatus NaukriPromiseStatus @default(NONE)
+  evaluatedAt   DateTime?
+
+  messages NaukriMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([reportDate, recruiterId])
+  @@index([recruiterId])
+  @@index([reportDate])
+  @@index([promiseStatus])
+}
+
+// banter thread — system taunts, recruiter replies, manager notes
+model NaukriMessage {
+  id       String               @id @default(uuid())
+  dailyId  String
+  daily    NaukriRecruiterDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+
+  author   NaukriMsgAuthor @default(SYSTEM)
+  authorId String?         // userId when RECRUITER/MANAGER
+  body     String
+  memeId   String?
+  meme     MemeAsset?      @relation(fields: [memeId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([dailyId])
+}
+
+// game rollup per recruiter — cheap reads for the dashboard
+model NaukriRecruiterStreak {
+  recruiterId   String    @id
+  currentStreak Int       @default(0)  // consecutive kept days
+  longestStreak Int       @default(0)
+  totalKept     Int       @default(0)
+  totalBroken   Int       @default(0)
+  lastEvaluated DateTime?
+  updatedAt     DateTime  @updatedAt
+}
+
+// reusable meme/gif library (S3 public links) — used here + anywhere else later
+model MemeAsset {
+  id        String       @id @default(uuid())
+  url       String       // public S3 link
+  category  MemeCategory
+  caption   String?
+  weight    Int          @default(1)  // popular ones picked more often
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+
+  messages NaukriMessage[]
+
+  @@index([category, isActive])
+}
+
