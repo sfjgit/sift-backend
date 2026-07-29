@@ -20,8 +20,13 @@ import candidateRoutes from "./candidate.routes";
 import reportRoutes from "./reports.routes";
 import authLogs from "./auth-logs.routes";
 import internalUsers from "./internal-users.routes";
+import { authenticateUser } from "@/middleware/auth";
+import naukriAccountabilityRoutes from "./naukriAccountability.routes";
 
 const router = Router();
+
+// in your core router index, behind auth:
+router.use("/naukri", authenticateUser, naukriAccountabilityRoutes);
 
 router.use("/reports", reportRoutes);
 router.use("/internal-users", internalUsers);
