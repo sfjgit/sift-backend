@@ -1028,7 +1028,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 
     // 2. fallback tally — dominant requirement line, only for recruiters
     //    whose User row has no service line tagged.
-    const fallbackTally = new Map
+    const fallbackTally = new Map<
       string,
       Map<string, { name: string; count: number }>
     >();
