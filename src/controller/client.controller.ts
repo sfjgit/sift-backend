@@ -14,6 +14,9 @@ import { CreateClientInput } from "@/validators/client.validators";
 // write paths (createClient / updateClient) and the Band model.
 
 // ── GET /clients
+// File: client.controller.ts
+// Path: src/controllers/client.controller.ts
+
 export const getClients = async (req: Request, res: Response) => {
   try {
     const {
@@ -21,60 +24,98 @@ export const getClients = async (req: Request, res: Response) => {
       status,
       buId,
       serviceLineId,
+      handlerId,
       page = "1",
       limit = "25",
       sortBy = "createdAt",
       sortDir = "desc",
     } = req.query as Record<string, string>;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = Math.min(parseInt(limit), 100);
+    const take = Math.min(Math.max(parseInt(limit) || 25, 1), 100);
+    const skip = (Math.max(parseInt(page) || 1, 1) - 1) * take; // take, not raw limit
 
     const userId = req.user!.id;
-    const scope = req.scopeFilter?.type; // "OWN" | "DEPARTMENT" | "BU" | "ALL"
+    const sf = req.scopeFilter!;
+    const isAll = req.user!.isSuperAdmin || sf.type === "ALL";
 
-    // ── Build scope-based client filter ───────────────────────────────────────
-    let scopeClause: any = {};
+    // ── who am I allowed to see through, from the existing ScopeFilter ──────
+    const visibleUserIds: string[] | null = isAll
+      ? null
+      : sf.type === "TEAM"
+      ? sf.teamMemberIds ?? [userId]
+      : sf.type === "REPORTING_LINE"
+      ? sf.reportingLineIds ?? [userId]
+      : sf.type === "REPORTING" || sf.type === "BU"
+      ? sf.subordinateIds ?? [userId]
+      : sf.type === "DEPARTMENT"
+      ? null // handled relationally below — no id set on ScopeFilter
+      : [userId]; // OWN
 
-    if (req.user!.isSuperAdmin || scope === "ALL") {
-      scopeClause = {};
-    } else if (scope === "DEPARTMENT") {
-      const subordinates = await prisma.user.findMany({
-        where: { reportingToId: userId, isActive: true },
-        select: { id: true },
-      });
-      const handlerIds = [userId, ...subordinates.map((u) => u.id)];
-      scopeClause = {
-        spocs: { some: { handlerId: { in: handlerIds }, isActive: true } },
-      };
-    } else {
-      scopeClause = {
-        spocs: { some: { handlerId: userId, isActive: true } },
-      };
-    }
+    // ── ownership lives on the SPOC, not on createdById ────────────────────
+    const spocOwnership: any = isAll
+      ? {}
+      : sf.type === "DEPARTMENT"
+      ? {
+          OR: [
+            { handler: { departmentId: sf.departmentId } },
+            {
+              clientSpocDms: {
+                some: { dm: { departmentId: sf.departmentId } },
+              },
+            },
+          ],
+        }
+      : {
+          OR: [
+            { handlerId: { in: visibleUserIds! } },
+            { clientSpocDms: { some: { dmId: { in: visibleUserIds! } } } },
+          ],
+        };
 
-    const where: any = { ...scopeClause, deletedAt: null };
+    // user-supplied spoc filters — merged into the SAME `some` as ownership
+    const spocFilter: any = {};
+    if (serviceLineId) spocFilter.serviceLineId = serviceLineId;
+    if (handlerId) spocFilter.handlerId = handlerId;
+    const hasSpocFilter = Object.keys(spocFilter).length > 0;
 
-    if (status) where.status = status;
-    if (buId) where.businessUnitId = buId;
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { vmsName: { contains: search, mode: "insensitive" } },
-        { industry: { contains: search, mode: "insensitive" } },
-      ];
-    }
-    if (serviceLineId) {
-      if (where.spocs?.some) {
-        where.spocs.some = { ...where.spocs.some, serviceLineId };
-      } else {
-        where.spocs = { some: { serviceLineId, isActive: true } };
+    const AND: any[] = [];
+
+    if (!isAll) {
+      const creatorClause: any = { createdById: userId };
+      if (hasSpocFilter) {
+        creatorClause.spocs = { some: { isActive: true, ...spocFilter } };
       }
+      AND.push({
+        OR: [
+          {
+            spocs: {
+              some: { isActive: true, ...spocOwnership, ...spocFilter },
+            },
+          },
+          creatorClause, // creator keeps visibility even with no spoc on them
+        ],
+      });
+    } else if (hasSpocFilter) {
+      AND.push({ spocs: { some: { isActive: true, ...spocFilter } } });
     }
+
+    if (status) AND.push({ status });
+    if (buId) AND.push({ businessUnitId: buId });
+    if (search) {
+      AND.push({
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { vmsName: { contains: search, mode: "insensitive" } },
+          { industry: { contains: search, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    const where: any = { deletedAt: null, ...(AND.length ? { AND } : {}) };
 
     const SORTABLE = ["name", "createdAt", "updatedAt", "status"];
     const orderBy = SORTABLE.includes(sortBy)
-      ? { [sortBy]: sortDir as "asc" | "desc" }
+      ? { [sortBy]: (sortDir === "asc" ? "asc" : "desc") as "asc" | "desc" }
       : { createdAt: "desc" as const };
 
     const [total, clients] = await Promise.all([
@@ -93,7 +134,6 @@ export const getClients = async (req: Request, res: Response) => {
           address: true,
           status: true,
           createdAt: true,
-          // pricing / agreement — needed by card + edit sheet
           agreementType: true,
           percentageValue: true,
           bands: {
@@ -124,7 +164,7 @@ export const getClients = async (req: Request, res: Response) => {
               serviceLine: { select: { id: true, name: true } },
             },
           },
-          _count: { select: { requirements: true } },
+          _count: { select: { requirements: { where: { deletedAt: null } } } },
         },
         orderBy,
         skip,
@@ -137,7 +177,7 @@ export const getClients = async (req: Request, res: Response) => {
       data: clients,
       meta: {
         total,
-        page: parseInt(page),
+        page: Math.max(parseInt(page) || 1, 1),
         limit: take,
         pages: Math.ceil(total / take),
       },
