@@ -1294,7 +1294,9 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /reports/requirements
+// File: requirement.report.ts
+// Path: core-service/src/reports/requirement.report.ts   (adjust to your actual path)
+
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
@@ -1304,11 +1306,42 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       req.user!.id,
       req.user!.isSuperAdmin
     );
-    const baseReqWhere = buildReqWhere(q);
+
+    // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
+    const baseReqWhere = buildReqWhere(q, { withDateWindow: false });
+
+    // "what happened yesterday" — a req qualifies if ANY of its pipelines changed in window
+    const win = resolveDateWindow(q);
+    const activityWindow =
+      win.gte || win.lte
+        ? {
+            ...(win.gte ? { gte: win.gte } : {}),
+            ...(win.lte ? { lte: win.lte } : {}),
+          }
+        : null;
+
+    const activityFilter = activityWindow
+      ? {
+          pipelines: {
+            some: {
+              OR: [
+                { createdAt: activityWindow }, // candidate sourced in window
+                { updatedAt: activityWindow }, // any field changed in window
+                { stageHistory: { some: { createdAt: activityWindow } } }, // stage moved in window
+              ],
+            },
+          },
+        }
+      : {};
+
     const reqWhere =
       creatorIds !== null
-        ? { ...baseReqWhere, createdById: { in: creatorIds } }
-        : baseReqWhere;
+        ? {
+            ...baseReqWhere,
+            ...activityFilter,
+            createdById: { in: creatorIds },
+          }
+        : { ...baseReqWhere, ...activityFilter };
 
     const stages = await fetchScopedStages(q.serviceLineId);
     const stageIdSet = new Set(stages.map((s) => s.id));
@@ -1431,18 +1464,50 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
     let baseWhere: Record<string, any>;
     if (singleId) {
+      // explicit single-req export — no date window, you asked for THIS req
       baseWhere = { id: singleId, deletedAt: null };
     } else {
       const creatorIds = await resolveOrgTreeDown(
         req.user!.id,
         req.user!.isSuperAdmin
       );
-      const reqFilter = buildReqWhere(q);
+
+      // date window is applied to pipeline ACTIVITY, NOT to requirement.createdAt
+      const reqFilter = buildReqWhere(q, { withDateWindow: false });
+
+      const win = resolveDateWindow(q);
+      const activityWindow =
+        win.gte || win.lte
+          ? {
+              ...(win.gte ? { gte: win.gte } : {}),
+              ...(win.lte ? { lte: win.lte } : {}),
+            }
+          : null;
+
+      const activityFilter = activityWindow
+        ? {
+            pipelines: {
+              some: {
+                OR: [
+                  { createdAt: activityWindow },
+                  { updatedAt: activityWindow },
+                  { stageHistory: { some: { createdAt: activityWindow } } },
+                ],
+              },
+            },
+          }
+        : {};
+
       baseWhere =
         creatorIds !== null
-          ? { ...reqFilter, createdById: { in: creatorIds } }
-          : reqFilter;
-      if (selectedIds) baseWhere.id = { in: selectedIds };
+          ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
+          : { ...reqFilter, ...activityFilter };
+
+      // explicit selection overrides the window — export exactly what was ticked
+      if (selectedIds) {
+        baseWhere.id = { in: selectedIds };
+        delete baseWhere.pipelines; // a hand-picked set shouldn't be re-filtered by activity
+      }
     }
 
     const stages = await fetchScopedStages(q.serviceLineId);
