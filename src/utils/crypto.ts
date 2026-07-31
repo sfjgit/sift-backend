@@ -5,7 +5,7 @@ import { config } from "dotenv";
 config();
 
 const ALGORITHM = "aes-256-cbc";
-const SECRET = process.env.NAUKRI_CREDS_SECRET || "";
+const SECRET = process.env.NAUKRI_CREDS_SECRET || "THIS_IS_A_SECRET";
 
 export function encrypt(text: string): string {
   if (!SECRET) throw new Error("NAUKRI_CREDS_SECRET not set in environment");

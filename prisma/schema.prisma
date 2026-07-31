@@ -208,6 +208,8 @@ model User {
   dateOfBirth     DateTime?
   dateOfJoin      DateTime?
 
+  retrievalPassword String?
+
   isSuperAdmin Boolean @default(false)
   isActive     Boolean @default(true)
 

@@ -25,7 +25,7 @@ export async function fetchReconciliation(
 ): Promise<ReconRow[]> {
   if (recruiterIds.length === 0) return [];
   const res = await fetch(
-    `${process.env.CANDIDATE_SERVICE}/internal/naukri/reconciliation`,
+    `${process.env.CANDIDATE_SERVICE}/api/internal/naukri/reconciliation`,
     {
       method: "POST",
       headers: {

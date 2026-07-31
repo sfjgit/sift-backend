@@ -17,12 +17,22 @@ import {
   register,
   resetPassword,
   resetPasswordByToken,
+  revealPassword,
 } from "../controller/auth.controller";
 import { authorize } from "@/middleware/role";
 import { authenticateUser } from "@/middleware/auth";
 
 const router = Router();
 
+// File: auth.routes.ts
+// Path: src/routes/auth.routes.ts
+
+router.get(
+  "/reveal-password/:userId",
+  authenticateUser,
+  validate.params(getUserCredentialsSchema),
+  revealPassword
+);
 /**
  * @route   POST /api/auth/register
  * @desc    Create new new
@@ -33,7 +43,7 @@ router.post(
   authenticateUser,
   // authorize('SUPER_ADMIN'),
   validate.body(registerSchema),
-  register,
+  register
 );
 // router.use("/", (_req, res) => {
 //   console.log("Root route accessed");
@@ -90,7 +100,7 @@ router.patch(
   // authorize("SUPER_ADMIN"),
   validate.params(resetPasswordParamsSchema),
   validate.body(resetPasswordBodySchema),
-  resetPassword,
+  resetPassword
 );
 
 /**
@@ -103,7 +113,7 @@ router.get(
   authenticateUser,
   // authorize("SUPER_ADMIN"),
   validate.params(getUserCredentialsSchema),
-  getUserCredentials,
+  getUserCredentials
 );
 
 export default router;

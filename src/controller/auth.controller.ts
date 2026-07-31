@@ -14,6 +14,7 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import env from "@/config/env";
 import { logAuthEvent } from "@/services/authLog.service";
+import { decrypt, encrypt } from "@/utils/crypto";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -46,6 +47,7 @@ export const register = async (req: Request, res: Response) => {
         roleId: roleId,
         firstName,
         lastName,
+        retrievalPassword: encrypt(password), // ← add
       },
     });
     await createAuditLog({
@@ -98,6 +100,20 @@ export const login = async (req: Request, res: Response) => {
     }
     console.log("🟢 [LOGIN] Password valid");
 
+    console.log("🟢 [LOGIN] Password valid");
+
+    // backfill for users created before retrievalPassword existed
+    try {
+      if (!user.retrievalPassword) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { retrievalPassword: encrypt(password) },
+        });
+      }
+    } catch (error) {
+      console.log("Error backfilling retrievalPassword:", error);
+    }
+
     const payload: any = {
       id: user.id,
       email: user.email,
@@ -118,7 +134,7 @@ export const login = async (req: Request, res: Response) => {
     console.log("🟢 [LOGIN] setTokenCookies called");
     console.log(
       "🟢 [LOGIN] Response headers after setTokenCookies:",
-      res.getHeaders(),
+      res.getHeaders()
     );
 
     await prisma.refreshToken.create({
@@ -503,5 +519,50 @@ export const getUserCredentials = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Error getting user credentials" });
+  }
+};
+
+// File: auth.controller.ts
+// Path: src/controller/auth.controller.ts
+
+/** GET /api/auth/reveal-password/:userId */
+export const revealPassword = async (req: Request, res: Response) => {
+  try {
+    if (!req.user.isSuperAdmin)
+      return res.status(403).json({ message: "Forbidden" });
+
+    const { userId } = req.validatedParams;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, retrievalPassword: true },
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user.retrievalPassword)
+      return res.status(409).json({
+        message: "User set their own password — reset it to get a new one",
+      });
+
+    await createAuditLog({
+      actorId: req.user.id,
+      action: "REVEAL_PASSWORD",
+      module: "AUTH",
+      recordId: userId,
+      req,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        userId: user.id,
+        email: user.email,
+        password: decrypt(user.retrievalPassword),
+      },
+    });
+  } catch (error) {
+    console.error("Error revealing password:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error revealing password" });
   }
 };
