@@ -857,6 +857,19 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       }
     }); // ← transaction closes HERE, after the interview block
 
+    if (needsInterview) {
+      const verb = isReschedule ? "rescheduled" : "scheduled";
+      for (const uid of recipients) {
+        io.to(`user:${uid}`).emit("notification:new", {
+          type: isReschedule ? "INTERVIEW_RESCHEDULED" : "INTERVIEW_SCHEDULED",
+          title: `Interview ${verb} — ${name}`,
+          body: `${targetStage.label} on ${when} (${interview.mode})`,
+          referenceId: pipelineId,
+          referenceType: "PIPELINE",
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
     res.json({
       success: true,
       message: `Stage ${isMovingForward ? "moved to" : "rolled back to"} ${targetStage.label}`,
