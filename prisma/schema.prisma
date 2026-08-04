@@ -1503,3 +1503,82 @@ model MemeAsset {
   @@index([category, isActive])
 }
 
+
+
+// File: schema.prisma
+// Path: prisma/schema.prisma
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  ON_HOLD
+  RESOLVED
+  CLOSED
+  REOPENED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Ticket {
+  id          String          @id @default(uuid())
+  seq         Int             @unique @default(autoincrement()) // display: TKT-00001
+  title       String
+  description String?         @db.Text
+
+  status      TicketStatus    @default(OPEN)
+  priority    TicketPriority  @default(MEDIUM)
+
+  // dynamic, DB-driven bucket (Support / Bug / Data Correction / Access ...)
+  categoryId  String?
+  category    TicketCategory? @relation(fields: [categoryId], references: [id])
+
+  raisedById  String
+  assignedToId String?
+
+  // optional link back to any ATS entity, no cross-db FKs
+  entityType  String?         // "REQUIREMENT" | "CANDIDATE" | "CLIENT" ... from config
+  entityId    String?
+
+  resolvedAt  DateTime?
+  closedAt    DateTime?
+
+  attachments TicketAttachment[]
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([status, priority])
+  @@index([raisedById])
+  @@index([assignedToId])
+  @@index([entityType, entityId])
+}
+
+model TicketCategory {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  tickets   Ticket[]
+  createdAt DateTime @default(now())
+}
+
+model TicketAttachment {
+  id         String   @id @default(uuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  fileName   String
+  fileKey    String   // S3 object key
+  mimeType   String
+  sizeBytes  Int
+  uploadedById String
+
+  createdAt  DateTime @default(now())
+
+  @@index([ticketId])
+}
+
