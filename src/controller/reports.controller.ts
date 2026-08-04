@@ -146,9 +146,12 @@ async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
 // REQUIREMENT WHERE builder — folds in the resolved date window on createdAt
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Path: core-service/src/reports/recruiter.report.ts   (adjust to your actual path)
 function buildReqWhere(
-  q: Record<string, string | undefined>
+  q: Record<string, string | undefined>,
+  opts: { withDateWindow?: boolean } = {}
 ): Record<string, any> {
+  const { withDateWindow = true } = opts; // default keeps existing callers untouched
   const where: Record<string, any> = { deletedAt: null };
   if (q.clientId) where.clientId = q.clientId;
   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
@@ -156,11 +159,13 @@ function buildReqWhere(
   if (q.status) where.status = q.status;
   if (q.priority) where.priority = q.priority;
 
-  const win = resolveDateWindow(q);
-  if (win.gte || win.lte) {
-    where.createdAt = {};
-    if (win.gte) where.createdAt.gte = win.gte;
-    if (win.lte) where.createdAt.lte = win.lte;
+  if (withDateWindow) {
+    const win = resolveDateWindow(q);
+    if (win.gte || win.lte) {
+      where.createdAt = {};
+      if (win.gte) where.createdAt.gte = win.gte;
+      if (win.lte) where.createdAt.lte = win.lte;
+    }
   }
   return where;
 }
@@ -921,6 +926,9 @@ function buildRecruiterRows(pipes: any[]) {
 //   2. fallback: the dominant service line across requirements they've sourced
 // All of that recruiter's candidates sit under their line, with that line's
 // stage columns (its variants + common). Never mixed across lines.
+// File: recruiter.report.ts
+// Path: core-service/src/reports/recruiter.report.ts   (adjust to your actual path)
+
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
@@ -941,13 +949,36 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       recruiterFilter = { recruiterId: { in: scopedUserIds } };
     }
 
-    const reqWhere = buildReqWhere(q);
+    // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
+    const reqWhere = buildReqWhere(q, { withDateWindow: false });
     if (requirementId) reqWhere.id = requirementId; // within-a-requirement filter
 
     const stages = await fetchScopedStages(q.serviceLineId);
 
+    // "what happened yesterday" — resolve the window and match ANY pipeline change
+    const win = resolveDateWindow(q);
+    const activityWindow =
+      win.gte || win.lte
+        ? {
+            ...(win.gte ? { gte: win.gte } : {}),
+            ...(win.lte ? { lte: win.lte } : {}),
+          }
+        : null;
+
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { requirement: reqWhere, ...recruiterFilter },
+      where: {
+        requirement: reqWhere,
+        ...recruiterFilter,
+        ...(activityWindow
+          ? {
+              OR: [
+                { createdAt: activityWindow }, // sourced in window
+                { updatedAt: activityWindow }, // any field changed, last touch in window
+                { stageHistory: { some: { createdAt: activityWindow } } }, // stage moved in window, survives a later re-touch
+              ],
+            }
+          : {}),
+      },
       select: {
         ...PIPELINE_DETAIL_SELECT,
         requirement: {
@@ -1069,7 +1100,6 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch recruiter report" });
   }
 };
-
 // GET /reports/recruiters/export   ( ?ids=recId1,recId2  → only those recruiters )
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
@@ -1264,7 +1294,9 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 // ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /reports/requirements
+// File: requirement.report.ts
+// Path: core-service/src/reports/requirement.report.ts   (adjust to your actual path)
+
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
@@ -1274,11 +1306,42 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       req.user!.id,
       req.user!.isSuperAdmin
     );
-    const baseReqWhere = buildReqWhere(q);
+
+    // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
+    const baseReqWhere = buildReqWhere(q, { withDateWindow: false });
+
+    // "what happened yesterday" — a req qualifies if ANY of its pipelines changed in window
+    const win = resolveDateWindow(q);
+    const activityWindow =
+      win.gte || win.lte
+        ? {
+            ...(win.gte ? { gte: win.gte } : {}),
+            ...(win.lte ? { lte: win.lte } : {}),
+          }
+        : null;
+
+    const activityFilter = activityWindow
+      ? {
+          pipelines: {
+            some: {
+              OR: [
+                { createdAt: activityWindow }, // candidate sourced in window
+                { updatedAt: activityWindow }, // any field changed in window
+                { stageHistory: { some: { createdAt: activityWindow } } }, // stage moved in window
+              ],
+            },
+          },
+        }
+      : {};
+
     const reqWhere =
       creatorIds !== null
-        ? { ...baseReqWhere, createdById: { in: creatorIds } }
-        : baseReqWhere;
+        ? {
+            ...baseReqWhere,
+            ...activityFilter,
+            createdById: { in: creatorIds },
+          }
+        : { ...baseReqWhere, ...activityFilter };
 
     const stages = await fetchScopedStages(q.serviceLineId);
     const stageIdSet = new Set(stages.map((s) => s.id));
@@ -1401,18 +1464,50 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
     let baseWhere: Record<string, any>;
     if (singleId) {
+      // explicit single-req export — no date window, you asked for THIS req
       baseWhere = { id: singleId, deletedAt: null };
     } else {
       const creatorIds = await resolveOrgTreeDown(
         req.user!.id,
         req.user!.isSuperAdmin
       );
-      const reqFilter = buildReqWhere(q);
+
+      // date window is applied to pipeline ACTIVITY, NOT to requirement.createdAt
+      const reqFilter = buildReqWhere(q, { withDateWindow: false });
+
+      const win = resolveDateWindow(q);
+      const activityWindow =
+        win.gte || win.lte
+          ? {
+              ...(win.gte ? { gte: win.gte } : {}),
+              ...(win.lte ? { lte: win.lte } : {}),
+            }
+          : null;
+
+      const activityFilter = activityWindow
+        ? {
+            pipelines: {
+              some: {
+                OR: [
+                  { createdAt: activityWindow },
+                  { updatedAt: activityWindow },
+                  { stageHistory: { some: { createdAt: activityWindow } } },
+                ],
+              },
+            },
+          }
+        : {};
+
       baseWhere =
         creatorIds !== null
-          ? { ...reqFilter, createdById: { in: creatorIds } }
-          : reqFilter;
-      if (selectedIds) baseWhere.id = { in: selectedIds };
+          ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
+          : { ...reqFilter, ...activityFilter };
+
+      // explicit selection overrides the window — export exactly what was ticked
+      if (selectedIds) {
+        baseWhere.id = { in: selectedIds };
+        delete baseWhere.pipelines; // a hand-picked set shouldn't be re-filtered by activity
+      }
     }
 
     const stages = await fetchScopedStages(q.serviceLineId);

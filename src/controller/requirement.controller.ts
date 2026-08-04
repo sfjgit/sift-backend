@@ -251,7 +251,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
     const relevantStages = allStages.filter(
-      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId,
+      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
     );
 
     // ── Scoped stage counts + summary counts — all in one Promise.all
@@ -321,7 +321,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
     ]);
 
     const stageCountMap = Object.fromEntries(
-      stageCounts.map((s) => [s.currentStageId, s._count.id]),
+      stageCounts.map((s) => [s.currentStageId, s._count.id])
     );
 
     const pipelineStageSummary = relevantStages.map((stage) => ({
@@ -1146,10 +1146,10 @@ export const getRequirementStats = async (req: Request, res: Response) => {
       ]);
 
     const byStatus = Object.fromEntries(
-      byStatusRaw.map((r) => [r.status, r._count._all]),
+      byStatusRaw.map((r) => [r.status, r._count._all])
     );
     const byPriority = Object.fromEntries(
-      byPriorityRaw.map((r) => [r.priority, r._count._all]),
+      byPriorityRaw.map((r) => [r.priority, r._count._all])
     );
 
     res.json({
@@ -1900,7 +1900,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     // auto-compute — never trust client value
     const turnaroundDays = targetDate
       ? Math.ceil(
-          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
         )
       : null;
 
@@ -1908,7 +1908,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     const serviceLineName = spoc.serviceLine?.name ?? "SRVC";
     const reqCode = await generateReqCode(
       clientName,
-      serviceLineName,
+      serviceLineName
       // spoc.serviceLine.name
     );
 
@@ -2049,7 +2049,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     } catch (libErr) {
       console.warn(
         "createRequirement: failed to push to JD library (non-fatal)",
-        libErr,
+        libErr
       );
     }
 
@@ -2071,7 +2071,7 @@ const MIN_ROWS = 1;
 
 export const bulkUploadRequirementsController = async (
   req: Request,
-  res: Response,
+  res: Response
 ): Promise<void> => {
   try {
     // ─── 1. Validate file presence ──────────────────────────────────────────
@@ -2138,7 +2138,7 @@ export const bulkUploadRequirementsController = async (
       rawRows = parseUploadedFile(
         file.buffer,
         file.mimetype,
-        file.originalname,
+        file.originalname
       );
     } catch (parseError: unknown) {
       const message =
@@ -2193,7 +2193,7 @@ export const bulkUploadRequirementsController = async (
 
     const failedRowNumbers = new Set(allErrors.map((e) => e.row));
     const createableRows = validRows.filter(
-      ({ rowNumber }) => !failedRowNumbers.has(rowNumber),
+      ({ rowNumber }) => !failedRowNumbers.has(rowNumber)
     );
 
     // ─── 8. Insert rows sequentially — NO $transaction ────────────────────
@@ -2232,7 +2232,7 @@ export const bulkUploadRequirementsController = async (
         const turnaroundDays = targetDate
           ? Math.ceil(
               (targetDate.getTime() - startDate.getTime()) /
-                (1000 * 60 * 60 * 24),
+                (1000 * 60 * 60 * 24)
             )
           : null;
 
@@ -2306,7 +2306,7 @@ export const bulkUploadRequirementsController = async (
       } catch (activityErr) {
         console.warn(
           "[bulkUpload] Activity log failed (non-fatal):",
-          activityErr,
+          activityErr
         );
       }
     }
@@ -2331,7 +2331,7 @@ export const bulkUploadRequirementsController = async (
   } catch (error) {
     console.error(
       "[bulkUploadRequirementsController] Unexpected error:",
-      error,
+      error
     );
     res.status(500).json({
       success: false,
@@ -2560,30 +2560,30 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       businessUnitId?: string;
     } = {};
 
-    if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
-      // reuse the SAME resolver bulk-upload uses so behaviour never drifts
-      const spoc = await prisma.clientSpoc.findFirst({
-        where: { id: body.clientSpocId, deletedAt: null },
-        select: {
-          id: true,
-          clientId: true,
-          serviceLineId: true,
-          businessUnitId: true,
-        },
-      });
+    // if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
+    //   // reuse the SAME resolver bulk-upload uses so behaviour never drifts
+    //   const spoc = await prisma.clientSpoc.findFirst({
+    //     where: { id: body.clientSpocId, deletedAt: null },
+    //     select: {
+    //       id: true,
+    //       clientId: true,
+    //       serviceLineId: true,
+    //       businessUnitId: true,
+    //     },
+    //   });
 
-      if (!spoc) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Invalid SPOC selected" });
-      }
-      derived = {
-        clientSpocId: spoc.id,
-        clientId: spoc.clientId,
-        serviceLineId: spoc.serviceLineId ?? undefined,
-        businessUnitId: spoc.businessUnitId ?? undefined,
-      };
-    }
+    //   if (!spoc) {
+    //     return res
+    //       .status(400)
+    //       .json({ success: false, message: "Invalid SPOC selected" });
+    //   }
+    //   derived = {
+    //     clientSpocId: spoc.id,
+    //     clientId: spoc.clientId,
+    //     serviceLineId: spoc.serviceLineId ?? undefined,
+    //     businessUnitId: spoc.businessUnitId ?? undefined,
+    //   };
+    // }
     const [updated] = await prisma.$transaction([
       prisma.requirement.update({
         where: { id },
@@ -2802,8 +2802,8 @@ export const createAssignment = async (req: Request, res: Response) => {
           reason === "Already actively assigned"
             ? 409
             : reason === "User not found"
-              ? 404
-              : 400;
+            ? 404
+            : 400;
         return res.status(statusCode).json({ success: false, message: reason });
       }
     }
@@ -3068,7 +3068,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
     const now = Date.now();
     const enriched = pipelines.map((p) => {
       const agingMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       return {
         ...p,
@@ -3107,7 +3107,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getRequirementCandidateById = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { id: requirementId, pipelineId } = req.params;
@@ -3235,13 +3235,13 @@ export const getRequirementCandidateById = async (
     }
 
     const agingMins = Math.floor(
-      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000,
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
     );
 
     const totalPipelineMins =
       pipeline.stageHistory.reduce(
         (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
-        0,
+        0
       ) + agingMins;
 
     res.json({
@@ -3638,7 +3638,7 @@ export const getCandidateDetail = async (req: Request, res: Response) => {
 async function getVisibleRecruiterIds(
   userId: string,
   isSuperAdmin: boolean,
-  canViewScope: PermissionScope,
+  canViewScope: PermissionScope
 ): Promise<string[] | null> {
   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
   if (canViewScope === PermissionScope.OWN) return [userId];
@@ -3680,7 +3680,7 @@ async function getVisibleRecruiterIds(
 async function getCreatorScopeUserIds(
   userId: string,
   isSuperAdmin: boolean,
-  createdByScope: string,
+  createdByScope: string
 ): Promise<string[] | null> {
   // Only ALL scope (explicit opt-in) removes the creator filter entirely.
   // isSuperAdmin does NOT auto-bypass — even a superAdmin clicking "Mine"
@@ -3790,7 +3790,7 @@ export const getRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope,
+        createdByScope
       );
       if (creatorIds !== null) {
         // Apply creator filter — only requirements made by these users
@@ -3909,14 +3909,14 @@ export const getRequirements = async (req: Request, res: Response) => {
     // ── Pipeline stage counts (existing two-bucket logic, unchanged)
     const reqIds = requirements.map((r) => r.id);
     const createdByMeIds = new Set(
-      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id),
+      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
     );
     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
 
     const visibleRecruiterIds = await getVisibleRecruiterIds(
       userId,
       isSuperAdmin,
-      canViewScope,
+      canViewScope
     );
 
     const allStages = await prisma.pipelineStage.findMany({
@@ -4002,7 +4002,7 @@ export const getRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i),
+          .filter((v, i, a) => a.indexOf(v) === i)
       );
 
     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
@@ -4010,7 +4010,7 @@ export const getRequirements = async (req: Request, res: Response) => {
     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
       // Start with all keys at zero — never hardcoded, pulled from DB
       const canonical: Record<string, number> = Object.fromEntries(
-        allCanonicalKeys.map((k) => [k, 0]),
+        allCanonicalKeys.map((k) => [k, 0])
       );
       for (const sc of stageCounts) {
         if (!sc.canonicalStage) continue;
@@ -4024,7 +4024,7 @@ export const getRequirements = async (req: Request, res: Response) => {
     for (const r of requirements) {
       if (!canonicalCountsByReq[r.id]) {
         canonicalCountsByReq[r.id] = Object.fromEntries(
-          allCanonicalKeys.map((k) => [k, 0]),
+          allCanonicalKeys.map((k) => [k, 0])
         );
       }
     }
@@ -4114,7 +4114,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope,
+        createdByScope
       );
       if (creatorIds !== null) {
         where.createdById = { in: creatorIds };
@@ -4201,7 +4201,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i),
+          .filter((v, i, a) => a.indexOf(v) === i)
       );
 
     // ── Fetch pipeline counts grouped by requirementId + currentStageId
@@ -4292,7 +4292,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     const applyHeaderRow = (
       row: ExcelJS.Row,
-      fill: ExcelJS.Fill = headerFill,
+      fill: ExcelJS.Fill = headerFill
     ) => {
       row.eachCell((cell) => {
         cell.fill = fill;
@@ -4386,10 +4386,10 @@ export const exportRequirements = async (req: Request, res: Response) => {
     const now = Date.now();
     for (const req of requirements) {
       const totalCandidates = Object.values(
-        canonicalByReq[req.id] ?? {},
+        canonicalByReq[req.id] ?? {}
       ).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(req.createdAt).getTime()) / 86400000,
+        (now - new Date(req.createdAt).getTime()) / 86400000
       );
 
       const rowData: Record<string, any> = {
@@ -4522,12 +4522,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (!req) continue;
 
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       const totalPipelineMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0,
+          0
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
@@ -4583,7 +4583,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
