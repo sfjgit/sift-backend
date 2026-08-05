@@ -23,6 +23,8 @@ import internalUsers from "./internal-users.routes";
 import { authenticateUser } from "@/middleware/auth";
 import naukriAccountabilityRoutes from "./naukriAccountability.routes";
 import ticketRoutes from "./ticket.routes";
+import publicRoutes from "./public.routes";
+
 const router = Router();
 
 // in your core router index, behind auth:
@@ -48,5 +50,6 @@ router.use("/pipeline", pipelineRoutes);
 router.use("/pipeline-stages", pipelineStageRoutes);
 router.use("/assignments", assignmentRoutes);
 router.use("/candidates", candidateRoutes); // ← new, clean, no nesting
+router.use("/public", publicRoutes); // ← new, clean, no nesting
 
 export default router;
