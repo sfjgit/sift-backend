@@ -89,6 +89,7 @@ enum NotificationType {
   DEADLINE_BREACHED
   DEADLINE_REMINDER
   INTERVIEW_SCHEDULED
+  INTERVIEW_RESCHEDULED
 }
 
 enum NotificationReferenceType {
@@ -1288,9 +1289,9 @@ model CandidateInterviewSchedule {
   stageId String
   stage   PipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
 
-  roundNumber Int
-  scheduledAt DateTime
-  durationMins Int
+  roundNumber Int?
+  scheduledAt DateTime?
+  durationMins Int?
   mode         InterviewMode
   // status       CanonicalStage
 
