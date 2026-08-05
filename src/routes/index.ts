@@ -22,12 +22,12 @@ import authLogs from "./auth-logs.routes";
 import internalUsers from "./internal-users.routes";
 import { authenticateUser } from "@/middleware/auth";
 import naukriAccountabilityRoutes from "./naukriAccountability.routes";
-
+import ticketRoutes from "./ticket.routes";
 const router = Router();
 
 // in your core router index, behind auth:
 router.use("/naukri", authenticateUser, naukriAccountabilityRoutes);
-
+router.use("/tickets", ticketRoutes);
 router.use("/reports", reportRoutes);
 router.use("/internal-users", internalUsers);
 router.use("/auth-logs", authLogs);
