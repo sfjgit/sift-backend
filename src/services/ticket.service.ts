@@ -1,15 +1,15 @@
 // File: ticket.service.ts
-// Path: src/modules/ticket/ticket.service.ts
+// Path: src/service/ticket.service.ts
 
-import { Prisma, TicketStatus } from "@prisma/client";
-import { prisma } from "../../lib/prisma";
-import { uploadToS3, deleteFromS3, getSignedUrl } from "../../lib/s3";
-import { ApiError } from "../../utils/ApiError";
+import { Prisma, TicketPriority, TicketStatus } from "@prisma/client";
+import prisma from "@/utils/prisma/client";
+import { uploadToS3, deleteFromS3, getSignedUrl } from "@/lib/s3";
+import { ApiError as httpError } from "@/utils/httpError";
 import type {
   CreateTicketInput,
   UpdateTicketInput,
   ListTicketQuery,
-} from "./ticket.validation";
+} from "@/validators/ticket.validation";
 
 const TICKET_PREFIX = "TKT";
 const S3_FOLDER = "tickets";
@@ -29,7 +29,7 @@ export const getTicketMeta = async () => {
 
   return {
     statuses: Object.values(TicketStatus),
-    priorities: Object.values(Prisma.TicketPriority ?? {}) as string[],
+    priorities: Object.values(TicketPriority),
     categories,
   };
 };
@@ -73,6 +73,9 @@ export const listTickets = async (
 ) => {
   const { page, limit, search } = query;
 
+  const statusIn = csv(query.status) as TicketStatus[] | undefined;
+  const priorityIn = csv(query.priority) as TicketPriority[] | undefined;
+
   const where: Prisma.TicketWhereInput = {
     AND: [
       scope,
@@ -84,12 +87,8 @@ export const listTickets = async (
             ],
           }
         : {},
-      csv(query.status)
-        ? { status: { in: csv(query.status) as TicketStatus[] } }
-        : {},
-      csv(query.priority)
-        ? { priority: { in: csv(query.priority) as any } }
-        : {},
+      statusIn?.length ? { status: { in: statusIn } } : {},
+      priorityIn?.length ? { priority: { in: priorityIn } } : {},
       query.categoryId ? { categoryId: query.categoryId } : {},
       query.assignedToId ? { assignedToId: query.assignedToId } : {},
     ],
@@ -123,7 +122,7 @@ export const getTicketById = async (
     where: { AND: [{ id }, scope] },
     include: { category: true, attachments: true },
   });
-  if (!ticket) throw new ApiError(404, "Ticket not found");
+  if (!ticket) throw httpError(404, "Ticket not found");
 
   return {
     ...ticket,
@@ -145,13 +144,14 @@ export const updateTicket = async (
   const existing = await prisma.ticket.findFirst({
     where: { AND: [{ id }, scope] },
   });
-  if (!existing) throw new ApiError(404, "Ticket not found");
+  if (!existing) throw httpError(404, "Ticket not found");
 
   const data: Prisma.TicketUpdateInput = { ...payload };
 
   if (payload.status && payload.status !== existing.status) {
-    data.resolvedAt = payload.status === "RESOLVED" ? new Date() : null;
-    data.closedAt = payload.status === "CLOSED" ? new Date() : null;
+    data.resolvedAt =
+      payload.status === TicketStatus.RESOLVED ? new Date() : null;
+    data.closedAt = payload.status === TicketStatus.CLOSED ? new Date() : null;
   }
 
   return prisma.ticket.update({
@@ -167,13 +167,15 @@ export const addAttachments = async (
   userId: string,
   scope: Prisma.TicketWhereInput
 ) => {
+  if (!files?.length) throw httpError(400, "No files received");
+
   const exists = await prisma.ticket.findFirst({
     where: { AND: [{ id: ticketId }, scope] },
+    select: { id: true },
   });
-  if (!exists) throw new ApiError(404, "Ticket not found");
-  if (!files?.length) throw new ApiError(400, "No files received");
+  if (!exists) throw httpError(404, "Ticket not found");
 
-  const created = await Promise.all(
+  return Promise.all(
     files.map(async (f) => {
       const fileKey = await uploadToS3({
         folder: S3_FOLDER,
@@ -193,17 +195,41 @@ export const addAttachments = async (
       });
     })
   );
-
-  return created;
 };
 
 export const removeAttachment = async (attachmentId: string) => {
   const att = await prisma.ticketAttachment.findUnique({
     where: { id: attachmentId },
   });
-  if (!att) throw new ApiError(404, "Attachment not found");
+  if (!att) throw httpError(404, "Attachment not found");
 
   await deleteFromS3(att.fileKey);
   await prisma.ticketAttachment.delete({ where: { id: attachmentId } });
   return { id: attachmentId };
+};
+
+// File: ticket.service.ts
+// Path: src/service/ticket.service.ts
+// --- APPEND to the existing file ---
+
+export const listCategories = async (includeInactive = false) =>
+  prisma.ticketCategory.findMany({
+    where: includeInactive ? {} : { isActive: true },
+    orderBy: { name: "asc" },
+    include: { _count: { select: { tickets: true } } },
+  });
+
+export const createCategory = async (name: string) => {
+  const exists = await prisma.ticketCategory.findUnique({ where: { name } });
+  if (exists) throw httpError(409, "Category already exists");
+  return prisma.ticketCategory.create({ data: { name } });
+};
+
+export const updateCategory = async (
+  id: string,
+  payload: { name?: string; isActive?: boolean }
+) => {
+  const exists = await prisma.ticketCategory.findUnique({ where: { id } });
+  if (!exists) throw httpError(404, "Category not found");
+  return prisma.ticketCategory.update({ where: { id }, data: payload });
 };

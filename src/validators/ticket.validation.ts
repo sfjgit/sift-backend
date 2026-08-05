@@ -38,3 +38,16 @@ export const listTicketQuerySchema = z.object({
 export type CreateTicketInput = z.infer<typeof createTicketSchema>;
 export type UpdateTicketInput = z.infer<typeof updateTicketSchema>;
 export type ListTicketQuery = z.infer<typeof listTicketQuerySchema>;
+
+// File: ticket.validation.ts
+// Path: src/validators/ticket.validation.ts
+// --- APPEND ---
+
+export const createCategorySchema = z.object({
+  name: z.string().min(2).max(60).trim(),
+});
+
+export const updateCategorySchema = z.object({
+  name: z.string().min(2).max(60).trim().optional(),
+  isActive: z.boolean().optional(),
+});
