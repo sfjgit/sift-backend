@@ -39,6 +39,8 @@ const allowedOrigins = [
   "http://localhost:3003",
   "https://ats-alpha-olive.vercel.app",
   "https://ats-frontend-rose.vercel.app",
+  "https://sfj-web-usq5.vercel.app",
+  "https://www.sfjbs.com",
 ];
 
 app.use(cookieParser());

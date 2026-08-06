@@ -111,7 +111,7 @@ function windowLabel(q: Record<string, string | undefined>): string {
 
 async function resolveOrgTreeDown(
   userId: string,
-  isSuperAdmin: boolean
+  isSuperAdmin: boolean,
 ): Promise<string[] | null> {
   if (isSuperAdmin) return null;
 
@@ -149,7 +149,7 @@ async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
 // Path: core-service/src/reports/recruiter.report.ts   (adjust to your actual path)
 function buildReqWhere(
   q: Record<string, string | undefined>,
-  opts: { withDateWindow?: boolean } = {}
+  opts: { withDateWindow?: boolean } = {},
 ): Record<string, any> {
   const { withDateWindow = true } = opts; // default keeps existing callers untouched
   const where: Record<string, any> = { deletedAt: null };
@@ -373,7 +373,7 @@ const REQ_LOOKUP_SELECT = {
 function buildCandidateSheet(
   workbook: ExcelJS.Workbook,
   pipelines: any[],
-  reqLookup: Record<string, any>
+  reqLookup: Record<string, any>,
 ) {
   const sheet = workbook.addWorksheet("Candidates", {
     views: [{ state: "frozen", ySplit: 1 }],
@@ -433,12 +433,12 @@ function buildCandidateSheet(
   for (const p of pipelines) {
     const req = reqLookup[p.requirementId];
     const stageAgeMins = Math.floor(
-      (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
     );
     const totalMins =
       (p.stageHistory ?? []).reduce(
         (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-        0
+        0,
       ) + stageAgeMins;
 
     const row = sheet.addRow({
@@ -577,7 +577,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     const NONE = "__none__";
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0])
+      stages.map((s) => [s.id, 0]),
     );
     const dispositionCounts: Record<string, number> = {};
     const recruiterAgg: Record<
@@ -703,7 +703,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     // across lines here; a candidate is counted under its requirement's line).
     const stageForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     const byServiceLine = Object.values(lineAgg)
@@ -726,7 +726,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total
+      (a, b) => b.total - a.total,
     );
 
     const timeSeries = Object.entries(series)
@@ -850,8 +850,8 @@ function buildRecruiterRows(pipes: any[]) {
       r.submitTimeMins.push(
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0
-        )
+          0,
+        ),
       );
     }
 
@@ -1005,7 +1005,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     // ── Resolve each recruiter's service line ────────────────────────────────
@@ -1085,7 +1085,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .sort(
         (a, b) =>
           b.data.reduce((s, r) => s + r.sourced, 0) -
-          a.data.reduce((s, r) => s + r.sourced, 0)
+          a.data.reduce((s, r) => s + r.sourced, 0),
       );
 
     return res.json({
@@ -1188,14 +1188,14 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         r.submitTimeMins.push(
           (p.stageHistory ?? []).reduce(
             (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0
-          )
+            0,
+          ),
         );
       }
     }
 
     const summaryRows = Object.values(recruiterMap).sort(
-      (a, b) => b.sourced - a.sourced
+      (a, b) => b.sourced - a.sourced,
     );
 
     const workbook = new ExcelJS.Workbook();
@@ -1262,7 +1262,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 
     // Sheet 2: candidates
     const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement])
+      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
     );
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
@@ -1270,13 +1270,13 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     const scopeTag = selectedIds ? "selected" : "all";
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="recruiter-report-${scopeTag}-${windowLabel(
-        q
-      )}-${dateStr}.xlsx"`
+        q,
+      )}-${dateStr}.xlsx"`,
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1304,8 +1304,27 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
+
+    const requestedCreatorId = q.createdById?.trim() || null;
+
+    // creatorIds === null → super admin, unrestricted
+    const effectiveCreatorIds =
+      creatorIds === null
+        ? requestedCreatorId
+          ? [requestedCreatorId]
+          : null
+        : requestedCreatorId
+          ? creatorIds.includes(requestedCreatorId)
+            ? [requestedCreatorId]
+            : [] // requested a creator outside own tree → zero rows
+          : creatorIds;
+
+    const createdByWhere =
+      effectiveCreatorIds === null
+        ? {}
+        : { createdById: { in: effectiveCreatorIds } };
 
     // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
     const baseReqWhere = buildReqWhere(q, { withDateWindow: false });
@@ -1334,14 +1353,19 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         }
       : {};
 
-    const reqWhere =
-      creatorIds !== null
-        ? {
-            ...baseReqWhere,
-            ...activityFilter,
-            createdById: { in: creatorIds },
-          }
-        : { ...baseReqWhere, ...activityFilter };
+    // const reqWhere =
+    //   creatorIds !== null
+    //     ? {
+    //         ...baseReqWhere,
+    //         ...activityFilter,
+    //         createdById: { in: creatorIds },
+    //       }
+    //     : { ...baseReqWhere, ...activityFilter };
+    const reqWhere = {
+      ...baseReqWhere,
+      ...activityFilter,
+      ...createdByWhere,
+    };
 
     const stages = await fetchScopedStages(q.serviceLineId);
     const stageIdSet = new Set(stages.map((s) => s.id));
@@ -1413,7 +1437,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     // Partition rows by service line — always grouped (one tab per line).
@@ -1469,7 +1493,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     } else {
       const creatorIds = await resolveOrgTreeDown(
         req.user!.id,
-        req.user!.isSuperAdmin
+        req.user!.isSuperAdmin,
       );
 
       // date window is applied to pipeline ACTIVITY, NOT to requirement.createdAt
@@ -1629,7 +1653,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         1,
         fixedCols.length + 1,
         1,
-        fixedCols.length + stageCols.length
+        fixedCols.length + stageCols.length,
       );
     }
     styleHdr(groupRow);
@@ -1657,7 +1681,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       const counts = countsByReq[r.id] ?? {};
       const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86400000,
       );
 
       const rowData: Record<string, any> = {
@@ -1728,18 +1752,18 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
     const suffix = singleId
-      ? requirements[0]?.reqCode ?? singleId
+      ? (requirements[0]?.reqCode ?? singleId)
       : selectedIds
-      ? "selected"
-      : "all";
+        ? "selected"
+        : "all";
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`
+      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`,
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1781,7 +1805,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
     });
 
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0])
+      stages.map((s) => [s.id, 0]),
     );
     const dispositionCounts: Record<string, number> = {};
     let totalAgingMins = 0;
@@ -1791,12 +1815,12 @@ export const getCandidateReport = async (req: Request, res: Response) => {
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
       const stageAge = Math.floor(
-        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       totalAgingMins +=
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAge;
     }
 
@@ -1861,20 +1885,20 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     workbook.created = new Date();
 
     const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement])
+      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
     );
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="candidate-report-${windowLabel(
-        q
-      )}-${dateStr}.xlsx"`
+        q,
+      )}-${dateStr}.xlsx"`,
     );
     await workbook.xlsx.write(res);
     res.end();
