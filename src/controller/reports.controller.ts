@@ -1381,6 +1381,8 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         status: true,
         priority: true,
         jobType: true,
+        salaryMin: true,
+        salaryMax: true,
         remoteType: true,
         totalOpenings: true,
         city: true,
