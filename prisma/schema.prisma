@@ -1503,7 +1503,6 @@ model MemeAsset {
   @@index([category, isActive])
 }
 
-
 // File: schema.prisma
 // Path: prisma/schema.prisma
 
@@ -1523,38 +1522,48 @@ enum TicketPriority {
   URGENT
 }
 
+enum TicketEventKind {
+  MESSAGE        // a human wrote something
+  STATUS_CHANGE  // status moved, with or without a message
+  ASSIGNMENT     // handed to someone
+}
+
 model Ticket {
-  id          String          @id @default(uuid())
-  seq         Int             @unique @default(autoincrement()) // display: TKT-00001
-  title       String
-  description String?         @db.Text
+  id           String          @id @default(uuid())
+  seq          Int             @unique @default(autoincrement())
+  title        String
+  description  String?         @db.Text
 
-  status      TicketStatus    @default(OPEN)
-  priority    TicketPriority  @default(MEDIUM)
+  status       TicketStatus    @default(OPEN)
+  priority     TicketPriority  @default(MEDIUM)
 
-  // dynamic, DB-driven bucket (Support / Bug / Data Correction / Access ...)
-  categoryId  String?
-  category    TicketCategory? @relation(fields: [categoryId], references: [id])
+  categoryId   String?
+  category     TicketCategory? @relation(fields: [categoryId], references: [id])
 
-  raisedById  String
+  // plain UUIDs + snapshot, no cross-service FK
+  raisedById   String
+  raisedByName String?
   assignedToId String?
+  assignedToName String?
 
-  // optional link back to any ATS entity, no cross-db FKs
-  entityType  String?         // "REQUIREMENT" | "CANDIDATE" | "CLIENT" ... from config
-  entityId    String?
+  entityType   String?
+  entityId     String?
 
-  resolvedAt  DateTime?
-  closedAt    DateTime?
+  resolvedAt   DateTime?
+  closedAt     DateTime?
+  lastActivityAt DateTime      @default(now())
 
-  attachments TicketAttachment[]
-  comments    TicketComment[]
+  attachments  TicketAttachment[]
+  comments     TicketComment[]
+  notifications TicketNotification[]
 
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   @@index([status, priority])
   @@index([raisedById])
   @@index([assignedToId])
+  @@index([lastActivityAt])
   @@index([entityType, entityId])
 }
 
@@ -1566,33 +1575,85 @@ model TicketCategory {
   createdAt DateTime @default(now())
 }
 
+/** files on the ticket itself (the original request) */
 model TicketAttachment {
-  id         String   @id @default(uuid())
-  ticketId   String
-  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id           String   @id @default(uuid())
+  ticketId     String
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
-  fileName   String
-  fileKey    String   // S3 object key
-  mimeType   String
-  sizeBytes  Int
+  fileName     String
+  fileKey      String
+  mimeType     String
+  sizeBytes    Int
   uploadedById String
 
-  createdAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
 
   @@index([ticketId])
 }
 
-// flat reply thread — everyone on the ticket sees every message
+/** one entry in the thread — a message, a status move, or both at once */
 model TicketComment {
-  id        String   @id @default(uuid())
-  ticketId  String
-  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id           String          @id @default(uuid())
+  ticketId     String
+  ticket       Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
-  authorId  String
-  body      String   @db.Text
+  kind         TicketEventKind @default(MESSAGE)
+  body         String?         @db.Text
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // author snapshot — no FK across services
+  authorId     String
+  authorName   String?
+  authorRole   String?
+
+  // where the ticket stood when this was posted, and what moved
+  statusAtPost TicketStatus    @default(OPEN)
+  fromStatus   TicketStatus?
+  toStatus     TicketStatus?
+
+  attachments  TicketCommentAttachment[]
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   @@index([ticketId, createdAt])
+}
+
+model TicketCommentAttachment {
+  id        String        @id @default(uuid())
+  commentId String
+  comment   TicketComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  fileName  String
+  fileKey   String
+  mimeType  String
+  sizeBytes Int
+
+  createdAt DateTime      @default(now())
+
+  @@index([commentId])
+}
+
+/** dedicated stream — deliberately not the global notification table */
+model TicketNotification {
+  id          String          @id @default(uuid())
+  ticketId    String
+  ticket      Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  commentId   String?
+
+  recipientId String
+  actorId     String
+  actorName   String?
+
+  kind        TicketEventKind
+  title       String
+  preview     String?
+
+  isRead      Boolean         @default(false)
+  readAt      DateTime?
+
+  createdAt   DateTime        @default(now())
+
+  @@index([recipientId, isRead, createdAt])
+  @@index([ticketId])
 }

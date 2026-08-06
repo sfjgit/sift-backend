@@ -15,14 +15,24 @@ const router = Router();
 
 router.use(authenticateUser);
 
-/* static paths first — otherwise "meta" / "categories" get matched as :id */
+/* static paths first — otherwise they get matched as :id */
 router.get("/meta", ticketController.getMeta);
+
+router.get("/notifications", ticketController.listNotifications);
+router.get("/notifications/count", ticketController.notificationCount);
+router.post(
+  "/notifications/read-all",
+  ticketController.markAllNotificationsRead
+);
+router.patch(
+  "/notifications/:notificationId/read",
+  ticketController.markNotificationRead
+);
 
 router
   .route("/categories")
   .get(ticketController.listCategories)
   .post(ticketController.createCategory);
-
 router.patch("/categories/:id", ticketController.updateCategory);
 
 /* tickets */
@@ -36,19 +46,18 @@ router
   .get(ticketController.getOne)
   .patch(ticketController.update);
 
-/* thread */
+/* thread — reply now accepts multipart: body + status + files together */
 router
   .route("/:id/comments")
   .get(ticketController.listComments)
-  .post(ticketController.addComment);
+  .post(upload.array("files", 5), ticketController.addComment);
 
-/* attachments */
+/* ticket-level attachments */
 router.post(
   "/:id/attachments",
   upload.array("files", 10),
   ticketController.uploadAttachments
 );
-
 router.delete(
   "/:id/attachments/:attachmentId",
   ticketController.deleteAttachment

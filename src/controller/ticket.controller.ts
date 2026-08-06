@@ -2,20 +2,35 @@
 // Path: src/controller/ticket.controller.ts
 
 import type { NextFunction, Request, Response } from "express";
-import { Prisma, TicketPriority, TicketStatus } from "@prisma/client";
+import {
+  Prisma,
+  TicketEventKind,
+  TicketPriority,
+  TicketStatus,
+} from "@prisma/client";
 import { z } from "zod";
 import prisma from "@/utils/prisma/client";
 import { uploadToS3, deleteFromS3, getSignedUrl } from "@/lib/s3";
 
 /* ========================================================================== */
-/*                                  CONFIG                                    */
+/*                                   CONFIG                                   */
 /* ========================================================================== */
 
 const TICKET_PREFIX = "TKT";
-const S3_FOLDER = "tickets";
+const S3_TICKET_FOLDER = "tickets";
+const S3_COMMENT_FOLDER = "tickets/replies";
+
+const envList = (key: string) =>
+  (process.env[key] ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+/** fallback recipients when a ticket has no assignee yet (the support desk) */
+const DESK_USER_IDS = () => envList("TICKET_DESK_USER_IDS");
 
 /* ========================================================================== */
-/*                                  SCHEMAS                                   */
+/*                                   SCHEMAS                                  */
 /* ========================================================================== */
 
 const createTicketSchema = z.object({
@@ -35,11 +50,12 @@ const updateTicketSchema = z.object({
   priority: z.nativeEnum(TicketPriority).optional(),
   categoryId: z.string().uuid().nullable().optional(),
   assignedToId: z.string().uuid().nullable().optional(),
+  assignedToName: z.string().optional(),
 });
 
 const listQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
-  limit: z.coerce.number().min(1).max(100).default(20),
+  limit: z.coerce.number().min(1).max(100).default(10),
   search: z.string().optional(),
   status: z.string().optional(),
   priority: z.string().optional(),
@@ -47,77 +63,147 @@ const listQuerySchema = z.object({
   assignedToId: z.string().optional(),
 });
 
-const commentSchema = z.object({
-  body: z.string().min(1).max(5000),
-});
+/** a reply can carry text, files, a status move, or any combination */
+const replySchema = z
+  .object({
+    body: z.string().max(5000).optional(),
+    status: z.nativeEnum(TicketStatus).optional(),
+  })
+  .refine((v) => !!v.body?.trim() || !!v.status, {
+    message: "Add a message or change the status",
+  });
 
-const categorySchema = z.object({
-  name: z.string().min(2).max(60).trim(),
-});
-
+const categorySchema = z.object({ name: z.string().min(2).max(60).trim() });
 const categoryUpdateSchema = z.object({
   name: z.string().min(2).max(60).trim().optional(),
   isActive: z.boolean().optional(),
 });
 
 /* ========================================================================== */
-/*                                  HELPERS                                   */
+/*                                   HELPERS                                  */
 /* ========================================================================== */
 
 const filesOf = (req: Request) => (req.files as Express.Multer.File[]) ?? [];
-
 const csv = (v?: string) => (v ? v.split(",").filter(Boolean) : undefined);
+const fail = (res: Response, status: number, message: string) =>
+  res.status(status).json({ success: false, message });
 
 const ticketNumber = (seq: number) =>
   `${TICKET_PREFIX}-${String(seq).padStart(5, "0")}`;
 
-const isTicketAdmin = (user: {
-  role?: string | null;
-  isSuperAdmin?: boolean;
-}) => {
-  if (user.isSuperAdmin) return true;
-  const roles = (process.env.TICKET_ALL_ACCESS_ROLES ?? "")
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
-  return !!user.role && roles.includes(user.role);
+/** name/role captured at write time so the thread never needs a user join */
+const actorOf = (req: Request) => {
+  const u = req.user as any;
+  const name =
+    [u?.firstName, u?.lastName].filter(Boolean).join(" ") ||
+    u?.name ||
+    u?.email ||
+    null;
+  return {
+    id: u.id as string,
+    name: name as string | null,
+    role: (u?.role?.name ?? u?.role ?? null) as string | null,
+  };
 };
 
-/** admins see everything, everyone else sees only what they raised or own */
-const scopeOf = (user: {
-  id: string;
-  role?: string | null;
-  isSuperAdmin?: boolean;
-}): Prisma.TicketWhereInput =>
-  isTicketAdmin(user)
-    ? {}
-    : { OR: [{ raisedById: user.id }, { assignedToId: user.id }] };
+const isTicketAdmin = (req: Request) => {
+  const u = req.user as any;
+  if (u?.isSuperAdmin) return true;
+  const role = u?.role?.name ?? u?.role;
+  return !!role && envList("TICKET_ALL_ACCESS_ROLES").includes(role);
+};
 
-/** 404s if the ticket doesn't exist OR the caller isn't allowed to see it */
-const findScopedTicket = async (id: string, req: Request) =>
+const scopeOf = (req: Request): Prisma.TicketWhereInput =>
+  isTicketAdmin(req)
+    ? {}
+    : {
+        OR: [
+          { raisedById: (req.user as any).id },
+          { assignedToId: (req.user as any).id },
+        ],
+      };
+
+const findScoped = (id: string, req: Request) =>
   prisma.ticket.findFirst({
-    where: { AND: [{ id }, scopeOf(req.user!)] },
-    select: { id: true, status: true },
+    where: { AND: [{ id }, scopeOf(req)] },
+    select: {
+      id: true,
+      seq: true,
+      title: true,
+      status: true,
+      raisedById: true,
+      assignedToId: true,
+    },
   });
 
-const uploadMany = async (files: Express.Multer.File[], userId: string) =>
+const signIfImage = async (a: { fileKey: string; mimeType: string }) =>
+  a.mimeType.startsWith("image/") ? getSignedUrl(a.fileKey) : null;
+
+/** signed url for everything — used on detail/thread reads */
+const withUrls = async <T extends { fileKey: string }>(rows: T[]) =>
+  Promise.all(
+    rows.map(async (a) => ({ ...a, url: await getSignedUrl(a.fileKey) }))
+  );
+
+const uploadAll = async (files: Express.Multer.File[], folder: string) =>
   Promise.all(
     files.map(async (f) => ({
       fileName: f.originalname,
       fileKey: await uploadToS3({
-        folder: S3_FOLDER,
+        folder,
         fileName: f.originalname,
         buffer: f.buffer,
         mimeType: f.mimetype,
       }),
       mimeType: f.mimetype,
       sizeBytes: f.size,
-      uploadedById: userId,
     }))
   );
 
-const fail = (res: Response, status: number, message: string) =>
-  res.status(status).json({ success: false, message });
+/* ------------------------------ notifications ----------------------------- */
+
+/** everyone on the ticket except whoever caused the event */
+const recipientsFor = (
+  ticket: { raisedById: string; assignedToId?: string | null },
+  actorId: string
+) => {
+  const ids = new Set<string>([ticket.raisedById]);
+  if (ticket.assignedToId) ids.add(ticket.assignedToId);
+  else DESK_USER_IDS().forEach((id) => ids.add(id));
+  ids.delete(actorId);
+  return [...ids];
+};
+
+const notify = async (args: {
+  ticket: {
+    id: string;
+    seq: number;
+    title: string;
+    raisedById: string;
+    assignedToId?: string | null;
+  };
+  actor: { id: string; name: string | null };
+  kind: TicketEventKind;
+  title: string;
+  preview?: string | null;
+  commentId?: string | null;
+}) => {
+  const recipients = recipientsFor(args.ticket, args.actor.id);
+  if (!recipients.length) return;
+
+  await prisma.ticketNotification.createMany({
+    data: recipients.map((recipientId) => ({
+      ticketId: args.ticket.id,
+      commentId: args.commentId ?? null,
+      recipientId,
+      actorId: args.actor.id,
+      actorName: args.actor.name,
+      kind: args.kind,
+      title: args.title,
+      preview: args.preview?.slice(0, 200) ?? null,
+    })),
+  });
+};
 
 /* ========================================================================== */
 /*                                    META                                    */
@@ -134,7 +220,6 @@ export const getMeta = async (
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     });
-
     return res.json({
       success: true,
       data: {
@@ -149,7 +234,7 @@ export const getMeta = async (
 };
 
 /* ========================================================================== */
-/*                                  TICKETS                                   */
+/*                                   TICKETS                                  */
 /* ========================================================================== */
 
 export const create = async (
@@ -159,15 +244,28 @@ export const create = async (
 ) => {
   try {
     const payload = createTicketSchema.parse(req.body);
-    const uploaded = await uploadMany(filesOf(req), req.user!.id);
+    const actor = actorOf(req);
+    const uploaded = await uploadAll(filesOf(req), S3_TICKET_FOLDER);
 
     const ticket = await prisma.ticket.create({
       data: {
         ...payload,
-        raisedById: req.user!.id,
-        attachments: uploaded.length ? { create: uploaded } : undefined,
+        raisedById: actor.id,
+        raisedByName: actor.name,
+        lastActivityAt: new Date(),
+        attachments: uploaded.length
+          ? { create: uploaded.map((a) => ({ ...a, uploadedById: actor.id })) }
+          : undefined,
       },
       include: { attachments: true, category: true },
+    });
+
+    await notify({
+      ticket,
+      actor,
+      kind: TicketEventKind.MESSAGE,
+      title: `New ticket ${ticketNumber(ticket.seq)}`,
+      preview: ticket.title,
     });
 
     return res.status(201).json({
@@ -182,44 +280,42 @@ export const create = async (
 
 export const list = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const query = listQuerySchema.parse(req.query);
-    const { page, limit, search } = query;
-
-    const statusIn = csv(query.status) as TicketStatus[] | undefined;
-    const priorityIn = csv(query.priority) as TicketPriority[] | undefined;
+    const q = listQuerySchema.parse(req.query);
+    const statusIn = csv(q.status) as TicketStatus[] | undefined;
+    const priorityIn = csv(q.priority) as TicketPriority[] | undefined;
 
     const where: Prisma.TicketWhereInput = {
       AND: [
-        scopeOf(req.user!),
-        search
+        scopeOf(req),
+        q.search
           ? {
               OR: [
-                { title: { contains: search, mode: "insensitive" } },
-                { description: { contains: search, mode: "insensitive" } },
+                { title: { contains: q.search, mode: "insensitive" } },
+                { description: { contains: q.search, mode: "insensitive" } },
               ],
             }
           : {},
         statusIn?.length ? { status: { in: statusIn } } : {},
         priorityIn?.length ? { priority: { in: priorityIn } } : {},
-        query.categoryId ? { categoryId: query.categoryId } : {},
-        query.assignedToId ? { assignedToId: query.assignedToId } : {},
+        q.categoryId ? { categoryId: q.categoryId } : {},
+        q.assignedToId ? { assignedToId: q.assignedToId } : {},
       ],
     };
 
     const [rows, total] = await Promise.all([
-      // File: ticket.controller.ts
-      // Path: src/controller/ticket.controller.ts
-      // --- inside `list`, replace the include + the response mapping ---
-
       prisma.ticket.findMany({
         where,
-        orderBy: { updatedAt: "desc" },
-        skip: (page - 1) * limit,
-        take: limit,
+        orderBy: { lastActivityAt: "desc" },
+        skip: (q.page - 1) * q.limit,
+        take: q.limit,
         include: {
           category: { select: { id: true, name: true } },
           attachments: { orderBy: { createdAt: "asc" }, take: 6 },
-          comments: { orderBy: { createdAt: "desc" }, take: 1 },
+          comments: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            include: { attachments: true },
+          },
           _count: { select: { attachments: true, comments: true } },
         },
       }),
@@ -230,14 +326,19 @@ export const list = async (req: Request, res: Response, next: NextFunction) => {
       rows.map(async ({ comments, ...t }) => ({
         ...t,
         ticketNumber: ticketNumber(t.seq),
-        latestComment: comments[0] ?? null,
+        latestComment: comments[0]
+          ? {
+              ...comments[0],
+              attachments: await Promise.all(
+                comments[0].attachments.map(async (a) => ({
+                  ...a,
+                  url: await signIfImage(a),
+                }))
+              ),
+            }
+          : null,
         attachments: await Promise.all(
-          t.attachments.map(async (a) => ({
-            ...a,
-            url: a.mimeType.startsWith("image/")
-              ? await getSignedUrl(a.fileKey)
-              : null,
-          }))
+          t.attachments.map(async (a) => ({ ...a, url: await signIfImage(a) }))
         ),
       }))
     );
@@ -245,14 +346,13 @@ export const list = async (req: Request, res: Response, next: NextFunction) => {
     return res.json({
       success: true,
       data,
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      meta: {
+        page: q.page,
+        limit: q.limit,
+        total,
+        totalPages: Math.ceil(total / q.limit),
+      },
     });
-
-    // return res.json({
-    //   success: true,
-    //   data: rows.map((t) => ({ ...t, ticketNumber: ticketNumber(t.seq) })),
-    //   meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    // });
   } catch (err) {
     return next(err);
   }
@@ -265,27 +365,28 @@ export const getOne = async (
 ) => {
   try {
     const ticket = await prisma.ticket.findFirst({
-      where: { AND: [{ id: req.params.id }, scopeOf(req.user!)] },
+      where: { AND: [{ id: req.params.id }, scopeOf(req)] },
       include: { category: true, attachments: true },
     });
     if (!ticket) return fail(res, 404, "Ticket not found");
 
-    const attachments = await Promise.all(
-      ticket.attachments.map(async (a) => ({
-        ...a,
-        url: await getSignedUrl(a.fileKey),
-      }))
-    );
-
     return res.json({
       success: true,
-      data: { ...ticket, ticketNumber: ticketNumber(ticket.seq), attachments },
+      data: {
+        ...ticket,
+        ticketNumber: ticketNumber(ticket.seq),
+        attachments: await withUrls(ticket.attachments),
+      },
     });
   } catch (err) {
     return next(err);
   }
 };
 
+/**
+ * Field edits. A status move made here is still recorded in the thread as a
+ * STATUS_CHANGE entry, so the conversation never has silent gaps.
+ */
 export const update = async (
   req: Request,
   res: Response,
@@ -293,13 +394,16 @@ export const update = async (
 ) => {
   try {
     const payload = updateTicketSchema.parse(req.body);
+    const actor = actorOf(req);
 
-    const existing = await findScopedTicket(req.params.id, req);
+    const existing = await findScoped(req.params.id, req);
     if (!existing) return fail(res, 404, "Ticket not found");
 
-    const data: Prisma.TicketUpdateInput = { ...payload };
+    const statusMoved = !!payload.status && payload.status !== existing.status;
 
-    if (payload.status && payload.status !== existing.status) {
+    const data: Prisma.TicketUpdateInput = { ...payload };
+    if (statusMoved) {
+      data.lastActivityAt = new Date();
       data.resolvedAt =
         payload.status === TicketStatus.RESOLVED ? new Date() : null;
       data.closedAt =
@@ -307,10 +411,53 @@ export const update = async (
     }
 
     const ticket = await prisma.ticket.update({
-      where: { id: req.params.id },
+      where: { id: existing.id },
       data,
       include: { category: true, attachments: true },
     });
+
+    if (statusMoved) {
+      const event = await prisma.ticketComment.create({
+        data: {
+          ticketId: ticket.id,
+          kind: TicketEventKind.STATUS_CHANGE,
+          authorId: actor.id,
+          authorName: actor.name,
+          authorRole: actor.role,
+          statusAtPost: payload.status!,
+          fromStatus: existing.status,
+          toStatus: payload.status!,
+        },
+      });
+
+      await notify({
+        ticket,
+        actor,
+        kind: TicketEventKind.STATUS_CHANGE,
+        title: `${ticketNumber(ticket.seq)} → ${payload.status}`,
+        preview: `${existing.status} → ${payload.status}`,
+        commentId: event.id,
+      });
+    }
+
+    if (
+      payload.assignedToId &&
+      payload.assignedToId !== existing.assignedToId
+    ) {
+      await prisma.ticketComment.create({
+        data: {
+          ticketId: ticket.id,
+          kind: TicketEventKind.ASSIGNMENT,
+          body: payload.assignedToName
+            ? `Assigned to ${payload.assignedToName}`
+            : "Reassigned",
+          authorId: actor.id,
+          authorName: actor.name,
+          authorRole: actor.role,
+          statusAtPost: ticket.status,
+        },
+      });
+    }
 
     return res.json({
       success: true,
@@ -323,7 +470,7 @@ export const update = async (
 };
 
 /* ========================================================================== */
-/*                                ATTACHMENTS                                 */
+/*                             TICKET ATTACHMENTS                             */
 /* ========================================================================== */
 
 export const uploadAttachments = async (
@@ -335,23 +482,23 @@ export const uploadAttachments = async (
     const files = filesOf(req);
     if (!files.length) return fail(res, 400, "No files received");
 
-    const ticket = await findScopedTicket(req.params.id, req);
+    const ticket = await findScoped(req.params.id, req);
     if (!ticket) return fail(res, 404, "Ticket not found");
 
-    const uploaded = await uploadMany(files, req.user!.id);
+    const actor = actorOf(req);
+    const uploaded = await uploadAll(files, S3_TICKET_FOLDER);
+
     const created = await prisma.$transaction(
       uploaded.map((a) =>
         prisma.ticketAttachment.create({
-          data: { ...a, ticketId: req.params.id },
+          data: { ...a, ticketId: ticket.id, uploadedById: actor.id },
         })
       )
     );
 
-    return res.status(201).json({
-      success: true,
-      message: "Attachments uploaded",
-      data: created,
-    });
+    return res
+      .status(201)
+      .json({ success: true, message: "Attachments uploaded", data: created });
   } catch (err) {
     return next(err);
   }
@@ -363,11 +510,11 @@ export const deleteAttachment = async (
   next: NextFunction
 ) => {
   try {
-    const ticket = await findScopedTicket(req.params.id, req);
+    const ticket = await findScoped(req.params.id, req);
     if (!ticket) return fail(res, 404, "Ticket not found");
 
     const att = await prisma.ticketAttachment.findFirst({
-      where: { id: req.params.attachmentId, ticketId: req.params.id },
+      where: { id: req.params.attachmentId, ticketId: ticket.id },
     });
     if (!att) return fail(res, 404, "Attachment not found");
 
@@ -394,13 +541,21 @@ export const listComments = async (
   next: NextFunction
 ) => {
   try {
-    const ticket = await findScopedTicket(req.params.id, req);
+    const ticket = await findScoped(req.params.id, req);
     if (!ticket) return fail(res, 404, "Ticket not found");
 
-    const data = await prisma.ticketComment.findMany({
-      where: { ticketId: req.params.id },
+    const rows = await prisma.ticketComment.findMany({
+      where: { ticketId: ticket.id },
       orderBy: { createdAt: "asc" },
+      include: { attachments: true },
     });
+
+    const data = await Promise.all(
+      rows.map(async (c) => ({
+        ...c,
+        attachments: await withUrls(c.attachments),
+      }))
+    );
 
     return res.json({ success: true, data });
   } catch (err) {
@@ -408,24 +563,179 @@ export const listComments = async (
   }
 };
 
+/**
+ * One endpoint for the whole reply action: text + files + optional status move,
+ * all recorded on a single thread entry so the conversation reads in order.
+ */
 export const addComment = async (
   req: Request,
   res: Response,
   next: NextFunction
 ) => {
   try {
-    const { body } = commentSchema.parse(req.body);
+    const payload = replySchema.parse(req.body);
+    const files = filesOf(req);
+    const actor = actorOf(req);
 
-    const ticket = await findScopedTicket(req.params.id, req);
-    if (!ticket) return fail(res, 404, "Ticket not found");
+    const existing = await findScoped(req.params.id, req);
+    if (!existing) return fail(res, 404, "Ticket not found");
 
-    const data = await prisma.ticketComment.create({
-      data: { ticketId: req.params.id, body, authorId: req.user!.id },
+    const nextStatus = payload.status ?? existing.status;
+    const statusMoved = nextStatus !== existing.status;
+
+    const uploaded = await uploadAll(files, S3_COMMENT_FOLDER);
+
+    const comment = await prisma.ticketComment.create({
+      data: {
+        ticketId: existing.id,
+        kind: statusMoved
+          ? TicketEventKind.STATUS_CHANGE
+          : TicketEventKind.MESSAGE,
+        body: payload.body?.trim() || null,
+        authorId: actor.id,
+        authorName: actor.name,
+        authorRole: actor.role,
+        statusAtPost: nextStatus,
+        fromStatus: statusMoved ? existing.status : null,
+        toStatus: statusMoved ? nextStatus : null,
+        attachments: uploaded.length ? { create: uploaded } : undefined,
+      },
+      include: { attachments: true },
     });
 
-    return res
-      .status(201)
-      .json({ success: true, message: "Reply posted", data });
+    const ticket = await prisma.ticket.update({
+      where: { id: existing.id },
+      data: {
+        lastActivityAt: new Date(),
+        ...(statusMoved
+          ? {
+              status: nextStatus,
+              resolvedAt:
+                nextStatus === TicketStatus.RESOLVED ? new Date() : null,
+              closedAt: nextStatus === TicketStatus.CLOSED ? new Date() : null,
+            }
+          : {}),
+      },
+    });
+
+    await notify({
+      ticket,
+      actor,
+      kind: comment.kind,
+      title: statusMoved
+        ? `${ticketNumber(ticket.seq)} → ${nextStatus}`
+        : `New reply on ${ticketNumber(ticket.seq)}`,
+      preview: payload.body ?? `${existing.status} → ${nextStatus}`,
+      commentId: comment.id,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: statusMoved ? "Reply posted, status updated" : "Reply posted",
+      data: {
+        ...comment,
+        attachments: await withUrls(comment.attachments),
+        ticketStatus: ticket.status,
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/* ========================================================================== */
+/*                          TICKET NOTIFICATIONS                              */
+/* ========================================================================== */
+
+export const listNotifications = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const unreadOnly = req.query.unread === "true";
+    const limit = Math.min(Number(req.query.limit ?? 20), 50);
+
+    const [rows, unread] = await Promise.all([
+      prisma.ticketNotification.findMany({
+        where: {
+          recipientId: (req.user as any).id,
+          ...(unreadOnly ? { isRead: false } : {}),
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        include: {
+          ticket: { select: { seq: true, title: true, status: true } },
+        },
+      }),
+      prisma.ticketNotification.count({
+        where: { recipientId: (req.user as any).id, isRead: false },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: rows.map((n) => ({
+        ...n,
+        ticketNumber: ticketNumber(n.ticket.seq),
+      })),
+      meta: { unread },
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const notificationCount = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const unread = await prisma.ticketNotification.count({
+      where: { recipientId: (req.user as any).id, isRead: false },
+    });
+    return res.json({ success: true, data: { unread } });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const markNotificationRead = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const result = await prisma.ticketNotification.updateMany({
+      where: {
+        id: req.params.notificationId,
+        recipientId: (req.user as any).id,
+      },
+      data: { isRead: true, readAt: new Date() },
+    });
+    if (!result.count) return fail(res, 404, "Notification not found");
+    return res.json({ success: true, message: "Marked read" });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const markAllNotificationsRead = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const result = await prisma.ticketNotification.updateMany({
+      where: { recipientId: (req.user as any).id, isRead: false },
+      data: { isRead: true, readAt: new Date() },
+    });
+    return res.json({
+      success: true,
+      message: "All marked read",
+      data: { count: result.count },
+    });
   } catch (err) {
     return next(err);
   }
@@ -446,7 +756,6 @@ export const listCategories = async (
       orderBy: { name: "asc" },
       include: { _count: { select: { tickets: true } } },
     });
-
     return res.json({ success: true, data });
   } catch (err) {
     return next(err);
@@ -460,12 +769,10 @@ export const createCategory = async (
 ) => {
   try {
     const { name } = categorySchema.parse(req.body);
-
     const exists = await prisma.ticketCategory.findUnique({ where: { name } });
     if (exists) return fail(res, 409, "Category already exists");
 
     const data = await prisma.ticketCategory.create({ data: { name } });
-
     return res
       .status(201)
       .json({ success: true, message: "Category created", data });
@@ -481,7 +788,6 @@ export const updateCategory = async (
 ) => {
   try {
     const payload = categoryUpdateSchema.parse(req.body);
-
     const exists = await prisma.ticketCategory.findUnique({
       where: { id: req.params.id },
     });
@@ -491,7 +797,6 @@ export const updateCategory = async (
       where: { id: req.params.id },
       data: payload,
     });
-
     return res.json({ success: true, message: "Category updated", data });
   } catch (err) {
     return next(err);

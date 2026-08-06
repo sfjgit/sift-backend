@@ -174,21 +174,54 @@ export const setTokenCookies = (
   accessToken: string,
   refreshToken: string
 ) => {
+  const isProd = process.env.NODE_ENV === "production"; // ← add this
   const base = {
-    secure: true,
-    sameSite: "none" as const,
+    secure: isProd, // ← was: true
+    sameSite: isProd ? ("none" as const) : ("lax" as const), // ← was: "none"
     path: "/",
   };
 
   res.cookie("accessToken", accessToken, {
     ...base,
-    httpOnly: false, // readable by JS for axios interceptors
-    maxAge: 15 * 60 * 1000, // 15 mins
+    httpOnly: false,
+    maxAge: 30 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
     ...base,
-    httpOnly: true, // never readable by JS
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    httpOnly: true,
+    maxAge: 8 * 60 * 60 * 1000,
   });
 };
+
+// export const setTokenCookies = (
+//   res: Response,
+//   accessToken: string,
+//   refreshToken: string
+// ) => {
+//   // const base = {
+//   //   secure: true,
+//   //   sameSite: "none" as const,
+//   //   path: "/",
+//   // };
+
+//   // auth.ts
+//   const isProd = process.env.NODE_ENV === "production";
+//   const base = {
+//     secure: isProd,
+//     sameSite: isProd ? ("none" as const) : ("lax" as const),
+//     path: "/",
+//   };
+
+//   res.cookie("accessToken", accessToken, {
+//     ...base,
+//     httpOnly: false, // readable by JS for axios interceptors
+//     maxAge: 15 * 60 * 1000, // 15 mins
+//   });
+
+//   res.cookie("refreshToken", refreshToken, {
+//     ...base,
+//     httpOnly: true, // never readable by JS
+//     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+//   });
+// };
