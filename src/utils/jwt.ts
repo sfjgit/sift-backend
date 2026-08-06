@@ -30,7 +30,7 @@ export interface JWTPayLoad {
 
 export const generateAccessToken = (payload: JWTPayLoad) => {
   return jwt.sign(payload, process.env.JWT_SECRET as string, {
-    expiresIn: "30m",
+    expiresIn: "2m",
   });
 };
 

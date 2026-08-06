@@ -184,7 +184,7 @@ export const setTokenCookies = (
   res.cookie("accessToken", accessToken, {
     ...base,
     httpOnly: false,
-    maxAge: 30 * 60 * 1000,
+    maxAge: 2 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
