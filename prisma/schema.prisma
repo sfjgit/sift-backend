@@ -1503,7 +1503,6 @@ model MemeAsset {
 }
 
 
-
 // File: schema.prisma
 // Path: prisma/schema.prisma
 
@@ -1547,6 +1546,7 @@ model Ticket {
   closedAt    DateTime?
 
   attachments TicketAttachment[]
+  comments    TicketComment[]
 
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
@@ -1581,3 +1581,17 @@ model TicketAttachment {
   @@index([ticketId])
 }
 
+// flat reply thread — everyone on the ticket sees every message
+model TicketComment {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  authorId  String
+  body      String   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ticketId, createdAt])
+}
