@@ -3,12 +3,15 @@
 
 import { verifyAccessToken } from "@/utils/jwt";
 import prisma from "@/utils/prisma/client";
+import { config } from "dotenv";
 import { Request, Response, NextFunction } from "express";
 import {
   JsonWebTokenError,
   NotBeforeError,
   TokenExpiredError,
 } from "jsonwebtoken";
+
+config();
 
 // ─── Authenticate User ────────────────────────────────────────────────────────
 // JWT contains only { id } — everything else fetched fresh from DB every request
@@ -184,13 +187,13 @@ export const setTokenCookies = (
   res.cookie("accessToken", accessToken, {
     ...base,
     httpOnly: false,
-    maxAge: 2 * 60 * 1000,
+    maxAge: 8 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
     ...base,
     httpOnly: true,
-    maxAge: 8 * 60 * 60 * 1000,
+    maxAge: 18 * 60 * 60 * 1000,
   });
 };
 
