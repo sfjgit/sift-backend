@@ -3764,6 +3764,8 @@ export const getRequirements = async (req: Request, res: Response) => {
       createdById,
       closedAt,
       closedById,
+      dateFrom,
+      dateTo,
       page = "1",
       limit = "25",
       sortBy = "createdAt",
@@ -3806,6 +3808,15 @@ export const getRequirements = async (req: Request, res: Response) => {
     if (clientId) where.clientId = clientId;
     if (serviceLineId) where.serviceLineId = serviceLineId;
     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    if (dateFrom || dateTo) {
+      where.createdAt = {
+        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+        ...(dateTo
+          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+          : {}),
+      };
+    }
+
     if (search) {
       where.AND = [
         ...(where.AND ?? []),
@@ -4105,7 +4116,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       priority,
       createdByScope = "OWN",
       createdById,
+      // createdBy,
+      dateFrom,
+      dateTo,
     } = req.query as Record<string, string>;
+
+    // const createdById = createdBy || null;
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
@@ -4120,7 +4136,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope,
+        createdByScope ?? "OWN",
       );
       if (creatorIds !== null) {
         where.createdById = { in: creatorIds };
@@ -4130,8 +4146,18 @@ export const exportRequirements = async (req: Request, res: Response) => {
     if (status) where.status = status;
     if (priority) where.priority = priority;
     if (clientId) where.clientId = clientId;
+    if (createdById) where.createdById = createdById;
     if (serviceLineId) where.serviceLineId = serviceLineId;
     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    // ✅ Date range filter on createdAt
+    if (dateFrom || dateTo) {
+      where.createdAt = {
+        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+        ...(dateTo
+          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+          : {}),
+      };
+    }
     if (search) {
       where.AND = [
         ...(where.AND ?? []),
@@ -4143,7 +4169,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         },
       ];
     }
-
+    console.log("where", where);
     // ── Fetch requirements (no limit for export — capped at 1000 rows)
     const requirements = await prisma.requirement.findMany({
       where,
