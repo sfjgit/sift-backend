@@ -187,13 +187,13 @@ export const setTokenCookies = (
   res.cookie("accessToken", accessToken, {
     ...base,
     httpOnly: false,
-    maxAge: 8 * 60 * 60 * 1000,
+    maxAge: 1 * 60 * 1000,
   });
 
   res.cookie("refreshToken", refreshToken, {
     ...base,
     httpOnly: true,
-    maxAge: 18 * 60 * 60 * 1000,
+    maxAge: 9 * 60 * 60 * 1000,
   });
 };
 
