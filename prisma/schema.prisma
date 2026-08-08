@@ -1006,15 +1006,21 @@ model CandidateIndex {
   @@index([createdAt])
 }
 
+enum CandidateSnapshotType {
+  CANDIDATE  // sourced by a recruiter (authenticated ingest / Chrome extension)
+  APPLICANT  // self-applied via public careers page
+}
+ 
+// ── Updated model ─────────────────────────────────────────────────────────────
 model CandidateSnapshot {
   id                 String @id @default(uuid())
   candidateServiceId String // Candidate Service UUID — no cross-service FK
-
+ 
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id])
-
+ 
   snapshotAt DateTime @default(now())
-
+ 
   // display fields — point-in-time copy, never updated
   fullName       String
   email          String
@@ -1024,23 +1030,34 @@ model CandidateSnapshot {
   totalExpYears  Float?
   topSkills      String[]
   resumeUrl      String?
-
-  // full response blob from Candidate Service GET /candidates/:id
+ 
+  // full response blob from Candidate Service
   rawSnapshot Json
-
-  // snapshot source
+ 
+  // snapshot source / origin label (e.g. "PUBLIC_WEBSITE", "CHROME_EXTENSION")
   sourced String?
-
-  createdById String
-  createdBy   User   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])
-
+ 
+  // ── NEW ────────────────────────────────────────────────────────────────────
+  // Distinguishes self-applied (APPLICANT) from recruiter-sourced (CANDIDATE).
+  // Defaults to CANDIDATE so existing rows and the authenticated ingest path
+  // are unaffected — no backfill required.
+  type CandidateSnapshotType @default(CANDIDATE)
+  // ── END NEW ────────────────────────────────────────────────────────────────
+ 
+  // createdById is nullable for public applies:
+  // public applicants have no recruiter — there is no User row to FK against.
+  // Authenticated ingest always provides a real user ID.
+  createdById String?
+  createdBy   User?   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])
+ 
   pipeline RequirementCandidatePipeline?
-
+ 
   createdAt DateTime @default(now())
-
+ 
   @@unique([candidateServiceId, requirementId])
   @@index([requirementId])
   @@index([candidateServiceId])
+  @@index([type])                          // filter APPLICANT queue separately
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
