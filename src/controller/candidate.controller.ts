@@ -95,7 +95,7 @@ export const getCandidateMeta = async (req: Request, res: Response) => {
         });
 
         return { ...entry, count };
-      })
+      }),
     );
 
     res.json({
@@ -303,7 +303,7 @@ const CANDIDATE_DETAIL_SELECT = {
 function computeAging(stageUpdatedAt: Date | string | null) {
   if (!stageUpdatedAt) return { minutes: 0, label: "—" };
   const mins = Math.floor(
-    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000
+    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000,
   );
   if (mins < 60) return { minutes: mins, label: `${mins}m` };
   const h = Math.floor(mins / 60);
@@ -324,7 +324,7 @@ function shapeCandidate(p: any) {
 
 // Resolves stage IDs for a canonicalStage filter
 async function resolveCanonicalStageIds(
-  canonicalStage: string
+  canonicalStage: string,
 ): Promise<string[]> {
   const stages = await prisma.pipelineStage.findMany({
     where: { canonicalStage: canonicalStage as any, isActive: true },
@@ -622,6 +622,62 @@ export const addCandidate = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to add candidate" });
+  }
+};
+
+// ─── Get candidate pipeline stages ─────────────────────────────────────────
+export const getCandidatePipeline = async (req: Request, res: Response) => {
+  try {
+    const { candidateServiceId } = req.params;
+
+    const snapshots = await prisma.candidateSnapshot.findMany({
+      where: { candidateServiceId },
+      include: {
+        requirement: {
+          select: {
+            id: true,
+            title: true,
+            reqCode: true,
+          },
+        },
+        pipeline: {
+          include: {
+            currentStage: {
+              select: {
+                id: true,
+                label: true,
+                code: true,
+                order: true,
+              },
+            },
+            recruiter: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { snapshotAt: "desc" },
+    });
+
+    const result = snapshots
+      .filter((s) => s.pipeline !== null)
+      .map((s) => ({
+        snapshotId: s.id,
+        requirement: s.requirement,
+        currentStage: s.pipeline!.currentStage,
+        recruiter: s.pipeline!.recruiter,
+      }));
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error("getCandidatePipeline:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline" });
   }
 };
 
@@ -1133,7 +1189,7 @@ export const holdCandidate = async (req: Request, res: Response) => {
       data: {
         isOnHold: putting,
         onHoldAt: putting ? now : null,
-        onHoldReason: putting ? body.onHoldReason ?? null : null,
+        onHoldReason: putting ? (body.onHoldReason ?? null) : null,
         disposition: putting ? "ON_HOLD" : "ACTIVE",
         dispositionAt: now,
       },
@@ -1269,3 +1325,14 @@ export const removeCandidate = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to remove candidate" });
   }
 };
+function successResponse(
+  res: Response<any, Record<string, any>>,
+  arg1: string,
+  result: { snapshotId: string; requirement: any; currentStage: any }[],
+) {
+  throw new Error("Function not implemented.");
+}
+
+function errorResponse(res: Response<any, Record<string, any>>, err: unknown) {
+  throw new Error("Function not implemented.");
+}
