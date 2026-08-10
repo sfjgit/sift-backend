@@ -34,6 +34,7 @@ import {
   removeCandidate,
   getCandidateMeta,
   getCanonicalStages,
+  getCandidatePipeline,
 } from "@/controller/candidate.controller";
 
 const router = Router();
@@ -61,12 +62,20 @@ router.post(
   scope,
   checkPermission("canAdd"),
   validate.body(addCandidateSchema),
-  addCandidate
+  addCandidate,
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SINGLE — named action routes before /:candidateId to avoid collision
 // ─────────────────────────────────────────────────────────────────────────────
+
+// GET  /candidates/:candidateId/pipeline-stages
+router.get(
+  "/by-candidate/:candidateServiceId/pipeline",
+  auth,
+  scope,
+  getCandidatePipeline,
+);
 
 // GET  /candidates/:candidateId
 router.get("/:candidateId", auth, scope, getCandidateById);
@@ -78,7 +87,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(moveStageSchema),
-  moveToStage
+  moveToStage,
 );
 
 // PATCH /candidates/:candidateId/submit
@@ -88,7 +97,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(submitCandidateSchema),
-  submitCandidate
+  submitCandidate,
 );
 
 // PATCH /candidates/:candidateId/offer
@@ -98,7 +107,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(recordOfferSchema),
-  recordOffer
+  recordOffer,
 );
 
 // PATCH /candidates/:candidateId/offer-status
@@ -108,7 +117,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(updateOfferStatusSchema),
-  updateOfferStatus
+  updateOfferStatus,
 );
 
 // PATCH /candidates/:candidateId/reject
@@ -118,7 +127,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(rejectCandidateSchema),
-  rejectCandidate
+  rejectCandidate,
 );
 
 // PATCH /candidates/:candidateId/withdraw
@@ -128,7 +137,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(withdrawCandidateSchema),
-  withdrawCandidate
+  withdrawCandidate,
 );
 
 // PATCH /candidates/:candidateId/hold
@@ -138,7 +147,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(holdCandidateSchema),
-  holdCandidate
+  holdCandidate,
 );
 
 // PATCH /candidates/:candidateId/disposition
@@ -148,7 +157,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(setDispositionSchema),
-  setDisposition
+  setDisposition,
 );
 
 // DELETE /candidates/:candidateId
@@ -157,7 +166,7 @@ router.delete(
   auth,
   scope,
   checkPermission("canDelete"),
-  removeCandidate
+  removeCandidate,
 );
 
 export default router;
