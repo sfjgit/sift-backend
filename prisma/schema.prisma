@@ -1332,6 +1332,8 @@ model PipelineStage {
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
 
+  pipeline       Boolean         @default(true)
+
   isStandard Boolean @default(false)
 
   candidatePipelines RequirementCandidatePipeline[]
