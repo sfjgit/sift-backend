@@ -13,6 +13,7 @@ import {
   NotificationType,
   Prisma,
 } from "@prisma/client";
+import { getReportingLineIds } from "@/services/orgService";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
@@ -1104,6 +1105,160 @@ export const submitCandidate = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to submit candidate" });
+  }
+};
+
+// ── who can this user assign work to? null = no restriction (super admin) ────
+async function getAssignableRecruiterIds(
+  userId: string,
+  isSuperAdmin: boolean,
+): Promise<Set<string> | null> {
+  if (isSuperAdmin) return null;
+
+  const [lineIds, extra] = await Promise.all([
+    getReportingLineIds(userId), // full subtree under me
+    prisma.userAssignableTo.findMany({
+      where: { userId },
+      select: { targetId: true },
+    }),
+  ]);
+
+  return new Set<string>([userId, ...lineIds, ...extra.map((e) => e.targetId)]);
+}
+
+async function resolveTarget(
+  requirementId: string,
+  recruiterId: string,
+  assignerId: string,
+  isSuperAdmin: boolean,
+) {
+  const recruiter = await prisma.user.findFirst({
+    where: { id: recruiterId, isActive: true },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  if (!recruiter) {
+    return { error: { code: 404, message: "Recruiter not found or inactive" } };
+  }
+
+  const assignable = await getAssignableRecruiterIds(assignerId, isSuperAdmin);
+  if (assignable && !assignable.has(recruiterId)) {
+    return {
+      error: {
+        code: 403,
+        message: "You can only assign to recruiters under you",
+      },
+    };
+  }
+
+  // Link the recruiter's ACTIVE requirement assignment if they have one.
+  const assignment = await prisma.requirementAssignment.findFirst({
+    where: { requirementId, assignedToId: recruiterId, status: "ACTIVE" },
+    select: { id: true },
+    orderBy: { assignedAt: "desc" },
+  });
+
+  return { recruiter, assignmentId: assignment?.id ?? null };
+}
+
+export const assignApplicantRecruiter = async (req: Request, res: Response) => {
+  try {
+    const { id: requirementId, pipelineId } = req.params;
+    const { recruiterId } = req.body as { recruiterId?: string };
+    const actorId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    if (!recruiterId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "recruiterId is required" });
+    }
+
+    const requirement = await prisma.requirement.findFirst({
+      where: { id: requirementId, deletedAt: null },
+      select: { id: true, reqCode: true, title: true },
+    });
+    if (!requirement) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    const pipeline = await prisma.requirementCandidatePipeline.findFirst({
+      where: { id: pipelineId, requirementId },
+      select: {
+        id: true,
+        recruiterId: true,
+        snapshot: { select: { fullName: true } },
+      },
+    });
+    if (!pipeline) {
+      return res.status(404).json({
+        success: false,
+        message: "Candidate not found on this requirement",
+      });
+    }
+
+    const resolved = await resolveTarget(
+      requirementId,
+      recruiterId,
+      actorId,
+      isSuperAdmin,
+    );
+    if ("error" in resolved) {
+      return res
+        .status(resolved.error.code)
+        .json({ success: false, message: resolved.error.message });
+    }
+
+    const previousRecruiterId = pipeline.recruiterId;
+
+    const updated = await prisma.requirementCandidatePipeline.update({
+      where: { id: pipelineId },
+      data: {
+        recruiterId,
+        assignmentId: resolved.assignmentId, // null if recruiter has no active assignment
+      },
+      select: {
+        id: true,
+        recruiterId: true,
+        assignmentId: true,
+        recruiter: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    // ── best-effort activity + notification ──
+    try {
+      await prisma.requirementActivity.create({
+        data: {
+          requirementId,
+          actorId,
+          type: "RECRUITER_ASSIGNED",
+          summary: `Assigned ${pipeline.snapshot?.fullName ?? "applicant"} to ${resolved.recruiter.firstName} ${resolved.recruiter.lastName}`,
+          meta: { pipelineId, recruiterId, previousRecruiterId },
+        },
+      });
+      if (previousRecruiterId !== recruiterId) {
+        await prisma.notification.create({
+          data: {
+            userId: recruiterId,
+            type: "REQUIREMENT_ASSIGNED",
+            title: `New applicant assigned`,
+            body: `${pipeline.snapshot?.fullName ?? "An applicant"} on ${requirement.reqCode} was assigned to you.`,
+            referenceId: pipelineId,
+            referenceType: "PIPELINE",
+          },
+        });
+      }
+    } catch (e) {
+      console.warn("assign: activity/notification failed (non-fatal)", e);
+    }
+
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error("assignApplicantRecruiter:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to assign recruiter" });
   }
 };
 

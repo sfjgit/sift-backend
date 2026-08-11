@@ -92,6 +92,7 @@ import {
   withdrawCandidate,
   holdCandidate,
   getPipelineTimeline,
+  assignApplicantRecruiter,
 } from "@/controller/pipeline.controller";
 import {
   addNote,
@@ -224,6 +225,14 @@ router.patch(
   checkPermission("canEdit"),
   validate.body(submitCandidateSchema),
   submitCandidate,
+);
+// PATCH /requirements/:id/candidates/:pipelineId/assign   body: { recruiterId }
+router.patch(
+  "/:id/candidates/:pipelineId/assign",
+  authenticateUser,
+  scopeFilter("candidates"),
+  checkPermission("canEdit"),
+  assignApplicantRecruiter,
 );
 router.patch(
   "/:id/candidates/:pipelineId/offer",
