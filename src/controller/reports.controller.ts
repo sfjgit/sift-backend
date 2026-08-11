@@ -450,16 +450,21 @@ function buildCandidateSheet(
       spocDesig: req?.clientSpoc?.designation ?? "",
       serviceLine: req?.serviceLine?.name ?? "",
       bu: req?.businessUnit?.name ?? "",
-      name: p.snapshot?.fullName ?? "",
+      // name: p.snapshot?.fullName ?? "",
+      name: p.snapshot?.fullName || `[no snapshot — ${p.id.slice(0, 8)}]`,
       email: p.snapshot?.email ?? "",
       phone: p.snapshot?.phone ?? "",
       title: p.snapshot?.currentTitle ?? "",
       company: p.snapshot?.currentCompany ?? "",
       exp: p.snapshot?.totalExpYears ?? "",
       skills: (p.snapshot?.topSkills ?? []).join(", "),
-      recruiter: p.recruiter
-        ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
-        : "",
+      // recruiter: p.recruiter
+      //   ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
+      //   : "",
+      recruiter: [p.recruiter?.firstName, p.recruiter?.lastName]
+        .filter(Boolean)
+        .join(" "),
+
       stage: p.currentStage?.label ?? "",
       disposition: p.disposition,
       addedOn: new Date(p.createdAt),
@@ -952,7 +957,9 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
     // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
     const reqWhere = buildReqWhere(q, { withDateWindow: false });
     if (requirementId) reqWhere.id = requirementId; // within-a-requirement filter
-
+    if (q.status && !reqWhere.status) {
+      reqWhere.status = q.status as any;
+    }
     const stages = await fetchScopedStages(q.serviceLineId);
 
     // "what happened yesterday" — resolve the window and match ANY pipeline change
@@ -1100,6 +1107,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch recruiter report" });
   }
 };
+
 // GET /reports/recruiters/export   ( ?ids=recId1,recId2  → only those recruiters )
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
@@ -1701,7 +1709,10 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         jobType: r.jobType,
         remote: r.remoteType,
         openings: r.totalOpenings,
-        createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
+        // createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
+        createdBy: [r.createdBy.firstName, r.createdBy.lastName]
+          .filter(Boolean)
+          .join(" "),
         createdAt: new Date(r.createdAt),
         deletedAt: r.deletedAt ? new Date(r.deletedAt) : "",
         daysOpen,
