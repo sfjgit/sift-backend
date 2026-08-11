@@ -3037,6 +3037,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
               fullName: true,
               email: true,
               phone: true,
+              type: true,
               currentTitle: true,
               currentCompany: true,
               totalExpYears: true,
