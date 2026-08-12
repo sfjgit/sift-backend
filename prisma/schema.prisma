@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
