@@ -1141,9 +1141,12 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirement: reqWhere, ...recruiterFilter },
+      // select: {
+      //   ...PIPELINE_DETAIL_SELECT,
+      //   requirement: { select: REQ_LOOKUP_SELECT },
+      // },
       select: {
         ...PIPELINE_DETAIL_SELECT,
-        requirement: { select: REQ_LOOKUP_SELECT },
       },
       orderBy: [{ recruiterId: "asc" }, { createdAt: "asc" }],
       take: 5000,
@@ -1269,9 +1272,45 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     };
 
     // Sheet 2: candidates
-    const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
-    );
+    // const reqLookup = Object.fromEntries(
+    //   pipelines.map((p) => [p.requirementId, (p as any).requirement]),
+    // );
+    const reqIds = [...new Set(pipelines.map((p) => p.requirementId))];
+    const requirements = await prisma.requirement.findMany({
+      where: { id: { in: reqIds } },
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        priority: true,
+        jobType: true,
+        remoteType: true,
+        totalOpenings: true,
+        city: true,
+        state: true,
+        country: true,
+        respondBy: true,
+        isRespondByBreached: true,
+        isTurnaroundBreached: true,
+        createdAt: true,
+        deletedAt: true,
+        client: { select: { id: true, name: true } },
+        clientSpoc: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            designation: true,
+          },
+        },
+        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } },
+        createdBy: { select: { firstName: true, lastName: true } },
+      },
+    });
+    const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
     buildCandidateSheet(workbook, pipelines, reqLookup);
 
     const dateStr = new Date().toISOString().split("T")[0];
@@ -1789,9 +1828,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ███████████████████████████████████████████████████████████████████████████
 // 3. CANDIDATE FUNNEL REPORT  (real stages)
-// ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /reports/candidates
