@@ -8,7 +8,7 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3001;
 
-// Health check before starting server
+// kjjkjk
 async function startServer() {
   try {
     await prisma.$connect();
