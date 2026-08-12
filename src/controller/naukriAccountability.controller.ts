@@ -36,7 +36,7 @@ export async function getMe(req: Request, res: Response) {
   ]);
 
   const dailyByDate = new Map(
-    dailies.map((d) => [d.reportDate.toISOString().slice(0, 10), d])
+    dailies.map((d) => [d.reportDate.toISOString().slice(0, 10), d]),
   );
   const totalBroken = streak?.totalBroken ?? 0;
 
@@ -60,13 +60,19 @@ export async function getMe(req: Request, res: Response) {
         difference: r.difference,
         flags: r.flags,
         atsBySource: r.atsBySource,
+        // NEW — 3-step activity breakdown, same fields the admin naukri-logs
+        // page shows, now available to the recruiter for their own data too.
+        profilesViewed: r.naukriProfilesViewed,
+        phonesRevealed: r.naukriPhonesRevealed,
+        cvsDownloaded: r.naukriCvsDownloaded,
+        completeProfiles: r.completeProfilesCaptured,
         reason: d?.reason ?? null,
         promiseMade: d?.promiseMade ?? false,
         promiseStatus: d?.promiseStatus ?? "NONE",
         story,
         meme: meme ? { url: meme.url, caption: meme.caption } : null,
       };
-    })
+    }),
   );
 
   res.json({
@@ -109,11 +115,20 @@ export async function getTeam(req: Request, res: Response) {
       totalAts: 0,
       gap: 0,
       days: 0,
+      // NEW — cumulative 3-step activity across the range
+      totalProfilesViewed: 0,
+      totalPhonesRevealed: 0,
+      totalCvsDownloaded: 0,
+      totalCompleteProfiles: 0,
     };
     a.totalNaukri += r.naukriCvConsumed ?? 0;
     a.totalAts += r.atsCaptured;
     a.gap += (r.naukriCvConsumed ?? 0) - r.atsCaptured;
     a.days += 1;
+    a.totalProfilesViewed += r.naukriProfilesViewed ?? 0;
+    a.totalPhonesRevealed += r.naukriPhonesRevealed ?? 0;
+    a.totalCvsDownloaded += r.naukriCvsDownloaded ?? 0;
+    a.totalCompleteProfiles += r.completeProfilesCaptured ?? 0;
     agg.set(r.recruiterId, a);
   }
 
@@ -242,7 +257,7 @@ export async function evaluatePromises(req: Request, res: Response) {
     }
 
     const meme = await getRandomMeme(
-      kept ? MemeCategory.CELEBRATE : MemeCategory.SHAME
+      kept ? MemeCategory.CELEBRATE : MemeCategory.SHAME,
     );
     await prisma.naukriRecruiterDaily.update({
       where: { id: p.id },
@@ -278,6 +293,6 @@ export async function listMemes(req: Request, res: Response) {
     ? { category: req.query.category as MemeCategory }
     : {};
   res.json(
-    await prisma.memeAsset.findMany({ where, orderBy: { createdAt: "desc" } })
+    await prisma.memeAsset.findMany({ where, orderBy: { createdAt: "desc" } }),
   );
 }
