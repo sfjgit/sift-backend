@@ -5,7 +5,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  // directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,25 +490,25 @@ model Client {
   @@index([deletedAt])
 }
 
-model Band {
-  id String @id @default(uuid())
+// model Band {
+//   id String @id @default(uuid())
 
-  clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+//   clientId String
+//   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-  name String?
-  code String
+//   name String?
+//   code String
 
-  rangeFrom Decimal?
-  rangeTo   Decimal?
-  value     Decimal?
+//   rangeFrom Decimal?
+//   rangeTo   Decimal?
+//   value     Decimal?
 
-  experience Decimal?
+//   experience Decimal?
 
-  createdAt DateTime @default(now())
+//   createdAt DateTime @default(now())
 
-  @@index([clientId])
-}
+//   @@index([clientId])
+// }
 
 // model ClientAgreement {
 //   id            String      @id @default(uuid())
@@ -598,6 +598,15 @@ model ClientNote {
 model Requirement {
   id      String @id @default(uuid())
   reqCode String @unique
+
+
+  bandId String?
+  band   Band?   @relation(fields: [bandId], references: [id])
+
+  // ── Sale value — manually entered float, hidden from RECRUITER role at API ──
+  saleValue Float?
+
+// ── Add index inside model Requirement @@index block ─────────────────────────
 
   // ── Core ──────────────────────────────────────────────────────────────────
   title       String
@@ -715,6 +724,9 @@ model Requirement {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([bandId])
+
 
   @@index([parsedJDId])
   @@index([status])
@@ -1675,4 +1687,29 @@ model TicketNotification {
 
   @@index([recipientId, isRead, createdAt])
   @@index([ticketId])
+}
+
+
+
+model Band {
+  id String @id @default(uuid())
+
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name String?
+  code String
+
+  rangeFrom Decimal?
+  rangeTo   Decimal?
+  value     Decimal?
+
+  experience Decimal?
+
+  // ← NEW: back-relation so requirements can FK to a band
+  requirements Requirement[]
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
 }

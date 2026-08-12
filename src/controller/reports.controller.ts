@@ -7,16 +7,6 @@ import prisma from "@/utils/prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE / TIME WINDOW RESOLVER
-// Precedence:  hours  →  named range  →  explicit fromDate/toDate
-//   ?hours=8            last 8 hours (also 12 / 24 / any custom int)
-//   ?range=today        start-of-today  → now
-//   ?range=yesterday    full previous day (00:00 → 23:59:59.999)
-//   ?range=last7        last 7 days (incl. today)
-//   ?range=last30       last 30 days
-//   ?range=thisMonth    1st of month → now
-//   ?fromDate&?toDate    explicit; a date-only toDate auto-extends to end of day
-// Returns a Prisma range object { gte?, lte? } or {} for no filter.
-// NOTE: uses server local time. If server runs UTC, treat inputs accordingly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function startOfDay(d: Date): Date {
@@ -40,7 +30,6 @@ function startOfMonth(d: Date): Date {
   x.setHours(0, 0, 0, 0);
   return x;
 }
-// true when the string carries no time component (e.g. "2026-07-22")
 function isDateOnly(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
 }
@@ -52,16 +41,11 @@ interface DateWindow {
 
 function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
   const now = new Date();
-
-  // 1. rolling hour window
   if (q.hours) {
     const h = parseInt(q.hours, 10);
-    if (!Number.isNaN(h) && h > 0) {
+    if (!Number.isNaN(h) && h > 0)
       return { gte: new Date(now.getTime() - h * 60 * 60 * 1000), lte: now };
-    }
   }
-
-  // 2. named presets
   switch (q.range) {
     case "today":
       return { gte: startOfDay(now), lte: now };
@@ -78,50 +62,94 @@ function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
     default:
       break;
   }
-
-  // 3. explicit from/to
   const w: DateWindow = {};
-  if (q.fromDate) {
+  if (q.fromDate)
     w.gte = isDateOnly(q.fromDate)
       ? startOfDay(new Date(q.fromDate))
       : new Date(q.fromDate);
-  }
-  if (q.toDate) {
+  if (q.toDate)
     w.lte = isDateOnly(q.toDate)
       ? endOfDay(new Date(q.toDate))
       : new Date(q.toDate);
-  }
   return w;
 }
 
-// human label for the window — printed into the export filename + sheet meta
 function windowLabel(q: Record<string, string | undefined>): string {
   if (q.hours) return `last-${q.hours}h`;
   if (q.range) return q.range;
-  if (q.fromDate || q.toDate) {
+  if (q.fromDate || q.toDate)
     return `${q.fromDate ?? "start"}_to_${q.toDate ?? "now"}`;
-  }
   return "all-time";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCOPE: BFS downward from userId — self + all reportees recursively
-// SuperAdmin → null (no filter, entire org). Everyone else → self + subtree.
+// SCOPE RESOLUTION
+//
+// !! CRITICAL FIX: The old approach (BFS via reportingToId only) missed team
+// leads entirely — they use teamLeadId, not reportingToId.
+//
+// resolveScopedUserIds → reads req.scopeFilter (set by middleware).
+//   TEAM scope now correctly returns teamMemberIds which includes the lead.
+//
+// resolveOrgTreeDown → kept only for CREATOR scope on requirement report
+//   (who created requirements I can see follows the reporting tree,
+//    not the team-lead tree — intentionally separate).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolves the set of user IDs whose pipeline rows the current user may see.
+ * Reads from req.scopeFilter (already resolved by scopeFilter middleware).
+ * Returns null = no restriction (ALL scope / super admin).
+ */
+function resolveScopedUserIds(req: Request): string[] | null {
+  const scope = req.scopeFilter;
+  if (!scope || scope.type === "ALL") return null;
+
+  switch (scope.type) {
+    case "OWN":
+      return [scope.userId!];
+    case "TEAM":
+      // teamMemberIds already includes the team lead themselves
+      return scope.teamMemberIds ?? [scope.userId!];
+    case "REPORTING":
+      return scope.subordinateIds ?? [scope.userId!];
+    case "REPORTING_LINE":
+      return scope.reportingLineIds ?? [scope.userId!];
+    case "BU":
+      return scope.subordinateIds ?? [scope.userId!];
+    case "DEPARTMENT":
+      // Can't express as a flat id list — fall back to self (safe default)
+      return [scope.userId!];
+    default:
+      return [scope.userId!];
+  }
+}
+
+/**
+ * BFS down BOTH reportingToId AND teamLeadId trees.
+ * Used for requirement creator-scope — "which users' created requirements can I see?"
+ *
+ * A team lead's members are linked via teamLeadId, NOT reportingToId.
+ * Without walking teamLeadId, a team lead only sees requirements created by
+ * people in the reportingTo chain — missing their entire team.
+ *
+ * Returns null for super admin (no filter).
+ */
 async function resolveOrgTreeDown(
   userId: string,
-  isSuperAdmin: boolean,
+  isSuperAdmin: boolean
 ): Promise<string[] | null> {
   if (isSuperAdmin) return null;
-
   const visited = new Set<string>([userId]);
   let frontier = [userId];
-
   while (frontier.length > 0) {
+    // Walk both trees in one query — union of reportingToId and teamLeadId children
     const children = await prisma.user.findMany({
       where: {
-        reportingToId: { in: frontier },
+        OR: [
+          { reportingToId: { in: frontier } },
+          { teamLeadId: { in: frontier } },
+        ],
         isActive: true,
         id: { notIn: [...visited] },
       },
@@ -138,27 +166,21 @@ async function resolveOrgTreeDown(
   return [...visited];
 }
 
-async function resolveScopedUserIds(req: Request): Promise<string[] | null> {
-  return resolveOrgTreeDown(req.user!.id, req.user!.isSuperAdmin);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT WHERE builder — folds in the resolved date window on createdAt
+// REQUIREMENT WHERE builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Path: core-service/src/reports/recruiter.report.ts   (adjust to your actual path)
 function buildReqWhere(
   q: Record<string, string | undefined>,
-  opts: { withDateWindow?: boolean } = {},
+  opts: { withDateWindow?: boolean } = {}
 ): Record<string, any> {
-  const { withDateWindow = true } = opts; // default keeps existing callers untouched
+  const { withDateWindow = true } = opts;
   const where: Record<string, any> = { deletedAt: null };
   if (q.clientId) where.clientId = q.clientId;
   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
   if (q.status) where.status = q.status;
   if (q.priority) where.priority = q.priority;
-
   if (withDateWindow) {
     const win = resolveDateWindow(q);
     if (win.gte || win.lte) {
@@ -171,11 +193,7 @@ function buildReqWhere(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGES — real PipelineStage rows, scoped by service line.
-// serviceLineId === null  → common (all lines)
-// serviceLineId === <id>  → variant, only that line
-// When a serviceLineId filter is present we merge common + that line's stages.
-// Otherwise every active stage is returned.
+// STAGES
 // ─────────────────────────────────────────────────────────────────────────────
 
 const STAGE_SELECT = {
@@ -192,9 +210,7 @@ const STAGE_SELECT = {
 
 async function fetchScopedStages(serviceLineId?: string) {
   const where: Record<string, any> = { isActive: true };
-  if (serviceLineId) {
-    where.OR = [{ serviceLineId: null }, { serviceLineId }];
-  }
+  if (serviceLineId) where.OR = [{ serviceLineId: null }, { serviceLineId }];
   return prisma.pipelineStage.findMany({
     where,
     orderBy: { order: "asc" },
@@ -220,7 +236,7 @@ function stageMetaOut(stages: StageMeta[], standardOnly: boolean) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DISPOSITION HELPERS  (business enums, not display config)
+// DISPOSITION HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 function isJoined(p: any): boolean {
@@ -233,10 +249,6 @@ function isActive(p: any): boolean {
   return p.disposition === "ACTIVE";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// UTIL: formatAging
-// ─────────────────────────────────────────────────────────────────────────────
-
 function formatAging(mins: number): string {
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
@@ -247,7 +259,7 @@ function formatAging(mins: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXCEL styling
+// EXCEL STYLING
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HDR_FILL: ExcelJS.Fill = {
@@ -265,6 +277,11 @@ const SUB_FILL: ExcelJS.Fill = {
   pattern: "solid",
   fgColor: { argb: "FF2D5986" },
 };
+const TOTAL_FILL: ExcelJS.Fill = {
+  type: "pattern",
+  pattern: "solid",
+  fgColor: { argb: "FFEFF6FF" },
+};
 
 function styleHdr(row: ExcelJS.Row, fill = HDR_FILL) {
   row.eachCell((c) => {
@@ -276,11 +293,16 @@ function styleHdr(row: ExcelJS.Row, fill = HDR_FILL) {
   row.height = 28;
 }
 
-function humanKey(key: string) {
-  return key
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(" ");
+function styleTotalsRow(row: ExcelJS.Row) {
+  row.eachCell((c) => {
+    c.fill = TOTAL_FILL;
+    c.font = { bold: true, size: 11, color: { argb: "FF1E3A5F" } };
+    c.border = {
+      top: { style: "medium", color: { argb: "FF4F46E5" } },
+      bottom: { style: "thin", color: { argb: "FF4F46E5" } },
+    };
+  });
+  row.height = 22;
 }
 
 function spocName(spoc: any): string {
@@ -289,7 +311,7 @@ function spocName(spoc: any): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE SELECT for candidate detail sheet (used in all exports)
+// PIPELINE SELECT
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PIPELINE_DETAIL_SELECT = {
@@ -343,8 +365,6 @@ const PIPELINE_DETAIL_SELECT = {
   },
 } as const;
 
-// Requirement fields resolved for the candidate sheet lookup.
-// Client / SPOC / Service Line / BU are the important new additions.
 const REQ_LOOKUP_SELECT = {
   id: true,
   reqCode: true,
@@ -367,142 +387,242 @@ const REQ_LOOKUP_SELECT = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHEET 2 (always): candidate detail — now with client / spoc / SL / BU
+// ALL CANDIDATE COLUMNS — single source of truth
+// key   = what the frontend sends in ?hiddenCandidateCols=key1,key2
+// Everything here is opt-out. User hides what they don't want.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ALL_CANDIDATE_COLS = [
+  // ── Requirement context ──
+  { key: "reqCode", header: "Req Code", width: 14, group: "requirement" },
+  { key: "reqTitle", header: "Requirement", width: 34, group: "requirement" },
+  {
+    key: "totalPipeline",
+    header: "Total Pipeline",
+    width: 14,
+    group: "requirement",
+  }, // total candidates in this req
+  { key: "client", header: "Client", width: 24, group: "requirement" },
+  { key: "spoc", header: "Client SPOC", width: 22, group: "requirement" },
+  { key: "spocEmail", header: "SPOC Email", width: 26, group: "requirement" },
+  {
+    key: "spocDesig",
+    header: "SPOC Designation",
+    width: 20,
+    group: "requirement",
+  },
+  {
+    key: "serviceLine",
+    header: "Service Line",
+    width: 18,
+    group: "requirement",
+  },
+  { key: "bu", header: "Business Unit", width: 20, group: "requirement" },
+  // ── Candidate identity ──
+  { key: "name", header: "Candidate Name", width: 26, group: "candidate" },
+  { key: "email", header: "Email", width: 30, group: "candidate" },
+  { key: "phone", header: "Phone", width: 16, group: "candidate" },
+  { key: "title", header: "Current Title", width: 24, group: "candidate" },
+  { key: "company", header: "Current Company", width: 22, group: "candidate" },
+  { key: "exp", header: "Exp (yrs)", width: 10, group: "candidate" },
+  { key: "skills", header: "Top Skills", width: 34, group: "candidate" },
+  // ── Pipeline state ──
+  { key: "recruiter", header: "Recruiter", width: 22, group: "pipeline" },
+  { key: "stage", header: "Current Stage", width: 24, group: "pipeline" },
+  { key: "disposition", header: "Status", width: 14, group: "pipeline" },
+  { key: "addedOn", header: "Added On", width: 16, group: "pipeline" },
+  {
+    key: "pipelineDays",
+    header: "Days in Pipeline",
+    width: 16,
+    group: "pipeline",
+  },
+  { key: "aging", header: "Stage Aging", width: 12, group: "pipeline" },
+  { key: "submittedAt", header: "Submitted At", width: 18, group: "pipeline" },
+  { key: "offerStatus", header: "Offer Status", width: 14, group: "pipeline" },
+  // ── CTC ──
+  { key: "currentCtc", header: "Current CTC", width: 14, group: "ctc" },
+  { key: "expectedCtc", header: "Expected CTC", width: 14, group: "ctc" },
+  { key: "negotiatedCtc", header: "Negotiated CTC", width: 14, group: "ctc" },
+  { key: "offeredCtc", header: "Offered CTC", width: 14, group: "ctc" },
+  { key: "currency", header: "Currency", width: 10, group: "ctc" },
+  { key: "salaryType", header: "Salary Type", width: 12, group: "ctc" },
+  // ── Joining ──
+  { key: "noticePeriod", header: "Notice Period", width: 14, group: "joining" },
+  { key: "lwd", header: "Last Working Day", width: 16, group: "joining" },
+  {
+    key: "expectedJoining",
+    header: "Expected Joining",
+    width: 16,
+    group: "joining",
+  },
+  {
+    key: "actualJoining",
+    header: "Actual Joining",
+    width: 16,
+    group: "joining",
+  },
+  {
+    key: "monthOfJoining",
+    header: "Month of Joining",
+    width: 16,
+    group: "joining",
+  },
+  { key: "daysToJoin", header: "Days to Join", width: 14, group: "joining" },
+  // ── Flags ──
+  { key: "rejected", header: "Rejected?", width: 10, group: "flags" },
+  { key: "withdrawn", header: "Withdrawn?", width: 10, group: "flags" },
+  { key: "onHold", header: "On Hold?", width: 10, group: "flags" },
+  // ── Audit ──
+  { key: "reqCreated", header: "Req Created", width: 16, group: "audit" },
+  { key: "reqDeleted", header: "Req Deleted", width: 16, group: "audit" },
+] as const;
+
+type CandidateColKey = (typeof ALL_CANDIDATE_COLS)[number]["key"];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE SHEET BUILDER
+//
+// opts.hiddenCols  — keys the user has unchecked in the candidate column picker
+// opts.stageIds    — filter: only emit rows where currentStageId is in this set
+// opts.disposition — filter: only emit rows with this disposition
+// totalPipelineByReq — total pipeline count per req (all stages, pre-computed)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildCandidateSheet(
   workbook: ExcelJS.Workbook,
   pipelines: any[],
   reqLookup: Record<string, any>,
+  opts: {
+    hiddenCols?: Set<CandidateColKey>;
+    stageIds?: string[];
+    disposition?: string;
+  } = {},
+  totalPipelineByReq: Record<string, number> = {}
 ) {
+  const hidden = opts.hiddenCols ?? new Set<CandidateColKey>();
+
+  // Only include columns the user hasn't hidden
+  const activeCols = ALL_CANDIDATE_COLS.filter((c) => !hidden.has(c.key));
+
   const sheet = workbook.addWorksheet("Candidates", {
     views: [{ state: "frozen", ySplit: 1 }],
   });
 
-  sheet.columns = [
-    { header: "Req Code", key: "reqCode", width: 14 },
-    { header: "Requirement", key: "reqTitle", width: 34 },
-    // client context — the important new block
-    { header: "Client", key: "client", width: 24 },
-    { header: "Client SPOC", key: "spoc", width: 22 },
-    { header: "SPOC Email", key: "spocEmail", width: 26 },
-    { header: "SPOC Designation", key: "spocDesig", width: 20 },
-    { header: "Service Line", key: "serviceLine", width: 18 },
-    { header: "Business Unit", key: "bu", width: 20 },
-    // candidate
-    { header: "Candidate Name", key: "name", width: 26 },
-    { header: "Email", key: "email", width: 30 },
-    { header: "Phone", key: "phone", width: 16 },
-    { header: "Current Title", key: "title", width: 24 },
-    { header: "Current Company", key: "company", width: 22 },
-    { header: "Exp (yrs)", key: "exp", width: 10 },
-    { header: "Top Skills", key: "skills", width: 34 },
-    { header: "Recruiter", key: "recruiter", width: 22 },
-    { header: "Current Stage", key: "stage", width: 24 },
-    { header: "Status", key: "disposition", width: 14 },
-    { header: "Added On", key: "addedOn", width: 16 },
-    { header: "Days in Pipeline", key: "pipelineDays", width: 16 },
-    { header: "Stage Aging", key: "aging", width: 12 },
-    { header: "Submitted At", key: "submittedAt", width: 18 },
-    { header: "Offer Status", key: "offerStatus", width: 14 },
-    // CTC breakdown
-    { header: "Current CTC", key: "currentCtc", width: 14 },
-    { header: "Expected CTC", key: "expectedCtc", width: 14 },
-    { header: "Negotiated CTC", key: "negotiatedCtc", width: 14 },
-    { header: "Offered CTC", key: "offeredCtc", width: 14 },
-    { header: "Currency", key: "currency", width: 10 },
-    { header: "Salary Type", key: "salaryType", width: 12 },
-    // Joining
-    { header: "Notice Period", key: "noticePeriod", width: 14 },
-    { header: "Last Working Day", key: "lwd", width: 16 },
-    { header: "Expected Joining", key: "expectedJoining", width: 16 },
-    { header: "Actual Joining", key: "actualJoining", width: 16 },
-    { header: "Month of Joining", key: "monthOfJoining", width: 16 },
-    { header: "Days to Join", key: "daysToJoin", width: 14 },
-    { header: "Rejected?", key: "rejected", width: 10 },
-    { header: "Withdrawn?", key: "withdrawn", width: 10 },
-    { header: "On Hold?", key: "onHold", width: 10 },
-    // requirement audit
-    { header: "Req Created", key: "reqCreated", width: 16 },
-    { header: "Req Deleted", key: "reqDeleted", width: 16 },
-  ];
+  sheet.columns = activeCols.map((c) => ({
+    header: c.header,
+    key: c.key,
+    width: c.width,
+  }));
 
   styleHdr(sheet.getRow(1));
 
+  const stageSet = opts.stageIds ? new Set(opts.stageIds) : null;
   const now = Date.now();
+
+  let totalRows = 0;
+  let totalPipelineDays = 0;
+  const dispositionCount: Record<string, number> = {};
+
+  const has = (k: CandidateColKey) => !hidden.has(k);
+
   for (const p of pipelines) {
+    if (stageSet && !stageSet.has(p.currentStageId)) continue;
+    if (opts.disposition && p.disposition !== opts.disposition) continue;
+
     const req = reqLookup[p.requirementId];
     const stageAgeMins = Math.floor(
-      (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+      (now - new Date(p.stageUpdatedAt).getTime()) / 60000
     );
     const totalMins =
       (p.stageHistory ?? []).reduce(
         (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-        0,
+        0
       ) + stageAgeMins;
+    const pipelineDays = Math.floor(totalMins / 1440);
 
-    const row = sheet.addRow({
-      reqCode: req?.reqCode ?? "",
-      reqTitle: req?.title ?? "",
-      client: req?.client?.name ?? "",
-      spoc: spocName(req?.clientSpoc),
-      spocEmail: req?.clientSpoc?.email ?? "",
-      spocDesig: req?.clientSpoc?.designation ?? "",
-      serviceLine: req?.serviceLine?.name ?? "",
-      bu: req?.businessUnit?.name ?? "",
-      // name: p.snapshot?.fullName ?? "",
-      name: p.snapshot?.fullName || `[no snapshot — ${p.id.slice(0, 8)}]`,
-      email: p.snapshot?.email ?? "",
-      phone: p.snapshot?.phone ?? "",
-      title: p.snapshot?.currentTitle ?? "",
-      company: p.snapshot?.currentCompany ?? "",
-      exp: p.snapshot?.totalExpYears ?? "",
-      skills: (p.snapshot?.topSkills ?? []).join(", "),
-      // recruiter: p.recruiter
-      //   ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
-      //   : "",
-      recruiter: [p.recruiter?.firstName, p.recruiter?.lastName]
+    totalRows++;
+    totalPipelineDays += pipelineDays;
+    dispositionCount[p.disposition] =
+      (dispositionCount[p.disposition] ?? 0) + 1;
+
+    // Build row data only for active columns — avoids setting unused keys
+    const rowData: Record<string, any> = {};
+    if (has("reqCode")) rowData.reqCode = req?.reqCode ?? "";
+    if (has("reqTitle")) rowData.reqTitle = req?.title ?? "";
+    if (has("totalPipeline"))
+      rowData.totalPipeline = totalPipelineByReq[p.requirementId] ?? "";
+    if (has("client")) rowData.client = req?.client?.name ?? "";
+    if (has("spoc")) rowData.spoc = spocName(req?.clientSpoc);
+    if (has("spocEmail")) rowData.spocEmail = req?.clientSpoc?.email ?? "";
+    if (has("spocDesig"))
+      rowData.spocDesig = req?.clientSpoc?.designation ?? "";
+    if (has("serviceLine")) rowData.serviceLine = req?.serviceLine?.name ?? "";
+    if (has("bu")) rowData.bu = req?.businessUnit?.name ?? "";
+    if (has("name"))
+      rowData.name =
+        p.snapshot?.fullName || `[no snapshot — ${p.id.slice(0, 8)}]`;
+    if (has("email")) rowData.email = p.snapshot?.email ?? "";
+    if (has("phone")) rowData.phone = p.snapshot?.phone ?? "";
+    if (has("title")) rowData.title = p.snapshot?.currentTitle ?? "";
+    if (has("company")) rowData.company = p.snapshot?.currentCompany ?? "";
+    if (has("exp")) rowData.exp = p.snapshot?.totalExpYears ?? "";
+    if (has("skills"))
+      rowData.skills = (p.snapshot?.topSkills ?? []).join(", ");
+    if (has("recruiter"))
+      rowData.recruiter = [p.recruiter?.firstName, p.recruiter?.lastName]
         .filter(Boolean)
-        .join(" "),
-
-      stage: p.currentStage?.label ?? "",
-      disposition: p.disposition,
-      addedOn: new Date(p.createdAt),
-      pipelineDays: Math.floor(totalMins / 1440),
-      aging: formatAging(stageAgeMins),
-      submittedAt: p.submittedAt ? new Date(p.submittedAt) : "",
-      offerStatus: p.offerStatus ?? "",
-      currentCtc: p.currentCtc ?? "",
-      expectedCtc: p.expectedCtc ?? "",
-      negotiatedCtc: p.negotiatedCtc ?? "",
-      offeredCtc: p.offeredCtc ?? "",
-      currency: p.salaryCurrency ?? "",
-      salaryType: p.salaryType ?? "",
-      noticePeriod: p.noticePeriod ?? "",
-      lwd: p.lastWorkingDate ? new Date(p.lastWorkingDate) : "",
-      expectedJoining: p.expectedJoiningDate
+        .join(" ");
+    if (has("stage")) rowData.stage = p.currentStage?.label ?? "";
+    if (has("disposition")) rowData.disposition = p.disposition;
+    if (has("addedOn")) rowData.addedOn = new Date(p.createdAt);
+    if (has("pipelineDays")) rowData.pipelineDays = pipelineDays;
+    if (has("aging")) rowData.aging = formatAging(stageAgeMins);
+    if (has("submittedAt"))
+      rowData.submittedAt = p.submittedAt ? new Date(p.submittedAt) : "";
+    if (has("offerStatus")) rowData.offerStatus = p.offerStatus ?? "";
+    if (has("currentCtc")) rowData.currentCtc = p.currentCtc ?? "";
+    if (has("expectedCtc")) rowData.expectedCtc = p.expectedCtc ?? "";
+    if (has("negotiatedCtc")) rowData.negotiatedCtc = p.negotiatedCtc ?? "";
+    if (has("offeredCtc")) rowData.offeredCtc = p.offeredCtc ?? "";
+    if (has("currency")) rowData.currency = p.salaryCurrency ?? "";
+    if (has("salaryType")) rowData.salaryType = p.salaryType ?? "";
+    if (has("noticePeriod")) rowData.noticePeriod = p.noticePeriod ?? "";
+    if (has("lwd"))
+      rowData.lwd = p.lastWorkingDate ? new Date(p.lastWorkingDate) : "";
+    if (has("expectedJoining"))
+      rowData.expectedJoining = p.expectedJoiningDate
         ? new Date(p.expectedJoiningDate)
-        : "",
-      actualJoining: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
-      monthOfJoining: p.monthOfJoining ?? "",
-      daysToJoin: p.remainingDaysToJoin ?? "",
-      rejected: p.isRejected ? "Yes" : "No",
-      withdrawn: p.isWithdrawn ? "Yes" : "No",
-      onHold: p.isOnHold ? "Yes" : "No",
-      reqCreated: req?.createdAt ? new Date(req.createdAt) : "",
-      reqDeleted: req?.deletedAt ? new Date(req.deletedAt) : "",
-    });
+        : "";
+    if (has("actualJoining"))
+      rowData.actualJoining = p.actualJoiningDate
+        ? new Date(p.actualJoiningDate)
+        : "";
+    if (has("monthOfJoining")) rowData.monthOfJoining = p.monthOfJoining ?? "";
+    if (has("daysToJoin")) rowData.daysToJoin = p.remainingDaysToJoin ?? "";
+    if (has("rejected")) rowData.rejected = p.isRejected ? "Yes" : "No";
+    if (has("withdrawn")) rowData.withdrawn = p.isWithdrawn ? "Yes" : "No";
+    if (has("onHold")) rowData.onHold = p.isOnHold ? "Yes" : "No";
+    if (has("reqCreated"))
+      rowData.reqCreated = req?.createdAt ? new Date(req.createdAt) : "";
+    if (has("reqDeleted"))
+      rowData.reqDeleted = req?.deletedAt ? new Date(req.deletedAt) : "";
 
+    const row = sheet.addRow(rowData);
     row.height = 18;
-    row.getCell("addedOn").numFmt = "dd-mmm-yyyy";
-    if (p.submittedAt) row.getCell("submittedAt").numFmt = "dd-mmm-yyyy hh:mm";
-    if (p.lastWorkingDate) row.getCell("lwd").numFmt = "dd-mmm-yyyy";
-    if (p.expectedJoiningDate)
+    if (has("addedOn")) row.getCell("addedOn").numFmt = "dd-mmm-yyyy";
+    if (has("submittedAt") && p.submittedAt)
+      row.getCell("submittedAt").numFmt = "dd-mmm-yyyy hh:mm";
+    if (has("lwd") && p.lastWorkingDate)
+      row.getCell("lwd").numFmt = "dd-mmm-yyyy";
+    if (has("expectedJoining") && p.expectedJoiningDate)
       row.getCell("expectedJoining").numFmt = "dd-mmm-yyyy";
-    if (p.actualJoiningDate)
+    if (has("actualJoining") && p.actualJoiningDate)
       row.getCell("actualJoining").numFmt = "dd-mmm-yyyy";
-    if (req?.createdAt) row.getCell("reqCreated").numFmt = "dd-mmm-yyyy hh:mm";
-    if (req?.deletedAt) row.getCell("reqDeleted").numFmt = "dd-mmm-yyyy hh:mm";
+    if (has("reqCreated") && req?.createdAt)
+      row.getCell("reqCreated").numFmt = "dd-mmm-yyyy hh:mm";
+    if (has("reqDeleted") && req?.deletedAt)
+      row.getCell("reqDeleted").numFmt = "dd-mmm-yyyy hh:mm";
 
     if (p.isRejected || p.isWithdrawn) {
       row.eachCell((c) => {
@@ -511,13 +631,37 @@ function buildCandidateSheet(
     }
   }
 
+  // ── TOTALS ROW ────────────────────────────────────────────────────────────
+  const dispositionSummary = Object.entries(dispositionCount)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(" | ");
+
+  const totalsData: Record<string, any> = {};
+  // First visible column gets the total label
+  if (activeCols.length > 0)
+    totalsData[activeCols[0].key] = `TOTAL: ${totalRows} candidates`;
+  if (activeCols.length > 1)
+    totalsData[activeCols[1].key] = dispositionSummary || "";
+  if (has("pipelineDays"))
+    totalsData.pipelineDays =
+      totalRows > 0 ? Math.round(totalPipelineDays / totalRows) : 0;
+  if (has("aging")) totalsData.aging = "avg days";
+
+  const totalsRow = sheet.addRow(totalsData);
+  styleTotalsRow(totalsRow);
+  if (activeCols.length >= 2) {
+    sheet.mergeCells(totalsRow.number, 1, totalsRow.number, 2);
+  }
+
   sheet.autoFilter = {
     from: { row: 1, column: 1 },
     to: { row: 1, column: sheet.columnCount },
   };
+
+  return { totalRows, dispositionCount };
 }
 
-// parse ?ids=a,b,c → string[] (deduped, trimmed). Empty → null.
 function parseIds(raw?: string): string[] | null {
   if (!raw) return null;
   const arr = raw
@@ -528,26 +672,22 @@ function parseIds(raw?: string): string[] | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ███████████████████████████████████████████████████████████████████████████
-// 0. OVERVIEW  —  monitoring dashboard feed (KPIs, funnel, time-series, leaders)
+// 0. OVERVIEW
 // GET /reports/overview
-// ███████████████████████████████████████████████████████████████████████████
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getReportsOverview = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const win = resolveDateWindow(q);
-    const scopedUserIds = await resolveScopedUserIds(req);
+    const scopedUserIds = resolveScopedUserIds(req); // !! sync now, reads req.scopeFilter
 
     const reqWhere = buildReqWhere(q);
-    // Unfiltered → every stage (needed to build per-line funnels). Filtered → that line + common.
     const stages = await fetchScopedStages(q.serviceLineId);
 
     const pipelineWhere: Record<string, any> = { requirement: reqWhere };
-    if (scopedUserIds !== null) {
+    if (scopedUserIds !== null)
       pipelineWhere.recruiterId = { in: scopedUserIds };
-    }
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: pipelineWhere,
@@ -574,15 +714,15 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     });
 
     const total = pipelines.length;
-    let submitted = 0;
-    let offered = 0;
-    let joined = 0;
-    let dropped = 0;
-    let active = 0;
+    let submitted = 0,
+      offered = 0,
+      joined = 0,
+      dropped = 0,
+      active = 0;
 
     const NONE = "__none__";
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0]),
+      stages.map((s) => [s.id, 0])
     );
     const dispositionCounts: Record<string, number> = {};
     const recruiterAgg: Record<
@@ -590,7 +730,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       { id: string; name: string; sourced: number; joined: number }
     > = {};
 
-    // per service line
     type LineAgg = {
       serviceLineId: string | null;
       name: string;
@@ -602,7 +741,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     };
     const lineAgg: Record<string, LineAgg> = {};
 
-    // per business unit
     type BuAgg = {
       businessUnitId: string | null;
       name: string;
@@ -611,7 +749,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     };
     const buAgg: Record<string, BuAgg> = {};
 
-    // time-series bucketing — hourly if window ≤ 2 days, else daily
     const spanMs =
       win.gte && win.lte ? win.lte.getTime() - win.gte.getTime() : Infinity;
     const bucketByHour = spanMs <= 2 * 24 * 60 * 60 * 1000;
@@ -646,19 +783,17 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       series[k] = (series[k] ?? 0) + 1;
 
       const rid = p.recruiterId;
-      if (!recruiterAgg[rid]) {
+      if (!recruiterAgg[rid])
         recruiterAgg[rid] = {
           id: rid,
           name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
           sourced: 0,
           joined: 0,
         };
-      }
       recruiterAgg[rid].sourced++;
       if (isJ) recruiterAgg[rid].joined++;
 
-      // service line bucket
-      if (!lineAgg[lineKey]) {
+      if (!lineAgg[lineKey])
         lineAgg[lineKey] = {
           serviceLineId: lineId,
           name: rq?.serviceLine?.name ?? "Unassigned",
@@ -668,7 +803,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           joined: 0,
           stageCounts: {},
         };
-      }
       const la = lineAgg[lineKey];
       la.total++;
       if (p.submittedAt) la.submitted++;
@@ -677,20 +811,17 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       la.stageCounts[p.currentStageId] =
         (la.stageCounts[p.currentStageId] ?? 0) + 1;
 
-      // business unit bucket
-      if (!buAgg[buKey]) {
+      if (!buAgg[buKey])
         buAgg[buKey] = {
           businessUnitId: buId,
           name: rq?.businessUnit?.name ?? "Unassigned",
           total: 0,
           joined: 0,
         };
-      }
       buAgg[buKey].total++;
       if (isJ) buAgg[buKey].joined++;
     }
 
-    // global funnel (all stages, ordered)
     const funnel = stages
       .map((s) => ({
         stageId: s.id,
@@ -703,12 +834,9 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }))
       .filter((s) => s.count > 0);
 
-    // per-line funnel — each line sees only its own variants + common stages,
-    // counted from that line's own pipeline rows (common stages are NOT shared
-    // across lines here; a candidate is counted under its requirement's line).
     const stageForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
 
     const byServiceLine = Object.values(lineAgg)
@@ -731,13 +859,11 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total,
+      (a, b) => b.total - a.total
     );
-
     const timeSeries = Object.entries(series)
       .map(([bucket, count]) => ({ bucket, count }))
       .sort((a, b) => a.bucket.localeCompare(b.bucket));
-
     const leaderboard = Object.values(recruiterAgg)
       .sort((a, b) => b.sourced - a.sourced)
       .slice(0, 10);
@@ -769,7 +895,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       meta: {
         window: windowLabel(q),
         granularity: bucketByHour ? "hour" : "day",
-        scope: (req as any).scopeFilter?.type ?? "ALL",
+        scope: req.scopeFilter?.type ?? "ALL",
         multiLine: byServiceLine.length > 1,
       },
     });
@@ -782,13 +908,10 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ███████████████████████████████████████████████████████████████████████████
-// 1. RECRUITER REPORT  (real service-line stages, per-requirement drill-down)
-// ███████████████████████████████████████████████████████████████████████████
+// 1. RECRUITER REPORT
+// GET /reports/recruiters
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Aggregate a set of pipeline rows into per-recruiter stat rows.
-// Pulled out so we can run it once for a flat view or once per service line.
 function buildRecruiterRows(pipes: any[]) {
   type ReqStats = {
     requirementId: string;
@@ -796,9 +919,9 @@ function buildRecruiterRows(pipes: any[]) {
     title: string;
     status: string;
     totalOpenings: number;
-    client: { id: string; name: string } | null;
-    serviceLine: { id: string; name: string } | null;
-    businessUnit: { id: string; name: string } | null;
+    client: any;
+    serviceLine: any;
+    businessUnit: any;
     sourced: number;
     submitted: number;
     offered: number;
@@ -851,18 +974,17 @@ function buildRecruiterRows(pipes: any[]) {
     if (isJoined(p)) r.joined++;
     if (isDropped(p)) r.dropped++;
     if (isActive(p)) r.active++;
-    if (p.submittedAt) {
+    if (p.submittedAt)
       r.submitTimeMins.push(
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0,
-        ),
+          0
+        )
       );
-    }
 
     const rq = p.requirement;
     const reqId = p.requirementId;
-    if (!r.reqMap[reqId]) {
+    if (!r.reqMap[reqId])
       r.reqMap[reqId] = {
         requirementId: reqId,
         reqCode: rq?.reqCode ?? "",
@@ -880,7 +1002,6 @@ function buildRecruiterRows(pipes: any[]) {
         active: 0,
         stageCounts: {},
       };
-    }
     const rqs = r.reqMap[reqId];
     rqs.sourced++;
     rqs.stageCounts[p.currentStageId] =
@@ -924,45 +1045,30 @@ function buildRecruiterRows(pipes: any[]) {
     .sort((a, b) => b.sourced - a.sourced);
 }
 
-// GET /reports/recruiters
-// Always returns groups[] — one per service line — for a tab-based UI.
-// A recruiter belongs to exactly ONE service line, resolved as:
-//   1. User.serviceline (their tagged line)
-//   2. fallback: the dominant service line across requirements they've sourced
-// All of that recruiter's candidates sit under their line, with that line's
-// stage columns (its variants + common). Never mixed across lines.
-// File: recruiter.report.ts
-// Path: core-service/src/reports/recruiter.report.ts   (adjust to your actual path)
-
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const { recruiterId, requirementId } = q;
     const standardOnly = q.standardOnly === "true";
 
-    const scopedUserIds = await resolveScopedUserIds(req);
+    const scopedUserIds = resolveScopedUserIds(req); // !! sync, reads req.scopeFilter
 
     let recruiterFilter: Record<string, any> = {};
     if (recruiterId) {
-      if (scopedUserIds !== null && !scopedUserIds.includes(recruiterId)) {
+      if (scopedUserIds !== null && !scopedUserIds.includes(recruiterId))
         return res
           .status(403)
           .json({ success: false, message: "Recruiter not in your scope" });
-      }
       recruiterFilter = { recruiterId };
     } else if (scopedUserIds !== null) {
       recruiterFilter = { recruiterId: { in: scopedUserIds } };
     }
 
-    // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
     const reqWhere = buildReqWhere(q, { withDateWindow: false });
-    if (requirementId) reqWhere.id = requirementId; // within-a-requirement filter
-    if (q.status && !reqWhere.status) {
-      reqWhere.status = q.status as any;
-    }
+    if (requirementId) reqWhere.id = requirementId;
+
     const stages = await fetchScopedStages(q.serviceLineId);
 
-    // "what happened yesterday" — resolve the window and match ANY pipeline change
     const win = resolveDateWindow(q);
     const activityWindow =
       win.gte || win.lte
@@ -979,9 +1085,9 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
         ...(activityWindow
           ? {
               OR: [
-                { createdAt: activityWindow }, // sourced in window
-                { updatedAt: activityWindow }, // any field changed, last touch in window
-                { stageHistory: { some: { createdAt: activityWindow } } }, // stage moved in window, survives a later re-touch
+                { createdAt: activityWindow },
+                { updatedAt: activityWindow },
+                { stageHistory: { some: { createdAt: activityWindow } } },
               ],
             }
           : {}),
@@ -1005,20 +1111,16 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
     });
 
     const commonMeta = {
-      scope: (req as any).scopeFilter?.type ?? "ALL",
+      scope: req.scopeFilter?.type ?? "ALL",
       window: windowLabel(q),
       standardOnly,
     };
-
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
 
-    // ── Resolve each recruiter's service line ────────────────────────────────
     const recruiterIds = [...new Set(pipelines.map((p) => p.recruiterId))];
-
-    // 1. from the User table (their tagged line)
     const users =
       recruiterIds.length > 0
         ? await prisma.user.findMany({
@@ -1033,15 +1135,13 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
     const userLine = new Map<string, { id: string; name: string } | null>();
     for (const u of users) userLine.set(u.id, u.serviceline ?? null);
 
-    // 2. fallback tally — dominant requirement line, only for recruiters
-    //    whose User row has no service line tagged.
     const fallbackTally = new Map<
       string,
       Map<string, { name: string; count: number }>
     >();
     for (const p of pipelines) {
       const rid = p.recruiterId;
-      if (userLine.get(rid)) continue; // already resolved from User
+      if (userLine.get(rid)) continue;
       const sl = (p as any).requirement?.serviceLine ?? null;
       if (!sl) continue;
       if (!fallbackTally.has(rid)) fallbackTally.set(rid, new Map());
@@ -1057,15 +1157,13 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       const t = fallbackTally.get(rid);
       if (t && t.size) {
         let best: { id: string; name: string; count: number } | null = null;
-        for (const [id, { name, count }] of t) {
+        for (const [id, { name, count }] of t)
           if (!best || count > best.count) best = { id, name, count };
-        }
         if (best) return { id: best.id, name: best.name };
       }
       return null;
     };
 
-    // ── Partition pipelines by the recruiter's resolved line ─────────────────
     const byLine = new Map<string, any[]>();
     const lineMeta = new Map<string, { id: string; name: string } | null>();
     for (const p of pipelines) {
@@ -1083,7 +1181,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
         const sl = lineMeta.get(key) ?? null;
         const data = buildRecruiterRows(pipes);
         return {
-          serviceLine: sl, // null → "Unassigned"
+          serviceLine: sl,
           stages: stageMetaOut(stagesForLine(sl?.id ?? null), standardOnly),
           data,
           total: data.length,
@@ -1092,7 +1190,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .sort(
         (a, b) =>
           b.data.reduce((s, r) => s + r.sourced, 0) -
-          a.data.reduce((s, r) => s + r.sourced, 0),
+          a.data.reduce((s, r) => s + r.sourced, 0)
       );
 
     return res.json({
@@ -1108,20 +1206,25 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/recruiters/export   ( ?ids=recId1,recId2  → only those recruiters )
+// GET /reports/recruiters/export
+// Query params synced from frontend:
+//   ids, recruiterId, requirementId, serviceLineId, standardOnly,
+//   stageIds      — stage IDs the user explicitly selected (filters Candidates sheet to those stages)
+//   hiddenStageIds — stage column IDs hidden via column picker (omit from Sheet 1 AND Candidates)
+//   disposition, clientId, status, range/hours/fromDate/toDate
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const selectedIds = parseIds(q.ids);
+    const selectedStageIds = parseIds(q.stageIds);
+    const hiddenStageIds = new Set(parseIds(q.hiddenStageIds) ?? []);
     const standardOnly = q.standardOnly === "true";
 
-    const scopedUserIds = await resolveScopedUserIds(req);
+    const scopedUserIds = resolveScopedUserIds(req);
 
-    // resolve the recruiter id filter: selected ∩ scope
     let recruiterFilter: Record<string, any> = {};
-    let allowedIds: string[] | null = scopedUserIds;
     if (selectedIds) {
-      allowedIds =
+      const allowedIds =
         scopedUserIds === null
           ? selectedIds
           : selectedIds.filter((id) => scopedUserIds.includes(id));
@@ -1135,24 +1238,24 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     if (q.requirementId) reqWhere.id = q.requirementId;
 
     const stages = await fetchScopedStages(q.serviceLineId);
-    const activeStages = standardOnly
-      ? stages.filter((s) => s.isStandard)
-      : stages;
+    // Remove stages the user has hidden in the column picker
+    const activeStages = (
+      standardOnly ? stages.filter((s) => s.isStandard) : stages
+    ).filter((s) => !hiddenStageIds.has(s.id));
+
+    const pipelineWhere: Record<string, any> = {
+      requirement: reqWhere,
+      ...recruiterFilter,
+    };
+    if (q.disposition) pipelineWhere.disposition = q.disposition as any;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { requirement: reqWhere, ...recruiterFilter },
-      // select: {
-      //   ...PIPELINE_DETAIL_SELECT,
-      //   requirement: { select: REQ_LOOKUP_SELECT },
-      // },
-      select: {
-        ...PIPELINE_DETAIL_SELECT,
-      },
+      where: pipelineWhere,
+      select: { ...PIPELINE_DETAIL_SELECT },
       orderBy: [{ recruiterId: "asc" }, { createdAt: "asc" }],
       take: 5000,
     });
 
-    // per-recruiter aggregation for sheet 1
     type Agg = {
       name: string;
       email: string;
@@ -1170,9 +1273,11 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
 
     for (const p of pipelines) {
       const rid = p.recruiterId;
-      if (!recruiterMap[rid]) {
+      if (!recruiterMap[rid])
         recruiterMap[rid] = {
-          name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+          name: [p.recruiter?.firstName, p.recruiter?.lastName]
+            .filter(Boolean)
+            .join(" "),
           email: p.recruiter.email,
           sourced: 0,
           submitted: 0,
@@ -1184,7 +1289,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
           requirementIds: new Set(),
           stageCounts: {},
         };
-      }
       const r = recruiterMap[rid];
       r.requirementIds.add(p.requirementId);
       r.sourced++;
@@ -1195,25 +1299,32 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       if (isJoined(p)) r.joined++;
       if (isDropped(p)) r.dropped++;
       if (isActive(p)) r.active++;
-      if (p.submittedAt) {
+      if (p.submittedAt)
         r.submitTimeMins.push(
           (p.stageHistory ?? []).reduce(
             (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0,
-          ),
+            0
+          )
         );
-      }
     }
 
     const summaryRows = Object.values(recruiterMap).sort(
-      (a, b) => b.sourced - a.sourced,
+      (a, b) => b.sourced - a.sourced
     );
+
+    // Pre-compute grand stage totals — bake into column headers as "Label (N)"
+    const grandStageCounts: Record<string, number> = {};
+    for (const r of summaryRows) {
+      for (const s of activeStages) {
+        grandStageCounts[s.id] =
+          (grandStageCounts[s.id] ?? 0) + (r.stageCounts[s.id] ?? 0);
+      }
+    }
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // Sheet 1: recruiter summary — dynamic real-stage columns
     const sheet1 = workbook.addWorksheet("Recruiter Summary", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -1224,10 +1335,11 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       { header: "Sourced", key: "sourced", width: 12 },
       { header: "Submitted", key: "submitted", width: 12 },
     ];
+    // "Label (N)" — column total visible at a glance without scrolling to the totals row
     const stageCols = activeStages.map((s) => ({
-      header: s.label,
+      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
       key: `stage_${s.id}`,
-      width: 16,
+      width: Math.max(s.label.length + 6, 14),
     }));
     const fixedRight = [
       { header: "Offered", key: "offered", width: 12 },
@@ -1238,6 +1350,14 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     ];
     sheet1.columns = [...fixedLeft, ...stageCols, ...fixedRight];
     styleHdr(sheet1.getRow(1));
+
+    let totalSourced = 0,
+      totalSubmitted = 0,
+      totalOffered = 0,
+      totalJoined = 0,
+      totalDropped = 0,
+      totalActive = 0;
+    const totalReqs = new Set<string>();
 
     for (const r of summaryRows) {
       const avgDays =
@@ -1251,7 +1371,13 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       const dynVals: Record<string, number> = {};
       for (const s of activeStages)
         dynVals[`stage_${s.id}`] = r.stageCounts[s.id] ?? 0;
-
+      totalSourced += r.sourced;
+      totalSubmitted += r.submitted;
+      totalOffered += r.offered;
+      totalJoined += r.joined;
+      totalDropped += r.dropped;
+      totalActive += r.active;
+      r.requirementIds.forEach((id) => totalReqs.add(id));
       sheet1.addRow({
         name: r.name,
         email: r.email,
@@ -1266,15 +1392,32 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         avgDays,
       }).height = 18;
     }
+
+    const grandDynVals: Record<string, number> = {};
+    for (const s of activeStages)
+      grandDynVals[`stage_${s.id}`] = grandStageCounts[s.id] ?? 0;
+    const totalsRow1 = sheet1.addRow({
+      name: "TOTAL",
+      email: "",
+      reqs: totalReqs.size,
+      sourced: totalSourced,
+      submitted: totalSubmitted,
+      ...grandDynVals,
+      offered: totalOffered,
+      joined: totalJoined,
+      dropped: totalDropped,
+      active: totalActive,
+      avgDays: "",
+    });
+    styleTotalsRow(totalsRow1);
+
     sheet1.autoFilter = {
       from: { row: 1, column: 1 },
       to: { row: 1, column: sheet1.columnCount },
     };
 
-    // Sheet 2: candidates
-    // const reqLookup = Object.fromEntries(
-    //   pipelines.map((p) => [p.requirementId, (p as any).requirement]),
-    // );
+    // ── Sheet 2: Candidates ───────────────────────────────────────────────────
+    // stageIds priority: explicit selection > hidden exclusion (show visible only) > all
     const reqIds = [...new Set(pipelines.map((p) => p.requirementId))];
     const requirements = await prisma.requirement.findMany({
       where: { id: { in: reqIds } },
@@ -1283,16 +1426,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         reqCode: true,
         title: true,
         status: true,
-        priority: true,
-        jobType: true,
-        remoteType: true,
-        totalOpenings: true,
-        city: true,
-        state: true,
-        country: true,
-        respondBy: true,
-        isRespondByBreached: true,
-        isTurnaroundBreached: true,
         createdAt: true,
         deletedAt: true,
         client: { select: { id: true, name: true } },
@@ -1307,23 +1440,47 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         },
         businessUnit: { select: { id: true, name: true } },
         serviceLine: { select: { id: true, name: true } },
-        createdBy: { select: { firstName: true, lastName: true } },
       },
     });
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
-    buildCandidateSheet(workbook, pipelines, reqLookup);
+
+    // totalPipeline per req — count ALL pipelines for that req (not just filtered subset)
+    const totalPipelineByReq: Record<string, number> = {};
+    for (const p of pipelines) {
+      totalPipelineByReq[p.requirementId] =
+        (totalPipelineByReq[p.requirementId] ?? 0) + 1;
+    }
+
+    const hiddenCandidateCols = new Set(
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
+    );
+    const candidateStageIds =
+      selectedStageIds ??
+      (hiddenStageIds.size > 0 ? activeStages.map((s) => s.id) : undefined);
+
+    buildCandidateSheet(
+      workbook,
+      pipelines,
+      reqLookup,
+      {
+        hiddenCols: hiddenCandidateCols,
+        stageIds: candidateStageIds,
+        disposition: q.disposition || undefined,
+      },
+      totalPipelineByReq
+    );
 
     const dateStr = new Date().toISOString().split("T")[0];
     const scopeTag = selectedIds ? "selected" : "all";
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="recruiter-report-${scopeTag}-${windowLabel(
-        q,
-      )}-${dateStr}.xlsx"`,
+        q
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1334,49 +1491,41 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export recruiter report" });
   }
 };
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ███████████████████████████████████████████████████████████████████████████
-// 2. REQUIREMENT REPORT  (real service-line stages, selectable export)
-// ███████████████████████████████████████████████████████████████████████████
+// 2. REQUIREMENT REPORT
+// GET /reports/requirements
 // ─────────────────────────────────────────────────────────────────────────────
-
-// File: requirement.report.ts
-// Path: core-service/src/reports/requirement.report.ts   (adjust to your actual path)
 
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const standardOnly = q.standardOnly === "true";
 
+    // Creator scope: reporting-tree BFS (intentionally separate from pipeline scope)
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin,
+      req.user!.isSuperAdmin
     );
-
     const requestedCreatorId = q.createdById?.trim() || null;
-
-    // creatorIds === null → super admin, unrestricted
     const effectiveCreatorIds =
       creatorIds === null
         ? requestedCreatorId
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-          ? creatorIds.includes(requestedCreatorId)
-            ? [requestedCreatorId]
-            : [] // requested a creator outside own tree → zero rows
-          : creatorIds;
+        ? creatorIds.includes(requestedCreatorId)
+          ? [requestedCreatorId]
+          : []
+        : creatorIds;
 
     const createdByWhere =
       effectiveCreatorIds === null
         ? {}
         : { createdById: { in: effectiveCreatorIds } };
-
-    // date window is applied to pipeline ACTIVITY below, NOT to requirement.createdAt
     const baseReqWhere = buildReqWhere(q, { withDateWindow: false });
 
-    // "what happened yesterday" — a req qualifies if ANY of its pipelines changed in window
     const win = resolveDateWindow(q);
     const activityWindow =
       win.gte || win.lte
@@ -1385,40 +1534,25 @@ export const getRequirementReport = async (req: Request, res: Response) => {
             ...(win.lte ? { lte: win.lte } : {}),
           }
         : null;
-
     const activityFilter = activityWindow
       ? {
           pipelines: {
             some: {
               OR: [
-                { createdAt: activityWindow }, // candidate sourced in window
-                { updatedAt: activityWindow }, // any field changed in window
-                { stageHistory: { some: { createdAt: activityWindow } } }, // stage moved in window
+                { createdAt: activityWindow },
+                { updatedAt: activityWindow },
+                { stageHistory: { some: { createdAt: activityWindow } } },
               ],
             },
           },
         }
       : {};
 
-    // const reqWhere =
-    //   creatorIds !== null
-    //     ? {
-    //         ...baseReqWhere,
-    //         ...activityFilter,
-    //         createdById: { in: creatorIds },
-    //       }
-    //     : { ...baseReqWhere, ...activityFilter };
-    const reqWhere = {
-      ...baseReqWhere,
-      ...activityFilter,
-      ...createdByWhere,
-    };
+    const reqWhere = { ...baseReqWhere, ...activityFilter, ...createdByWhere };
 
     const stages = await fetchScopedStages(q.serviceLineId);
     const stageIdSet = new Set(stages.map((s) => s.id));
 
-    // Reports are already bounded by the date window, so no pagination —
-    // we return the whole window (capped) so grouping stays accurate.
     const requirements = await prisma.requirement.findMany({
       where: reqWhere,
       select: {
@@ -1452,18 +1586,19 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       take: 1000,
     });
 
-    const commonMeta = { window: windowLabel(q), standardOnly };
-
-    if (!requirements.length) {
+    if (!requirements.length)
       return res.json({
         success: true,
         groups: [],
-        meta: { ...commonMeta, total: 0, multiLine: false },
+        meta: {
+          window: windowLabel(q),
+          standardOnly,
+          total: 0,
+          multiLine: false,
+        },
       });
-    }
 
     const reqIds = requirements.map((r) => r.id);
-
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
@@ -1486,10 +1621,8 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
-
-    // Partition rows by service line — always grouped (one tab per line).
     const byLine = new Map<string, any[]>();
     const lineMeta = new Map<string, { id: string; name: string } | null>();
     for (const r of rows) {
@@ -1517,7 +1650,11 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       groups,
-      meta: { ...commonMeta, multiLine: groups.length > 1 },
+      meta: {
+        window: windowLabel(q),
+        standardOnly,
+        multiLine: groups.length > 1,
+      },
     });
   } catch (err) {
     console.error("getRequirementReport:", err);
@@ -1527,27 +1664,29 @@ export const getRequirementReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/requirements/export   ( ?ids=  OR  /:id/export )
+// GET /reports/requirements/export
+// Synced params: ids, serviceLineId, standardOnly,
+//   stageIds      — explicit stage selection for Candidates sheet
+//   hiddenStageIds — hidden stage columns → omit from Sheet 1 AND Candidates
+//   disposition, clientId, status, createdById, range/hours/fromDate/toDate
 export const exportRequirementReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const singleId = req.params.id ?? null;
     const selectedIds = parseIds(q.ids);
+    const selectedStageIds = parseIds(q.stageIds);
+    const hiddenStageIds = new Set(parseIds(q.hiddenStageIds) ?? []);
     const standardOnly = q.standardOnly === "true";
 
     let baseWhere: Record<string, any>;
     if (singleId) {
-      // explicit single-req export — no date window, you asked for THIS req
       baseWhere = { id: singleId, deletedAt: null };
     } else {
       const creatorIds = await resolveOrgTreeDown(
         req.user!.id,
-        req.user!.isSuperAdmin,
+        req.user!.isSuperAdmin
       );
-
-      // date window is applied to pipeline ACTIVITY, NOT to requirement.createdAt
       const reqFilter = buildReqWhere(q, { withDateWindow: false });
-
       const win = resolveDateWindow(q);
       const activityWindow =
         win.gte || win.lte
@@ -1556,7 +1695,6 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
               ...(win.lte ? { lte: win.lte } : {}),
             }
           : null;
-
       const activityFilter = activityWindow
         ? {
             pipelines: {
@@ -1570,23 +1708,21 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
             },
           }
         : {};
-
       baseWhere =
         creatorIds !== null
           ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
           : { ...reqFilter, ...activityFilter };
-
-      // explicit selection overrides the window — export exactly what was ticked
       if (selectedIds) {
         baseWhere.id = { in: selectedIds };
-        delete baseWhere.pipelines; // a hand-picked set shouldn't be re-filtered by activity
+        delete baseWhere.pipelines;
       }
     }
 
     const stages = await fetchScopedStages(q.serviceLineId);
-    const activeStages = standardOnly
-      ? stages.filter((s) => s.isStandard)
-      : stages;
+    // Remove hidden stage columns from Sheet 1
+    const activeStages = (
+      standardOnly ? stages.filter((s) => s.isStandard) : stages
+    ).filter((s) => !hiddenStageIds.has(s.id));
     const stageIdSet = new Set(stages.map((s) => s.id));
 
     const requirements = await prisma.requirement.findMany({
@@ -1626,11 +1762,10 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       take: 1000,
     });
 
-    if (!requirements.length) {
+    if (!requirements.length)
       return res
         .status(404)
         .json({ success: false, message: "No requirements found" });
-    }
 
     const reqIds = requirements.map((r) => r.id);
 
@@ -1647,21 +1782,34 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
     }
 
+    const pipelineWhere: Record<string, any> = {
+      requirementId: { in: reqIds },
+    };
+    if (q.disposition) pipelineWhere.disposition = q.disposition as any;
+
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: { requirementId: { in: reqIds } },
+      where: pipelineWhere,
       select: PIPELINE_DETAIL_SELECT,
       orderBy: { createdAt: "asc" },
     });
+
+    // Pre-compute grand stage totals for column headers
+    const grandStageCounts: Record<string, number> = {};
+    for (const r of requirements) {
+      const counts = countsByReq[r.id] ?? {};
+      for (const s of activeStages) {
+        grandStageCounts[s.id] =
+          (grandStageCounts[s.id] ?? 0) + (counts[s.id] ?? 0);
+      }
+    }
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // Sheet 1: requirements — 2-row header (detail group + stage group)
     const sheet1 = workbook.addWorksheet("Requirements", {
       views: [{ state: "frozen", ySplit: 2 }],
     });
-
     const fixedCols = [
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Title", key: "title", width: 38 },
@@ -1685,14 +1833,14 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "SLA Breached?", key: "breached", width: 14 },
       { header: "Total Candidates", key: "total", width: 16 },
     ];
+    // "Label (N)" — grand total per stage baked into column header
     const stageCols = activeStages.map((s) => ({
-      header: s.label,
+      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
       key: `stage_${s.id}`,
-      width: 14,
+      width: Math.max(s.label.length + 6, 14),
     }));
     sheet1.columns = [...fixedCols, ...stageCols];
 
-    // group header row 1
     const groupRow = sheet1.getRow(1);
     groupRow.getCell(1).value = "Requirement Details";
     if (stageCols.length > 0) {
@@ -1702,14 +1850,13 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         1,
         fixedCols.length + 1,
         1,
-        fixedCols.length + stageCols.length,
+        fixedCols.length + stageCols.length
       );
     }
     styleHdr(groupRow);
     if (stageCols.length > 0)
       groupRow.getCell(fixedCols.length + 1).fill = SUB_FILL;
 
-    // column header row 2
     const colHdr = sheet1.getRow(2);
     [...fixedCols, ...stageCols].forEach((col, i) => {
       colHdr.getCell(i + 1).value = col.header;
@@ -1726,12 +1873,17 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       CANCELLED: "FF5E6C84",
     };
 
+    let grandTotal = 0,
+      grandDaysOpen = 0;
+
     for (const r of requirements) {
       const counts = countsByReq[r.id] ?? {};
       const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000,
+        (now - new Date(r.createdAt).getTime()) / 86400000
       );
+      grandTotal += totalCandidates;
+      grandDaysOpen += daysOpen;
 
       const rowData: Record<string, any> = {
         reqCode: r.reqCode,
@@ -1748,7 +1900,6 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         jobType: r.jobType,
         remote: r.remoteType,
         openings: r.totalOpenings,
-        // createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
         createdBy: [r.createdBy.firstName, r.createdBy.lastName]
           .filter(Boolean)
           .join(" "),
@@ -1794,28 +1945,87 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         };
       }
     }
+
+    const grandStageData: Record<string, number> = {};
+    for (const s of activeStages)
+      grandStageData[`stage_${s.id}`] = grandStageCounts[s.id] ?? 0;
+    const totalsRow1 = sheet1.addRow({
+      reqCode: `TOTAL: ${requirements.length} requirements`,
+      title: "",
+      status: "",
+      priority: "",
+      client: "",
+      spoc: "",
+      spocEmail: "",
+      bu: "",
+      sl: "",
+      city: "",
+      country: "",
+      jobType: "",
+      remote: "",
+      openings: requirements.reduce((s, r) => s + r.totalOpenings, 0),
+      createdBy: "",
+      createdAt: "",
+      deletedAt: "",
+      daysOpen:
+        requirements.length > 0
+          ? Math.round(grandDaysOpen / requirements.length)
+          : 0,
+      respondBy: "",
+      breached: "",
+      total: grandTotal,
+      ...grandStageData,
+    });
+    styleTotalsRow(totalsRow1);
+    sheet1.mergeCells(totalsRow1.number, 1, totalsRow1.number, 4);
+
     sheet1.autoFilter = {
       from: { row: 2, column: 1 },
       to: { row: 2, column: fixedCols.length + stageCols.length },
     };
 
-    // Sheet 2: candidates
+    // ── Sheet 2: Candidates ───────────────────────────────────────────────────
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
-    buildCandidateSheet(workbook, pipelines, reqLookup);
+
+    // totalPipeline per req — total ALL pipelines for that req
+    const totalPipelineByReq: Record<string, number> = {};
+    for (const p of pipelines) {
+      totalPipelineByReq[p.requirementId] =
+        (totalPipelineByReq[p.requirementId] ?? 0) + 1;
+    }
+
+    const hiddenCandidateCols = new Set(
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
+    );
+    const candidateStageIds =
+      selectedStageIds ??
+      (hiddenStageIds.size > 0 ? activeStages.map((s) => s.id) : undefined);
+
+    buildCandidateSheet(
+      workbook,
+      pipelines,
+      reqLookup,
+      {
+        hiddenCols: hiddenCandidateCols,
+        stageIds: candidateStageIds,
+        disposition: q.disposition || undefined,
+      },
+      totalPipelineByReq
+    );
 
     const suffix = singleId
-      ? (requirements[0]?.reqCode ?? singleId)
+      ? requirements[0]?.reqCode ?? singleId
       : selectedIds
-        ? "selected"
-        : "all";
+      ? "selected"
+      : "all";
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`,
+      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1828,19 +2038,21 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. CANDIDATE FUNNEL REPORT  (real stages)
+// 3. CANDIDATE FUNNEL REPORT
+// GET /reports/candidates
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /reports/candidates
 export const getCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const reqWhere = buildReqWhere(q);
-    const scopedUserIds = await resolveScopedUserIds(req);
+    const scopedUserIds = resolveScopedUserIds(req); // !! sync
     const stages = await fetchScopedStages(q.serviceLineId);
 
     const where: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null) where.recruiterId = { in: scopedUserIds };
+    if (q.stageId) where.currentStageId = q.stageId;
+    if (q.disposition) where.disposition = q.disposition as any;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where,
@@ -1855,7 +2067,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
     });
 
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0]),
+      stages.map((s) => [s.id, 0])
     );
     const dispositionCounts: Record<string, number> = {};
     let totalAgingMins = 0;
@@ -1865,12 +2077,12 @@ export const getCandidateReport = async (req: Request, res: Response) => {
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
       const stageAge = Math.floor(
-        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       totalAgingMins +=
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0,
+          0
         ) + stageAge;
     }
 
@@ -1913,11 +2125,12 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
     const reqWhere = buildReqWhere(q);
-    const scopedUserIds = await resolveScopedUserIds(req);
+    const scopedUserIds = resolveScopedUserIds(req); // !! sync
+    const selectedStageIds = parseIds(q.stageIds);
 
     const where: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null) where.recruiterId = { in: scopedUserIds };
-    if (q.stageId) where.currentStageId = q.stageId;
+    if (q.stageId) where.currentStageId = q.stageId; // single-stage drill
     if (q.disposition) where.disposition = q.disposition as any;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
@@ -1935,20 +2148,40 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     workbook.created = new Date();
 
     const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
+      pipelines.map((p) => [p.requirementId, (p as any).requirement])
     );
-    buildCandidateSheet(workbook, pipelines, reqLookup);
+
+    const totalPipelineByReq: Record<string, number> = {};
+    for (const p of pipelines) {
+      totalPipelineByReq[p.requirementId] =
+        (totalPipelineByReq[p.requirementId] ?? 0) + 1;
+    }
+
+    const hiddenCandidateCols = new Set(
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
+    );
+    buildCandidateSheet(
+      workbook,
+      pipelines,
+      reqLookup,
+      {
+        hiddenCols: hiddenCandidateCols,
+        stageIds: selectedStageIds ?? undefined,
+        disposition: q.disposition || undefined,
+      },
+      totalPipelineByReq
+    );
 
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="candidate-report-${windowLabel(
-        q,
-      )}-${dateStr}.xlsx"`,
+        q
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
