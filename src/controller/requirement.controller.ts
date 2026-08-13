@@ -3795,20 +3795,511 @@ function formatAging(mins: number): string {
 //   4. none of the above                       → null (omitted)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// export function computeSaleValue(req: {
+//   saleValue?: number | null;
+//   totalOpenings: number;
+//   salaryMin?: number | null;
+//   salaryMax?: number | null;
+//   band?: {
+//     value?: number | null; // Decimal stored as number after Prisma toJSON
+//   } | null;
+//   client?: {
+//     percentageValue?: number | null; // Decimal → number
+//   } | null;
+// }): {
+//   computedSaleValue: number | null;
+//   saleValueBasis: "SALE_VALUE" | "BAND_PERCENTAGE" | "SALARY_AVG" | null;
+// } {
+//   const openings = req.totalOpenings ?? 1;
+
+//   // 1. Explicit sale value on requirement
+//   if (req.saleValue != null && req.saleValue > 0) {
+//     return {
+//       computedSaleValue: req.saleValue * openings,
+//       saleValueBasis: "SALE_VALUE",
+//     };
+//   }
+
+//   // 2. Band value + client percentage
+//   const bandValue = req.band?.value != null ? Number(req.band.value) : null;
+//   const pct =
+//     req.client?.percentageValue != null
+//       ? Number(req.client.percentageValue)
+//       : null;
+
+//   if (bandValue != null && bandValue > 0 && pct != null && pct > 0) {
+//     return {
+//       computedSaleValue: bandValue * (pct / 100) * openings,
+//       saleValueBasis: "BAND_PERCENTAGE",
+//     };
+//   }
+
+//   // 3. Salary min/max average
+//   const min = req.salaryMin != null ? Number(req.salaryMin) : null;
+//   const max = req.salaryMax != null ? Number(req.salaryMax) : null;
+
+//   if (min != null || max != null) {
+//     const avg = min != null && max != null ? (min + max) / 2 : (min ?? max)!;
+//     return {
+//       computedSaleValue: avg * openings,
+//       saleValueBasis: "SALARY_AVG",
+//     };
+//   }
+
+//   // 4. Cannot compute
+//   return { computedSaleValue: null, saleValueBasis: null };
+// }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirements — drop-in replacement
+// Additions vs previous version:
+//   • select adds: saleValue, bandId, band, salaryMin, salaryMax,
+//     client.agreementType, client.percentageValue (already there — unchanged),
+//     assignments.allocatedOpenings (already there)
+//   • enrichedRequirements gets computedSaleValue + saleValueBasis fields
+//   • response scope/permissions unchanged
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export const getRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       priority,
+//       createdByScope = "OWN",
+//       createdById,
+//       dateFrom,
+//       dateTo,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "createdAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+//       PermissionScope.OWN) as PermissionScope;
+
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
+
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+//     const where: any = { ...scopeWhere, deletedAt: null };
+
+//     if (createdById) {
+//       where.createdById = createdById;
+//     } else {
+//       const creatorIds = await getCreatorScopeUserIds(
+//         userId,
+//         isSuperAdmin,
+//         createdByScope
+//       );
+//       if (creatorIds !== null) {
+//         where.createdById = { in: creatorIds };
+//       }
+//     }
+
+//     if (status) where.status = status;
+//     if (priority) where.priority = priority;
+//     if (clientId) where.clientId = clientId;
+//     if (serviceLineId) where.serviceLineId = serviceLineId;
+//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+//     if (dateFrom || dateTo) {
+//       where.createdAt = {
+//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+//         ...(dateTo
+//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+//           : {}),
+//       };
+//     }
+//     if (search) {
+//       where.AND = [
+//         ...(where.AND ?? []),
+//         {
+//           OR: [
+//             { title: { contains: search, mode: "insensitive" } },
+//             { reqCode: { contains: search, mode: "insensitive" } },
+//             { primarySkills: { has: search } },
+//             { keySkills: { has: search } },
+//           ],
+//         },
+//       ];
+//     }
+
+//     const SORTABLE = [
+//       "createdAt",
+//       "updatedAt",
+//       "respondBy",
+//       "priority",
+//       "status",
+//     ];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { createdAt: "desc" as const };
+
+//     const [total, requirements] = await Promise.all([
+//       prisma.requirement.count({ where }),
+//       prisma.requirement.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           reqCode: true,
+//           title: true,
+//           status: true,
+//           priority: true,
+//           jobType: true,
+//           remoteType: true,
+//           totalOpenings: true,
+//           city: true,
+//           state: true,
+//           country: true,
+//           primarySkills: true,
+//           keySkills: true,
+//           jobOpenFor: true,
+//           targetDate: true,
+//           closedAt: true,
+//           closedById: true,
+//           closureReason: true,
+//           jdParseStatus: true,
+//           respondBy: true,
+//           isRespondByBreached: true,
+//           isTurnaroundBreached: true,
+//           createdAt: true,
+//           serviceLineId: true,
+
+//           // ── Sale value fields (NEW) ──────────────────────────────────────
+//           saleValue: true,
+//           salaryMin: true,
+//           salaryMax: true,
+//           salaryType: true,
+//           salaryCurrency: true,
+
+//           // ── Band (NEW — full detail for display + computation) ───────────
+//           bandId: true,
+//           band: {
+//             select: {
+//               id: true,
+//               code: true,
+//               name: true,
+//               rangeFrom: true,
+//               rangeTo: true,
+//               value: true,
+//             },
+//           },
+
+//           client: {
+//             select: {
+//               id: true,
+//               name: true,
+//               agreementType: true,
+//               percentageValue: true, // needed for BAND_PERCENTAGE computation
+//             },
+//           },
+
+//           businessUnit: { select: { id: true, name: true } },
+//           serviceLine: { select: { id: true, name: true } },
+
+//           clientSpoc: {
+//             select: {
+//               handler: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//           },
+//           createdBy: { select: { id: true, firstName: true, lastName: true } },
+
+//           assignments: {
+//             where: { status: "ACTIVE" },
+//             select: {
+//               id: true,
+//               depth: true,
+//               allocatedOpenings: true,
+//               deadline: true,
+//               assignedTo: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//             orderBy: { depth: "asc" },
+//           },
+
+//           _count: { select: { pipelines: true, assignments: true } },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
+
+//     if (!requirements.length) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         meta: {
+//           total,
+//           page: parseInt(page),
+//           limit: take,
+//           pages: Math.ceil(total / take),
+//         },
+//         permissions: {
+//           canAdd: req.modulePermission.canAdd,
+//           canEdit: req.modulePermission.canEdit,
+//           canDelete: req.modulePermission.canDelete,
+//         },
+//       });
+//     }
+
+//     // ── Pipeline stage counts (unchanged logic) ──────────────────────────
+//     const reqIds = requirements.map((r) => r.id);
+//     const createdByMeIds = new Set(
+//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+//     );
+//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+
+//     const visibleRecruiterIds = await getVisibleRecruiterIds(
+//       userId,
+//       isSuperAdmin,
+//       canViewScope
+//     );
+
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//         canonicalStage: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+//     const [fullCounts, scopedCounts] = await Promise.all([
+//       createdByMeIds.size > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: { requirementId: { in: [...createdByMeIds] } },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//       assignedOnlyIds.length > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: {
+//               requirementId: { in: assignedOnlyIds },
+//               ...(visibleRecruiterIds !== null
+//                 ? { recruiterId: { in: visibleRecruiterIds } }
+//                 : {}),
+//             },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//     ]);
+
+//     type StageCount = {
+//       stageId: string;
+//       code: string;
+//       label: string;
+//       order: number;
+//       canonicalStage: string | null;
+//       count: number;
+//     };
+
+//     const countsByReq: Record<string, StageCount[]> = {};
+//     const pushToCountsByReq = (rows: any[]) => {
+//       for (const sc of rows) {
+//         const stage = stageById[sc.currentStageId];
+//         if (!stage) continue;
+//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+//         countsByReq[sc.requirementId].push({
+//           stageId: sc.currentStageId,
+//           code: stage.code,
+//           label: stage.label,
+//           order: stage.order,
+//           canonicalStage: stage.canonicalStage ?? null,
+//           count: sc._count.id,
+//         });
+//       }
+//     };
+//     pushToCountsByReq(fullCounts as any[]);
+//     pushToCountsByReq(scopedCounts as any[]);
+//     for (const key of Object.keys(countsByReq)) {
+//       countsByReq[key].sort((a, b) => a.order - b.order);
+//     }
+
+//     const allCanonicalKeys: string[] = await prisma.pipelineStage
+//       .findMany({
+//         where: { isActive: true, canonicalStage: { not: null } },
+//         select: { canonicalStage: true },
+//         distinct: ["canonicalStage"],
+//         orderBy: { order: "asc" },
+//       })
+//       .then((rows) =>
+//         rows
+//           .map((r) => r.canonicalStage!)
+//           .filter((v, i, a) => a.indexOf(v) === i)
+//       );
+
+//     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
+//     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
+//       const canonical: Record<string, number> = Object.fromEntries(
+//         allCanonicalKeys.map((k) => [k, 0])
+//       );
+//       for (const sc of stageCounts) {
+//         if (!sc.canonicalStage) continue;
+//         canonical[sc.canonicalStage] =
+//           (canonical[sc.canonicalStage] ?? 0) + sc.count;
+//       }
+//       canonicalCountsByReq[reqId] = canonical;
+//     }
+//     for (const r of requirements) {
+//       if (!canonicalCountsByReq[r.id]) {
+//         canonicalCountsByReq[r.id] = Object.fromEntries(
+//           allCanonicalKeys.map((k) => [k, 0])
+//         );
+//       }
+//     }
+
+//     // ── Enrich with sale value computation ──────────────────────────────
+//     let totalSaleValue = 0;
+//     let omittedCount = 0;
+
+//     const enrichedRequirements = requirements.map((r) => {
+//       const { computedSaleValue, saleValueBasis } = computeSaleValue({
+//         saleValue: r.saleValue,
+//         totalOpenings: r.totalOpenings,
+//         salaryMin: r.salaryMin,
+//         salaryMax: r.salaryMax,
+//         band: r.band
+//           ? { value: r.band.value ? Number(r.band.value) : null }
+//           : null,
+//         client: r.client
+//           ? {
+//               percentageValue: r.client.percentageValue
+//                 ? Number(r.client.percentageValue)
+//                 : null,
+//             }
+//           : null,
+//       });
+
+//       if (computedSaleValue != null) {
+//         totalSaleValue += computedSaleValue;
+//       } else {
+//         omittedCount++;
+//       }
+
+//       return {
+//         ...r,
+//         // Coerce Decimal → number for JSON serialisation
+//         band: r.band
+//           ? {
+//               ...r.band,
+//               rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
+//               rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
+//               value: r.band.value ? Number(r.band.value) : null,
+//             }
+//           : null,
+//         client: r.client
+//           ? {
+//               ...r.client,
+//               percentageValue: r.client.percentageValue
+//                 ? Number(r.client.percentageValue)
+//                 : null,
+//             }
+//           : null,
+//         computedSaleValue,
+//         saleValueBasis,
+//         pipelineStageCounts: countsByReq[r.id] ?? [],
+//         canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
+//       };
+//     });
+
+//     return res.json({
+//       success: true,
+//       data: enrichedRequirements,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//       // ── Sale value aggregate (NEW) ─────────────────────────────────────
+//       saleValueSummary: {
+//         totalSaleValue, // sum of all computed values in this page
+//         omittedCount, // how many requirements had no computable value
+//         includedCount: requirements.length - omittedCount,
+//       },
+//       scope: {
+//         createdByScope,
+//         canViewScope,
+//         isSuperAdmin,
+//       },
+//       permissions: {
+//         canAdd: req.modulePermission.canAdd,
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch requirements" });
+//   }
+// };
+
+// File: exportRequirements.ts
+// Path: src/controllers/exportRequirements.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// exportRequirements — full replacement
+// Adds: saleValue, band fields, client agreementType/percentageValue,
+//       computedSaleValue, saleValueBasis, salaryMin, salaryMax columns
+//       on Sheet 1. Sheet 2 (Candidates) unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// File: requirementsController.ts
+// Path: src/controllers/requirementsController.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SALE VALUE COMPUTATION HELPER
+//
+// Priority chain (stop at first match):
+//
+//  1. SALE_VALUE     — requirement.saleValue set
+//                      → saleValue × openings
+//
+//  2. BAND           — band.value set (client agreementType = BAND)
+//                      band.value is a fixed rupee amount per opening (e.g. ₹60k)
+//                      → band.value × openings
+//                      (no salary avg needed — band value IS the per-opening amount)
+//
+//  3. FIXED_PCT      — client.percentageValue set (client agreementType = FIXED)
+//                      + salaryMin / salaryMax available
+//                      → avg(salaryMin, salaryMax) × (percentageValue / 100) × openings
+//
+//  4. SALARY_AVG     — salaryMin / salaryMax set, no band, no percentage
+//                      → avg(salaryMin, salaryMax) × openings
+//
+//  5. null           — not enough data to compute
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function computeSaleValue(req: {
   saleValue?: number | null;
   totalOpenings: number;
   salaryMin?: number | null;
   salaryMax?: number | null;
-  band?: {
-    value?: number | null; // Decimal stored as number after Prisma toJSON
-  } | null;
-  client?: {
-    percentageValue?: number | null; // Decimal → number
-  } | null;
+  band?: { value?: number | null } | null;
+  client?: { percentageValue?: number | null } | null;
 }): {
   computedSaleValue: number | null;
-  saleValueBasis: "SALE_VALUE" | "BAND_PERCENTAGE" | "SALARY_AVG" | null;
+  saleValueBasis: "SALE_VALUE" | "BAND" | "FIXED_PCT" | "SALARY_AVG" | null;
 } {
   const openings = req.totalOpenings ?? 1;
 
@@ -3820,33 +4311,45 @@ export function computeSaleValue(req: {
     };
   }
 
-  // 2. Band value + client percentage
+  // 2. Band — fixed rupee value per opening, multiply directly
   const bandValue = req.band?.value != null ? Number(req.band.value) : null;
+  if (bandValue != null && bandValue > 0) {
+    return {
+      computedSaleValue: bandValue * openings,
+      saleValueBasis: "BAND",
+    };
+  }
+
+  // Helper: salary average (used by cases 3 and 4)
+  const salMin = req.salaryMin != null ? Number(req.salaryMin) : null;
+  const salMax = req.salaryMax != null ? Number(req.salaryMax) : null;
+  const hasSalary = salMin != null || salMax != null;
+  const salaryAvg =
+    salMin != null && salMax != null
+      ? (salMin + salMax) / 2
+      : salMin ?? salMax ?? null;
+
+  // 3. Fixed percentage — avg salary × client percentage × openings
   const pct =
     req.client?.percentageValue != null
       ? Number(req.client.percentageValue)
       : null;
-
-  if (bandValue != null && bandValue > 0 && pct != null && pct > 0) {
+  if (pct != null && pct > 0 && salaryAvg != null) {
     return {
-      computedSaleValue: bandValue * (pct / 100) * openings,
-      saleValueBasis: "BAND_PERCENTAGE",
+      computedSaleValue: salaryAvg * (pct / 100) * openings,
+      saleValueBasis: "FIXED_PCT",
     };
   }
 
-  // 3. Salary min/max average
-  const min = req.salaryMin != null ? Number(req.salaryMin) : null;
-  const max = req.salaryMax != null ? Number(req.salaryMax) : null;
-
-  if (min != null || max != null) {
-    const avg = min != null && max != null ? (min + max) / 2 : (min ?? max)!;
+  // 4. Salary avg only — no band, no percentage
+  if (hasSalary && salaryAvg != null) {
     return {
-      computedSaleValue: avg * openings,
+      computedSaleValue: salaryAvg * openings,
       saleValueBasis: "SALARY_AVG",
     };
   }
 
-  // 4. Cannot compute
+  // 5. Cannot compute
   return { computedSaleValue: null, saleValueBasis: null };
 }
 
@@ -4253,6 +4756,149 @@ export const getRequirements = async (req: Request, res: Response) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// getSaleValueStats
+// Returns total computed sale value across ALL matching requirements.
+// Accepts every filter getRequirements accepts EXCEPT page and limit —
+// stats must reflect the full filtered dataset, not just the current page.
+//
+// GET /requirements/sale-value-stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getSaleValueStats = async (req: Request, res: Response) => {
+  try {
+    const {
+      search,
+      status,
+      buId,
+      serviceLineId,
+      clientId,
+      priority,
+      createdByScope = "OWN",
+      createdById,
+      dateFrom,
+      dateTo,
+      // page and limit intentionally NOT destructured — stats are always global
+    } = req.query as Record<string, string>;
+
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // ── Same scope/where logic as getRequirements ──────────────────────────
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const where: any = { ...scopeWhere, deletedAt: null };
+
+    if (createdById) {
+      where.createdById = createdById;
+    } else {
+      const creatorIds = await getCreatorScopeUserIds(
+        userId,
+        isSuperAdmin,
+        createdByScope
+      );
+      if (creatorIds !== null) {
+        where.createdById = { in: creatorIds };
+      }
+    }
+
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (clientId) where.clientId = clientId;
+    if (serviceLineId) where.serviceLineId = serviceLineId;
+    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    if (dateFrom || dateTo) {
+      where.createdAt = {
+        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+        ...(dateTo
+          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+          : {}),
+      };
+    }
+    if (search) {
+      where.AND = [
+        ...(where.AND ?? []),
+        {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { reqCode: { contains: search, mode: "insensitive" } },
+            { primarySkills: { has: search } },
+            { keySkills: { has: search } },
+          ],
+        },
+      ];
+    }
+
+    // ── Fetch only the fields needed for computation — no pagination ───────
+    const requirements = await prisma.requirement.findMany({
+      where,
+      select: {
+        id: true,
+        totalOpenings: true,
+        saleValue: true,
+        salaryMin: true,
+        salaryMax: true,
+        band: { select: { value: true } },
+        client: { select: { percentageValue: true } },
+      },
+      // No skip/take — full filtered dataset
+    });
+
+    let totalSaleValue = 0;
+    let omittedCount = 0;
+
+    // Breakdown by basis for the stats summary
+    const byBasis: Record<string, { count: number; total: number }> = {
+      SALE_VALUE: { count: 0, total: 0 },
+      BAND: { count: 0, total: 0 },
+      FIXED_PCT: { count: 0, total: 0 },
+      SALARY_AVG: { count: 0, total: 0 },
+    };
+
+    for (const r of requirements) {
+      const { computedSaleValue, saleValueBasis } = computeSaleValue({
+        saleValue: r.saleValue,
+        totalOpenings: r.totalOpenings,
+        salaryMin: r.salaryMin,
+        salaryMax: r.salaryMax,
+        band: r.band
+          ? { value: r.band.value ? Number(r.band.value) : null }
+          : null,
+        client: r.client
+          ? {
+              percentageValue: r.client.percentageValue
+                ? Number(r.client.percentageValue)
+                : null,
+            }
+          : null,
+      });
+
+      if (computedSaleValue != null && saleValueBasis != null) {
+        totalSaleValue += computedSaleValue;
+        byBasis[saleValueBasis].count++;
+        byBasis[saleValueBasis].total += computedSaleValue;
+      } else {
+        omittedCount++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        totalRequirements: requirements.length,
+        includedCount: requirements.length - omittedCount,
+        omittedCount,
+        totalSaleValue,
+        byBasis, // breakdown: how many used each method + their subtotal
+      },
+    });
+  } catch (err) {
+    console.error("getSaleValueStats:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to compute sale value stats" });
+  }
+};
+
 // File: exportRequirements.ts
 // Path: src/controllers/exportRequirements.ts
 
@@ -4635,8 +5281,8 @@ export const exportRequirements = async (req: Request, res: Response) => {
         totalOpenings: req.totalOpenings,
         salaryMin: req.salaryMin,
         salaryMax: req.salaryMax,
-        band: band,
-        client: { percentageValue: clientPct },
+        band: band, // band.value × openings if present
+        client: { percentageValue: clientPct }, // avg salary × pct × openings if no band
       });
 
       if (computedSaleValue != null) {
@@ -4917,7 +5563,6 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export requirements" });
   }
 };
-
 // export const getRequirements = async (req: Request, res: Response) => {
 //   try {
 //     const {
