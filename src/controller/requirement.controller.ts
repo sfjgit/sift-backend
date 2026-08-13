@@ -251,7 +251,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
     const relevantStages = allStages.filter(
-      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId,
+      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
     );
 
     // ── Scoped stage counts + summary counts — all in one Promise.all
@@ -321,7 +321,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
     ]);
 
     const stageCountMap = Object.fromEntries(
-      stageCounts.map((s) => [s.currentStageId, s._count.id]),
+      stageCounts.map((s) => [s.currentStageId, s._count.id])
     );
 
     const pipelineStageSummary = relevantStages.map((stage) => ({
@@ -1146,10 +1146,10 @@ export const getRequirementStats = async (req: Request, res: Response) => {
       ]);
 
     const byStatus = Object.fromEntries(
-      byStatusRaw.map((r) => [r.status, r._count._all]),
+      byStatusRaw.map((r) => [r.status, r._count._all])
     );
     const byPriority = Object.fromEntries(
-      byPriorityRaw.map((r) => [r.priority, r._count._all]),
+      byPriorityRaw.map((r) => [r.priority, r._count._all])
     );
 
     res.json({
@@ -1868,7 +1868,6 @@ function toNum(v: any): number | null {
   const n = Number(v);
   return isNaN(n) ? null : n;
 }
-
 export const createRequirement = async (req: Request, res: Response) => {
   try {
     const actorId = req.user!.id;
@@ -1893,6 +1892,20 @@ export const createRequirement = async (req: Request, res: Response) => {
         .json({ success: false, message: "Invalid or inactive SPOC" });
     }
 
+    // ── Validate band belongs to client (if provided) ─────────────────────
+    if (body.bandId) {
+      const band = await prisma.band.findFirst({
+        where: { id: body.bandId, clientId: spoc.clientId },
+        select: { id: true },
+      });
+      if (!band) {
+        return res.status(400).json({
+          success: false,
+          message: "Selected band does not belong to this client",
+        });
+      }
+    }
+
     // ── Dates ─────────────────────────────────────────────────────────────
     const startDate = body.startDate ? new Date(body.startDate) : new Date();
     const targetDate = body.targetDate ? new Date(body.targetDate) : null;
@@ -1900,17 +1913,13 @@ export const createRequirement = async (req: Request, res: Response) => {
     // auto-compute — never trust client value
     const turnaroundDays = targetDate
       ? Math.ceil(
-          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
         )
       : null;
 
     const clientName = spoc.client?.name ?? "CLNT";
     const serviceLineName = spoc.serviceLine?.name ?? "SRVC";
-    const reqCode = await generateReqCode(
-      clientName,
-      serviceLineName,
-      // spoc.serviceLine.name
-    );
+    const reqCode = await generateReqCode(clientName, serviceLineName);
 
     const requirement = await prisma.requirement.create({
       data: {
@@ -1949,8 +1958,8 @@ export const createRequirement = async (req: Request, res: Response) => {
 
         startDate,
         targetDate,
-        respondBy: null, // removed from form — always null on create
-        turnaroundDays, // computed, never from body
+        respondBy: null,
+        turnaroundDays,
 
         jdFileKey: body.jdFileKey ?? null,
         jdFileName: body.jdFileName ?? null,
@@ -1966,6 +1975,10 @@ export const createRequirement = async (req: Request, res: Response) => {
         serviceLineId: spoc.serviceLineId,
         status: "ACTIVE",
         createdById: actorId,
+
+        // ── NEW ──────────────────────────────────────────────────────────
+        bandId: body.bandId ?? null,
+        saleValue: body.saleValue != null ? Number(body.saleValue) : null,
       },
       select: {
         id: true,
@@ -1986,8 +1999,6 @@ export const createRequirement = async (req: Request, res: Response) => {
     });
 
     // ── Push to JD library for future cloning ─────────────────────────────
-    // Saved as parsedData so the library search + clone flow works identically
-    // to a JD upload. Non-fatal — requirement is already created, don't fail.
     try {
       const libraryPayload = {
         title: body.title,
@@ -2010,7 +2021,6 @@ export const createRequirement = async (req: Request, res: Response) => {
         keySkills: body.keySkills ?? [],
         targetCompanies: body.targetCompanies ?? [],
         noPoachCompanies: body.noPoachCompanies ?? [],
-        // meta — not used for cloning but useful for traceability
         _source: "requirement",
         _reqCode: reqCode,
         _reqId: requirement.id,
@@ -2025,7 +2035,6 @@ export const createRequirement = async (req: Request, res: Response) => {
       });
 
       if (existing) {
-        // update with latest data — most recent requirement wins
         await prisma.parsedJDLibrary.update({
           where: { id: existing.id },
           data: {
@@ -2049,7 +2058,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     } catch (libErr) {
       console.warn(
         "createRequirement: failed to push to JD library (non-fatal)",
-        libErr,
+        libErr
       );
     }
 
@@ -2071,7 +2080,7 @@ const MIN_ROWS = 1;
 
 export const bulkUploadRequirementsController = async (
   req: Request,
-  res: Response,
+  res: Response
 ): Promise<void> => {
   try {
     // ─── 1. Validate file presence ──────────────────────────────────────────
@@ -2138,7 +2147,7 @@ export const bulkUploadRequirementsController = async (
       rawRows = parseUploadedFile(
         file.buffer,
         file.mimetype,
-        file.originalname,
+        file.originalname
       );
     } catch (parseError: unknown) {
       const message =
@@ -2193,7 +2202,7 @@ export const bulkUploadRequirementsController = async (
 
     const failedRowNumbers = new Set(allErrors.map((e) => e.row));
     const createableRows = validRows.filter(
-      ({ rowNumber }) => !failedRowNumbers.has(rowNumber),
+      ({ rowNumber }) => !failedRowNumbers.has(rowNumber)
     );
 
     // ─── 8. Insert rows sequentially — NO $transaction ────────────────────
@@ -2232,7 +2241,7 @@ export const bulkUploadRequirementsController = async (
         const turnaroundDays = targetDate
           ? Math.ceil(
               (targetDate.getTime() - startDate.getTime()) /
-                (1000 * 60 * 60 * 24),
+                (1000 * 60 * 60 * 24)
             )
           : null;
 
@@ -2306,7 +2315,7 @@ export const bulkUploadRequirementsController = async (
       } catch (activityErr) {
         console.warn(
           "[bulkUpload] Activity log failed (non-fatal):",
-          activityErr,
+          activityErr
         );
       }
     }
@@ -2331,7 +2340,7 @@ export const bulkUploadRequirementsController = async (
   } catch (error) {
     console.error(
       "[bulkUploadRequirementsController] Unexpected error:",
-      error,
+      error
     );
     res.status(500).json({
       success: false,
@@ -2348,20 +2357,22 @@ export const updateRequirement = async (req: Request, res: Response) => {
 
     const existing = await prisma.requirement.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, status: true },
+      select: { id: true, status: true, clientId: true },
     });
 
     if (!existing)
       return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
+
     if (["CLOSED", "CANCELLED"].includes(existing.status)) {
       return res.status(400).json({
         success: false,
         message: "Cannot edit a closed or cancelled requirement",
       });
     }
-    // ── Client/SPOC change — derive everything from the SPOC, never trust the payload ──
+
+    // ── Client/SPOC change — derive everything from the SPOC ──────────────
     let derived: {
       clientId?: string;
       clientSpocId?: string;
@@ -2370,7 +2381,6 @@ export const updateRequirement = async (req: Request, res: Response) => {
     } | null = null;
 
     if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
-      // reuse the SAME resolver bulk-upload uses so behaviour never drifts
       const spoc = await prisma.clientSpoc.findUnique({
         where: { id: body.clientSpocId },
         select: {
@@ -2384,7 +2394,7 @@ export const updateRequirement = async (req: Request, res: Response) => {
       if (!spoc || !spoc.isActive) {
         return res.status(400).json({
           success: false,
-          message: "Invalid or inActive SPOC selected",
+          message: "Invalid or inactive SPOC selected",
         });
       }
 
@@ -2395,6 +2405,23 @@ export const updateRequirement = async (req: Request, res: Response) => {
         serviceLineId: spoc.serviceLineId,
       };
     }
+
+    // ── Validate band belongs to the correct client ───────────────────────
+    // Use the derived clientId if SPOC is also changing, otherwise use existing
+    if (body.bandId !== undefined && body.bandId !== null) {
+      const targetClientId = derived?.clientId ?? existing.clientId;
+      const band = await prisma.band.findFirst({
+        where: { id: body.bandId, clientId: targetClientId },
+        select: { id: true },
+      });
+      if (!band) {
+        return res.status(400).json({
+          success: false,
+          message: "Selected band does not belong to this client",
+        });
+      }
+    }
+
     const updated = await prisma.requirement.update({
       where: { id },
       data: {
@@ -2473,7 +2500,6 @@ export const updateRequirement = async (req: Request, res: Response) => {
         }),
         ...(body.jdFileName !== undefined && { jdFileName: body.jdFileName }),
         ...(body.jdFileType !== undefined && { jdFileType: body.jdFileType }),
-
         ...(body.jdParsedAt !== undefined && {
           jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
         }),
@@ -2483,6 +2509,13 @@ export const updateRequirement = async (req: Request, res: Response) => {
         ...(body.jdParsedFields !== undefined && {
           jdParsedFields: body.jdParsedFields,
         }),
+
+        // ── NEW ────────────────────────────────────────────────────────────
+        ...(body.bandId !== undefined && { bandId: body.bandId ?? null }),
+        ...(body.saleValue !== undefined && {
+          saleValue: body.saleValue != null ? Number(body.saleValue) : null,
+        }),
+
         ...(derived && {
           clientSpocId: derived.clientSpocId,
           clientId: derived.clientId,
@@ -2802,8 +2835,8 @@ export const createAssignment = async (req: Request, res: Response) => {
           reason === "Already actively assigned"
             ? 409
             : reason === "User not found"
-              ? 404
-              : 400;
+            ? 404
+            : 400;
         return res.status(statusCode).json({ success: false, message: reason });
       }
     }
@@ -3069,7 +3102,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
     const now = Date.now();
     const enriched = pipelines.map((p) => {
       const agingMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       return {
         ...p,
@@ -3108,7 +3141,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getRequirementCandidateById = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { id: requirementId, pipelineId } = req.params;
@@ -3236,13 +3269,13 @@ export const getRequirementCandidateById = async (
     }
 
     const agingMins = Math.floor(
-      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000,
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
     );
 
     const totalPipelineMins =
       pipeline.stageHistory.reduce(
         (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
-        0,
+        0
       ) + agingMins;
 
     res.json({
@@ -3639,7 +3672,7 @@ export const getCandidateDetail = async (req: Request, res: Response) => {
 async function getVisibleRecruiterIds(
   userId: string,
   isSuperAdmin: boolean,
-  canViewScope: PermissionScope,
+  canViewScope: PermissionScope
 ): Promise<string[] | null> {
   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
   if (canViewScope === PermissionScope.OWN) return [userId];
@@ -3681,7 +3714,7 @@ async function getVisibleRecruiterIds(
 async function getCreatorScopeUserIds(
   userId: string,
   isSuperAdmin: boolean,
-  createdByScope: string,
+  createdByScope: string
 ): Promise<string[] | null> {
   // Only ALL scope (explicit opt-in) removes the creator filter entirely.
   // isSuperAdmin does NOT auto-bypass — even a superAdmin clicking "Mine"
@@ -3750,6 +3783,586 @@ function formatAging(mins: number): string {
 // which candidate counts are shown — that has NOT changed.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// File: requirementsController.ts
+// Path: src/controllers/requirementsController.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SALE VALUE COMPUTATION HELPER
+// Priority:
+//   1. requirement.saleValue exists            → saleValue * openings
+//   2. band.value + client.percentageValue     → band.value * (pct/100) * openings
+//   3. salaryMin / salaryMax                   → avg(min,max) * openings
+//   4. none of the above                       → null (omitted)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export function computeSaleValue(req: {
+//   saleValue?: number | null;
+//   totalOpenings: number;
+//   salaryMin?: number | null;
+//   salaryMax?: number | null;
+//   band?: {
+//     value?: number | null; // Decimal stored as number after Prisma toJSON
+//   } | null;
+//   client?: {
+//     percentageValue?: number | null; // Decimal → number
+//   } | null;
+// }): {
+//   computedSaleValue: number | null;
+//   saleValueBasis: "SALE_VALUE" | "BAND_PERCENTAGE" | "SALARY_AVG" | null;
+// } {
+//   const openings = req.totalOpenings ?? 1;
+
+//   // 1. Explicit sale value on requirement
+//   if (req.saleValue != null && req.saleValue > 0) {
+//     return {
+//       computedSaleValue: req.saleValue * openings,
+//       saleValueBasis: "SALE_VALUE",
+//     };
+//   }
+
+//   // 2. Band value + client percentage
+//   const bandValue = req.band?.value != null ? Number(req.band.value) : null;
+//   const pct =
+//     req.client?.percentageValue != null
+//       ? Number(req.client.percentageValue)
+//       : null;
+
+//   if (bandValue != null && bandValue > 0 && pct != null && pct > 0) {
+//     return {
+//       computedSaleValue: bandValue * (pct / 100) * openings,
+//       saleValueBasis: "BAND_PERCENTAGE",
+//     };
+//   }
+
+//   // 3. Salary min/max average
+//   const min = req.salaryMin != null ? Number(req.salaryMin) : null;
+//   const max = req.salaryMax != null ? Number(req.salaryMax) : null;
+
+//   if (min != null || max != null) {
+//     const avg = min != null && max != null ? (min + max) / 2 : (min ?? max)!;
+//     return {
+//       computedSaleValue: avg * openings,
+//       saleValueBasis: "SALARY_AVG",
+//     };
+//   }
+
+//   // 4. Cannot compute
+//   return { computedSaleValue: null, saleValueBasis: null };
+// }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirements — drop-in replacement
+// Additions vs previous version:
+//   • select adds: saleValue, bandId, band, salaryMin, salaryMax,
+//     client.agreementType, client.percentageValue (already there — unchanged),
+//     assignments.allocatedOpenings (already there)
+//   • enrichedRequirements gets computedSaleValue + saleValueBasis fields
+//   • response scope/permissions unchanged
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export const getRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       priority,
+//       createdByScope = "OWN",
+//       createdById,
+//       dateFrom,
+//       dateTo,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "createdAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+//       PermissionScope.OWN) as PermissionScope;
+
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
+
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+//     const where: any = { ...scopeWhere, deletedAt: null };
+
+//     if (createdById) {
+//       where.createdById = createdById;
+//     } else {
+//       const creatorIds = await getCreatorScopeUserIds(
+//         userId,
+//         isSuperAdmin,
+//         createdByScope
+//       );
+//       if (creatorIds !== null) {
+//         where.createdById = { in: creatorIds };
+//       }
+//     }
+
+//     if (status) where.status = status;
+//     if (priority) where.priority = priority;
+//     if (clientId) where.clientId = clientId;
+//     if (serviceLineId) where.serviceLineId = serviceLineId;
+//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+//     if (dateFrom || dateTo) {
+//       where.createdAt = {
+//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+//         ...(dateTo
+//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+//           : {}),
+//       };
+//     }
+//     if (search) {
+//       where.AND = [
+//         ...(where.AND ?? []),
+//         {
+//           OR: [
+//             { title: { contains: search, mode: "insensitive" } },
+//             { reqCode: { contains: search, mode: "insensitive" } },
+//             { primarySkills: { has: search } },
+//             { keySkills: { has: search } },
+//           ],
+//         },
+//       ];
+//     }
+
+//     const SORTABLE = [
+//       "createdAt",
+//       "updatedAt",
+//       "respondBy",
+//       "priority",
+//       "status",
+//     ];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { createdAt: "desc" as const };
+
+//     const [total, requirements] = await Promise.all([
+//       prisma.requirement.count({ where }),
+//       prisma.requirement.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           reqCode: true,
+//           title: true,
+//           status: true,
+//           priority: true,
+//           jobType: true,
+//           remoteType: true,
+//           totalOpenings: true,
+//           city: true,
+//           state: true,
+//           country: true,
+//           primarySkills: true,
+//           keySkills: true,
+//           jobOpenFor: true,
+//           targetDate: true,
+//           closedAt: true,
+//           closedById: true,
+//           closureReason: true,
+//           jdParseStatus: true,
+//           respondBy: true,
+//           isRespondByBreached: true,
+//           isTurnaroundBreached: true,
+//           createdAt: true,
+//           serviceLineId: true,
+
+//           // ── Sale value fields (NEW) ──────────────────────────────────────
+//           saleValue: true,
+//           salaryMin: true,
+//           salaryMax: true,
+//           salaryType: true,
+//           salaryCurrency: true,
+
+//           // ── Band (NEW — full detail for display + computation) ───────────
+//           bandId: true,
+//           band: {
+//             select: {
+//               id: true,
+//               code: true,
+//               name: true,
+//               rangeFrom: true,
+//               rangeTo: true,
+//               value: true,
+//             },
+//           },
+
+//           client: {
+//             select: {
+//               id: true,
+//               name: true,
+//               agreementType: true,
+//               percentageValue: true, // needed for BAND_PERCENTAGE computation
+//             },
+//           },
+
+//           businessUnit: { select: { id: true, name: true } },
+//           serviceLine: { select: { id: true, name: true } },
+
+//           clientSpoc: {
+//             select: {
+//               handler: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//           },
+//           createdBy: { select: { id: true, firstName: true, lastName: true } },
+
+//           assignments: {
+//             where: { status: "ACTIVE" },
+//             select: {
+//               id: true,
+//               depth: true,
+//               allocatedOpenings: true,
+//               deadline: true,
+//               assignedTo: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//             orderBy: { depth: "asc" },
+//           },
+
+//           _count: { select: { pipelines: true, assignments: true } },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
+
+//     if (!requirements.length) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         meta: {
+//           total,
+//           page: parseInt(page),
+//           limit: take,
+//           pages: Math.ceil(total / take),
+//         },
+//         permissions: {
+//           canAdd: req.modulePermission.canAdd,
+//           canEdit: req.modulePermission.canEdit,
+//           canDelete: req.modulePermission.canDelete,
+//         },
+//       });
+//     }
+
+//     // ── Pipeline stage counts (unchanged logic) ──────────────────────────
+//     const reqIds = requirements.map((r) => r.id);
+//     const createdByMeIds = new Set(
+//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+//     );
+//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+
+//     const visibleRecruiterIds = await getVisibleRecruiterIds(
+//       userId,
+//       isSuperAdmin,
+//       canViewScope
+//     );
+
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//         canonicalStage: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+//     const [fullCounts, scopedCounts] = await Promise.all([
+//       createdByMeIds.size > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: { requirementId: { in: [...createdByMeIds] } },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//       assignedOnlyIds.length > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: {
+//               requirementId: { in: assignedOnlyIds },
+//               ...(visibleRecruiterIds !== null
+//                 ? { recruiterId: { in: visibleRecruiterIds } }
+//                 : {}),
+//             },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//     ]);
+
+//     type StageCount = {
+//       stageId: string;
+//       code: string;
+//       label: string;
+//       order: number;
+//       canonicalStage: string | null;
+//       count: number;
+//     };
+
+//     const countsByReq: Record<string, StageCount[]> = {};
+//     const pushToCountsByReq = (rows: any[]) => {
+//       for (const sc of rows) {
+//         const stage = stageById[sc.currentStageId];
+//         if (!stage) continue;
+//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+//         countsByReq[sc.requirementId].push({
+//           stageId: sc.currentStageId,
+//           code: stage.code,
+//           label: stage.label,
+//           order: stage.order,
+//           canonicalStage: stage.canonicalStage ?? null,
+//           count: sc._count.id,
+//         });
+//       }
+//     };
+//     pushToCountsByReq(fullCounts as any[]);
+//     pushToCountsByReq(scopedCounts as any[]);
+//     for (const key of Object.keys(countsByReq)) {
+//       countsByReq[key].sort((a, b) => a.order - b.order);
+//     }
+
+//     const allCanonicalKeys: string[] = await prisma.pipelineStage
+//       .findMany({
+//         where: { isActive: true, canonicalStage: { not: null } },
+//         select: { canonicalStage: true },
+//         distinct: ["canonicalStage"],
+//         orderBy: { order: "asc" },
+//       })
+//       .then((rows) =>
+//         rows
+//           .map((r) => r.canonicalStage!)
+//           .filter((v, i, a) => a.indexOf(v) === i)
+//       );
+
+//     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
+//     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
+//       const canonical: Record<string, number> = Object.fromEntries(
+//         allCanonicalKeys.map((k) => [k, 0])
+//       );
+//       for (const sc of stageCounts) {
+//         if (!sc.canonicalStage) continue;
+//         canonical[sc.canonicalStage] =
+//           (canonical[sc.canonicalStage] ?? 0) + sc.count;
+//       }
+//       canonicalCountsByReq[reqId] = canonical;
+//     }
+//     for (const r of requirements) {
+//       if (!canonicalCountsByReq[r.id]) {
+//         canonicalCountsByReq[r.id] = Object.fromEntries(
+//           allCanonicalKeys.map((k) => [k, 0])
+//         );
+//       }
+//     }
+
+//     // ── Enrich with sale value computation ──────────────────────────────
+//     let totalSaleValue = 0;
+//     let omittedCount = 0;
+
+//     const enrichedRequirements = requirements.map((r) => {
+//       const { computedSaleValue, saleValueBasis } = computeSaleValue({
+//         saleValue: r.saleValue,
+//         totalOpenings: r.totalOpenings,
+//         salaryMin: r.salaryMin,
+//         salaryMax: r.salaryMax,
+//         band: r.band
+//           ? { value: r.band.value ? Number(r.band.value) : null }
+//           : null,
+//         client: r.client
+//           ? {
+//               percentageValue: r.client.percentageValue
+//                 ? Number(r.client.percentageValue)
+//                 : null,
+//             }
+//           : null,
+//       });
+
+//       if (computedSaleValue != null) {
+//         totalSaleValue += computedSaleValue;
+//       } else {
+//         omittedCount++;
+//       }
+
+//       return {
+//         ...r,
+//         // Coerce Decimal → number for JSON serialisation
+//         band: r.band
+//           ? {
+//               ...r.band,
+//               rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
+//               rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
+//               value: r.band.value ? Number(r.band.value) : null,
+//             }
+//           : null,
+//         client: r.client
+//           ? {
+//               ...r.client,
+//               percentageValue: r.client.percentageValue
+//                 ? Number(r.client.percentageValue)
+//                 : null,
+//             }
+//           : null,
+//         computedSaleValue,
+//         saleValueBasis,
+//         pipelineStageCounts: countsByReq[r.id] ?? [],
+//         canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
+//       };
+//     });
+
+//     return res.json({
+//       success: true,
+//       data: enrichedRequirements,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//       // ── Sale value aggregate (NEW) ─────────────────────────────────────
+//       saleValueSummary: {
+//         totalSaleValue, // sum of all computed values in this page
+//         omittedCount, // how many requirements had no computable value
+//         includedCount: requirements.length - omittedCount,
+//       },
+//       scope: {
+//         createdByScope,
+//         canViewScope,
+//         isSuperAdmin,
+//       },
+//       permissions: {
+//         canAdd: req.modulePermission.canAdd,
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch requirements" });
+//   }
+// };
+
+// File: exportRequirements.ts
+// Path: src/controllers/exportRequirements.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// exportRequirements — full replacement
+// Adds: saleValue, band fields, client agreementType/percentageValue,
+//       computedSaleValue, saleValueBasis, salaryMin, salaryMax columns
+//       on Sheet 1. Sheet 2 (Candidates) unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// File: requirementsController.ts
+// Path: src/controllers/requirementsController.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SALE VALUE COMPUTATION HELPER
+//
+// Priority chain (stop at first match):
+//
+//  1. SALE_VALUE     — requirement.saleValue set
+//                      → saleValue × openings
+//
+//  2. BAND           — band.value set (client agreementType = BAND)
+//                      band.value is a fixed rupee amount per opening (e.g. ₹60k)
+//                      → band.value × openings
+//                      (no salary avg needed — band value IS the per-opening amount)
+//
+//  3. FIXED_PCT      — client.percentageValue set (client agreementType = FIXED)
+//                      + salaryMin / salaryMax available
+//                      → avg(salaryMin, salaryMax) × (percentageValue / 100) × openings
+//
+//  4. SALARY_AVG     — salaryMin / salaryMax set, no band, no percentage
+//                      → avg(salaryMin, salaryMax) × openings
+//
+//  5. null           — not enough data to compute
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function computeSaleValue(req: {
+  saleValue?: number | null;
+  totalOpenings: number;
+  salaryMin?: number | null;
+  salaryMax?: number | null;
+  band?: { value?: number | null } | null;
+  client?: { percentageValue?: number | null } | null;
+}): {
+  computedSaleValue: number | null;
+  saleValueBasis: "SALE_VALUE" | "BAND" | "FIXED_PCT" | "SALARY_AVG" | null;
+} {
+  const openings = req.totalOpenings ?? 1;
+
+  // 1. Explicit sale value on requirement
+  if (req.saleValue != null && req.saleValue > 0) {
+    return {
+      computedSaleValue: req.saleValue * openings,
+      saleValueBasis: "SALE_VALUE",
+    };
+  }
+
+  // 2. Band — fixed rupee value per opening, multiply directly
+  const bandValue = req.band?.value != null ? Number(req.band.value) : null;
+  if (bandValue != null && bandValue > 0) {
+    return {
+      computedSaleValue: bandValue * openings,
+      saleValueBasis: "BAND",
+    };
+  }
+
+  // Helper: salary average (used by cases 3 and 4)
+  const salMin = req.salaryMin != null ? Number(req.salaryMin) : null;
+  const salMax = req.salaryMax != null ? Number(req.salaryMax) : null;
+  const hasSalary = salMin != null || salMax != null;
+  const salaryAvg =
+    salMin != null && salMax != null
+      ? (salMin + salMax) / 2
+      : salMin ?? salMax ?? null;
+
+  // 3. Fixed percentage — avg salary × client percentage × openings
+  const pct =
+    req.client?.percentageValue != null
+      ? Number(req.client.percentageValue)
+      : null;
+  if (pct != null && pct > 0 && salaryAvg != null) {
+    return {
+      computedSaleValue: salaryAvg * (pct / 100) * openings,
+      saleValueBasis: "FIXED_PCT",
+    };
+  }
+
+  // 4. Salary avg only — no band, no percentage
+  if (hasSalary && salaryAvg != null) {
+    return {
+      computedSaleValue: salaryAvg * openings,
+      saleValueBasis: "SALARY_AVG",
+    };
+  }
+
+  // 5. Cannot compute
+  return { computedSaleValue: null, saleValueBasis: null };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirements — drop-in replacement
+// Additions vs previous version:
+//   • select adds: saleValue, bandId, band, salaryMin, salaryMax,
+//     client.agreementType, client.percentageValue (already there — unchanged),
+//     assignments.allocatedOpenings (already there)
+//   • enrichedRequirements gets computedSaleValue + saleValueBasis fields
+//   • response scope/permissions unchanged
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const getRequirements = async (req: Request, res: Response) => {
   try {
     const {
@@ -3759,12 +4372,8 @@ export const getRequirements = async (req: Request, res: Response) => {
       serviceLineId,
       clientId,
       priority,
-      // NEW: which creators to show requirements for (default OWN)
       createdByScope = "OWN",
-      // NEW: filter by a specific creator userId (superAdmin or manager use case)
       createdById,
-      closedAt,
-      closedById,
       dateFrom,
       dateTo,
       page = "1",
@@ -3781,27 +4390,20 @@ export const getRequirements = async (req: Request, res: Response) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    // ── Base scope: requirements accessible to this user (existing service)
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const where: any = { ...scopeWhere, deletedAt: null };
 
-    // ── Creator scope filter (NEW default behaviour)
-    // If a specific createdById is passed, use that directly.
-    // Otherwise, compute the set of userIds based on createdByScope.
     if (createdById) {
-      // Direct filter — manager looking at a specific person's requirements
       where.createdById = createdById;
     } else {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope,
+        createdByScope
       );
       if (creatorIds !== null) {
-        // Apply creator filter — only requirements made by these users
         where.createdById = { in: creatorIds };
       }
-      // null means no filter (ALL / superAdmin)
     }
 
     if (status) where.status = status;
@@ -3817,7 +4419,6 @@ export const getRequirements = async (req: Request, res: Response) => {
           : {}),
       };
     }
-
     if (search) {
       where.AND = [
         ...(where.AND ?? []),
@@ -3872,9 +4473,39 @@ export const getRequirements = async (req: Request, res: Response) => {
           isTurnaroundBreached: true,
           createdAt: true,
           serviceLineId: true,
-          client: { select: { id: true, name: true } },
+
+          // ── Sale value fields (NEW) ──────────────────────────────────────
+          saleValue: true,
+          salaryMin: true,
+          salaryMax: true,
+          salaryType: true,
+          salaryCurrency: true,
+
+          // ── Band (NEW — full detail for display + computation) ───────────
+          bandId: true,
+          band: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              rangeFrom: true,
+              rangeTo: true,
+              value: true,
+            },
+          },
+
+          client: {
+            select: {
+              id: true,
+              name: true,
+              agreementType: true,
+              percentageValue: true, // needed for BAND_PERCENTAGE computation
+            },
+          },
+
           businessUnit: { select: { id: true, name: true } },
           serviceLine: { select: { id: true, name: true } },
+
           clientSpoc: {
             select: {
               handler: {
@@ -3924,17 +4555,17 @@ export const getRequirements = async (req: Request, res: Response) => {
       });
     }
 
-    // ── Pipeline stage counts (existing two-bucket logic, unchanged)
+    // ── Pipeline stage counts (unchanged logic) ──────────────────────────
     const reqIds = requirements.map((r) => r.id);
     const createdByMeIds = new Set(
-      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id),
+      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
     );
     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
 
     const visibleRecruiterIds = await getVisibleRecruiterIds(
       userId,
       isSuperAdmin,
-      canViewScope,
+      canViewScope
     );
 
     const allStages = await prisma.pipelineStage.findMany({
@@ -3983,7 +4614,6 @@ export const getRequirements = async (req: Request, res: Response) => {
     };
 
     const countsByReq: Record<string, StageCount[]> = {};
-
     const pushToCountsByReq = (rows: any[]) => {
       for (const sc of rows) {
         const stage = stageById[sc.currentStageId];
@@ -3999,17 +4629,12 @@ export const getRequirements = async (req: Request, res: Response) => {
         });
       }
     };
-
     pushToCountsByReq(fullCounts as any[]);
     pushToCountsByReq(scopedCounts as any[]);
-
     for (const key of Object.keys(countsByReq)) {
       countsByReq[key].sort((a, b) => a.order - b.order);
     }
 
-    // ── Aggregate canonical stage counts per requirement.
-    // All canonical stage keys from DB are included (even zeros) so the
-    // frontend table always has consistent columns regardless of candidate counts.
     const allCanonicalKeys: string[] = await prisma.pipelineStage
       .findMany({
         where: { isActive: true, canonicalStage: { not: null } },
@@ -4020,15 +4645,13 @@ export const getRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i),
+          .filter((v, i, a) => a.indexOf(v) === i)
       );
 
     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
-
     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
-      // Start with all keys at zero — never hardcoded, pulled from DB
       const canonical: Record<string, number> = Object.fromEntries(
-        allCanonicalKeys.map((k) => [k, 0]),
+        allCanonicalKeys.map((k) => [k, 0])
       );
       for (const sc of stageCounts) {
         if (!sc.canonicalStage) continue;
@@ -4037,22 +4660,67 @@ export const getRequirements = async (req: Request, res: Response) => {
       }
       canonicalCountsByReq[reqId] = canonical;
     }
-
-    // Requirements with zero candidates also get full zero-filled canonical map
     for (const r of requirements) {
       if (!canonicalCountsByReq[r.id]) {
         canonicalCountsByReq[r.id] = Object.fromEntries(
-          allCanonicalKeys.map((k) => [k, 0]),
+          allCanonicalKeys.map((k) => [k, 0])
         );
       }
     }
 
-    const enrichedRequirements = requirements.map((r) => ({
-      ...r,
-      pipelineStageCounts: countsByReq[r.id] ?? [],
-      // Canonical stage rollup — dynamic, never hardcoded
-      canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
-    }));
+    // ── Enrich with sale value computation ──────────────────────────────
+    let totalSaleValue = 0;
+    let omittedCount = 0;
+
+    const enrichedRequirements = requirements.map((r) => {
+      const { computedSaleValue, saleValueBasis } = computeSaleValue({
+        saleValue: r.saleValue,
+        totalOpenings: r.totalOpenings,
+        salaryMin: r.salaryMin,
+        salaryMax: r.salaryMax,
+        band: r.band
+          ? { value: r.band.value ? Number(r.band.value) : null }
+          : null,
+        client: r.client
+          ? {
+              percentageValue: r.client.percentageValue
+                ? Number(r.client.percentageValue)
+                : null,
+            }
+          : null,
+      });
+
+      if (computedSaleValue != null) {
+        totalSaleValue += computedSaleValue;
+      } else {
+        omittedCount++;
+      }
+
+      return {
+        ...r,
+        // Coerce Decimal → number for JSON serialisation
+        band: r.band
+          ? {
+              ...r.band,
+              rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
+              rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
+              value: r.band.value ? Number(r.band.value) : null,
+            }
+          : null,
+        client: r.client
+          ? {
+              ...r.client,
+              percentageValue: r.client.percentageValue
+                ? Number(r.client.percentageValue)
+                : null,
+            }
+          : null,
+        computedSaleValue,
+        saleValueBasis,
+        pipelineStageCounts: countsByReq[r.id] ?? [],
+        canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
+      };
+    });
 
     return res.json({
       success: true,
@@ -4063,8 +4731,12 @@ export const getRequirements = async (req: Request, res: Response) => {
         limit: take,
         pages: Math.ceil(total / take),
       },
-      // Echo back the active scope so the frontend scope switcher reflects
-      // the current state. isSuperAdmin is exposed separately.
+      // ── Sale value aggregate (NEW) ─────────────────────────────────────
+      saleValueSummary: {
+        totalSaleValue, // sum of all computed values in this page
+        omittedCount, // how many requirements had no computable value
+        includedCount: requirements.length - omittedCount,
+      },
       scope: {
         createdByScope,
         canViewScope,
@@ -4085,25 +4757,156 @@ export const getRequirements = async (req: Request, res: Response) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /requirements/export
+// getSaleValueStats
+// Returns total computed sale value across ALL matching requirements.
+// Accepts every filter getRequirements accepts EXCEPT page and limit —
+// stats must reflect the full filtered dataset, not just the current page.
 //
-// Downloads an Excel workbook (.xlsx) with two sheets:
-//
-// Sheet 1 — Requirements summary
-//   Columns: Req Code | Title | Status | Priority | Client | BU | Service Line |
-//            City | Country | Job Type | Remote | Total Openings | Created By |
-//            Created At | Days Open | Respond By | Breached? |
-//            + one column per canonical stage (from DB, never hardcoded)
-//
-// Sheet 2 — Candidates
-//   Columns: Req Code | Req Title | Candidate Name | Email | Phone |
-//            Current Title | Current Company | Exp (yrs) | Top Skills |
-//            Current Stage | Canonical Stage | Recruiter |
-//            Added On | Days in Current Stage | Total Pipeline Days |
-//            Is Rejected | Is Withdrawn | Is On Hold |
-//            Submitted At | Offer Status | Actual Joining Date
-//
-// Respects the same createdByScope + filters as getRequirements.
+// GET /requirements/sale-value-stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getSaleValueStats = async (req: Request, res: Response) => {
+  try {
+    const {
+      search,
+      status,
+      buId,
+      serviceLineId,
+      clientId,
+      priority,
+      createdByScope = "OWN",
+      createdById,
+      dateFrom,
+      dateTo,
+      // page and limit intentionally NOT destructured — stats are always global
+    } = req.query as Record<string, string>;
+
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // ── Same scope/where logic as getRequirements ──────────────────────────
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const where: any = { ...scopeWhere, deletedAt: null };
+
+    if (createdById) {
+      where.createdById = createdById;
+    } else {
+      const creatorIds = await getCreatorScopeUserIds(
+        userId,
+        isSuperAdmin,
+        createdByScope
+      );
+      if (creatorIds !== null) {
+        where.createdById = { in: creatorIds };
+      }
+    }
+
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+    if (clientId) where.clientId = clientId;
+    if (serviceLineId) where.serviceLineId = serviceLineId;
+    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+    if (dateFrom || dateTo) {
+      where.createdAt = {
+        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+        ...(dateTo
+          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+          : {}),
+      };
+    }
+    if (search) {
+      where.AND = [
+        ...(where.AND ?? []),
+        {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { reqCode: { contains: search, mode: "insensitive" } },
+            { primarySkills: { has: search } },
+            { keySkills: { has: search } },
+          ],
+        },
+      ];
+    }
+
+    // ── Fetch only the fields needed for computation — no pagination ───────
+    const requirements = await prisma.requirement.findMany({
+      where,
+      select: {
+        id: true,
+        totalOpenings: true,
+        saleValue: true,
+        salaryMin: true,
+        salaryMax: true,
+        band: { select: { value: true } },
+        client: { select: { percentageValue: true } },
+      },
+      // No skip/take — full filtered dataset
+    });
+
+    let totalSaleValue = 0;
+    let omittedCount = 0;
+
+    // Breakdown by basis for the stats summary
+    const byBasis: Record<string, { count: number; total: number }> = {
+      SALE_VALUE: { count: 0, total: 0 },
+      BAND: { count: 0, total: 0 },
+      FIXED_PCT: { count: 0, total: 0 },
+      SALARY_AVG: { count: 0, total: 0 },
+    };
+
+    for (const r of requirements) {
+      const { computedSaleValue, saleValueBasis } = computeSaleValue({
+        saleValue: r.saleValue,
+        totalOpenings: r.totalOpenings,
+        salaryMin: r.salaryMin,
+        salaryMax: r.salaryMax,
+        band: r.band
+          ? { value: r.band.value ? Number(r.band.value) : null }
+          : null,
+        client: r.client
+          ? {
+              percentageValue: r.client.percentageValue
+                ? Number(r.client.percentageValue)
+                : null,
+            }
+          : null,
+      });
+
+      if (computedSaleValue != null && saleValueBasis != null) {
+        totalSaleValue += computedSaleValue;
+        byBasis[saleValueBasis].count++;
+        byBasis[saleValueBasis].total += computedSaleValue;
+      } else {
+        omittedCount++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        totalRequirements: requirements.length,
+        includedCount: requirements.length - omittedCount,
+        omittedCount,
+        totalSaleValue,
+        byBasis, // breakdown: how many used each method + their subtotal
+      },
+    });
+  } catch (err) {
+    console.error("getSaleValueStats:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to compute sale value stats" });
+  }
+};
+
+// File: exportRequirements.ts
+// Path: src/controllers/exportRequirements.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// exportRequirements — full replacement
+// Adds: saleValue, band fields, client agreementType/percentageValue,
+//       computedSaleValue, saleValueBasis, salaryMin, salaryMax columns
+//       on Sheet 1. Sheet 2 (Candidates) unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const exportRequirements = async (req: Request, res: Response) => {
@@ -4117,17 +4920,13 @@ export const exportRequirements = async (req: Request, res: Response) => {
       priority,
       createdByScope = "OWN",
       createdById,
-      // createdBy,
       dateFrom,
       dateTo,
     } = req.query as Record<string, string>;
 
-    // const createdById = createdBy || null;
-
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    // ── Build same where clause as getRequirements (no pagination)
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const where: any = { ...scopeWhere, deletedAt: null };
 
@@ -4137,7 +4936,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       const creatorIds = await getCreatorScopeUserIds(
         userId,
         isSuperAdmin,
-        createdByScope ?? "OWN",
+        createdByScope ?? "OWN"
       );
       if (creatorIds !== null) {
         where.createdById = { in: creatorIds };
@@ -4147,10 +4946,8 @@ export const exportRequirements = async (req: Request, res: Response) => {
     if (status) where.status = status;
     if (priority) where.priority = priority;
     if (clientId) where.clientId = clientId;
-    if (createdById) where.createdById = createdById;
     if (serviceLineId) where.serviceLineId = serviceLineId;
     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-    // ✅ Date range filter on createdAt
     if (dateFrom || dateTo) {
       where.createdAt = {
         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
@@ -4170,8 +4967,8 @@ export const exportRequirements = async (req: Request, res: Response) => {
         },
       ];
     }
-    console.log("where", where);
-    // ── Fetch requirements (no limit for export — capped at 1000 rows)
+
+    // ── Fetch (cap 1000) ────────────────────────────────────────────────────
     const requirements = await prisma.requirement.findMany({
       where,
       select: {
@@ -4190,7 +4987,33 @@ export const exportRequirements = async (req: Request, res: Response) => {
         isRespondByBreached: true,
         isTurnaroundBreached: true,
         createdAt: true,
-        client: { select: { name: true } },
+
+        // ── Sale value fields ───────────────────────────────────────────
+        saleValue: true,
+        salaryMin: true,
+        salaryMax: true,
+        salaryType: true,
+        salaryCurrency: true,
+
+        band: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            rangeFrom: true,
+            rangeTo: true,
+            value: true,
+          },
+        },
+
+        client: {
+          select: {
+            name: true,
+            agreementType: true,
+            percentageValue: true,
+          },
+        },
+
         businessUnit: { select: { name: true } },
         serviceLine: { select: { id: true, name: true } },
         createdBy: { select: { firstName: true, lastName: true } },
@@ -4207,7 +5030,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     const reqIds = requirements.map((r) => r.id);
 
-    // ── Fetch all active pipeline stages from DB — no hardcoding
+    // ── Pipeline stages ──────────────────────────────────────────────────
     const allStages = await prisma.pipelineStage.findMany({
       where: { isActive: true },
       select: {
@@ -4221,9 +5044,6 @@ export const exportRequirements = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
 
-    // ── Fetch all canonical stage keys from DB-backed enum
-    // We read the distinct canonicalStage values that actually exist in PipelineStage
-    // so export columns match what's configured — not what's in the Prisma enum.
     const canonicalStageKeys: string[] = await prisma.pipelineStage
       .findMany({
         where: { isActive: true, canonicalStage: { not: null } },
@@ -4234,10 +5054,9 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .then((rows) =>
         rows
           .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i),
+          .filter((v, i, a) => a.indexOf(v) === i)
       );
 
-    // ── Fetch pipeline counts grouped by requirementId + currentStageId
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
@@ -4245,9 +5064,6 @@ export const exportRequirements = async (req: Request, res: Response) => {
     });
 
     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-    // Build canonical count map per requirement
-    // { reqId: { SOURCED: 3, SCREENING: 1, ... } }
     const canonicalByReq: Record<string, Record<string, number>> = {};
     for (const sc of stageCounts) {
       const stage = stageById[(sc as any).currentStageId];
@@ -4259,7 +5075,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         (sc as any)._count.id;
     }
 
-    // ── Fetch all pipeline rows for Sheet 2
+    // ── Pipeline rows for Sheet 2 ────────────────────────────────────────
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirementId: { in: reqIds } },
       select: {
@@ -4288,25 +5104,20 @@ export const exportRequirements = async (req: Request, res: Response) => {
             topSkills: true,
           },
         },
-        stageHistory: {
-          select: { timeInPrevStageMins: true },
-        },
+        stageHistory: { select: { timeInPrevStageMins: true } },
       },
       orderBy: { createdAt: "asc" },
     });
 
-    // Build a lookup for requirement basic info
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
     // Build workbook
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ─────────────────────────────────────────────────────────────────────
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    // ── Header style helpers
     const headerFill: ExcelJS.Fill = {
       type: "pattern",
       pattern: "solid",
@@ -4322,10 +5133,15 @@ export const exportRequirements = async (req: Request, res: Response) => {
       pattern: "solid",
       fgColor: { argb: "FF2D5986" },
     };
+    const saleHeaderFill: ExcelJS.Fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1A5C2A" }, // dark green group header for sale value section
+    };
 
     const applyHeaderRow = (
       row: ExcelJS.Row,
-      fill: ExcelJS.Fill = headerFill,
+      fill: ExcelJS.Fill = headerFill
     ) => {
       row.eachCell((cell) => {
         cell.fill = fill;
@@ -4342,19 +5158,18 @@ export const exportRequirements = async (req: Request, res: Response) => {
       row.height = 28;
     };
 
-    // ── Sheet 1: Requirements summary ──────────────────────────────────────
-
+    // ── Sheet 1: Requirements ──────────────────────────────────────────────
     const sheet1 = workbook.addWorksheet("Requirements", {
       views: [{ state: "frozen", ySplit: 2 }],
     });
 
-    // Fixed columns — date columns get numFmt at column level so Excel shows them correctly
     const fixedCols = [
       { header: "Req Code", key: "reqCode", width: 14 },
-      { header: "Title", key: "title", width: 40 },
+      { header: "Title", key: "title", width: 38 },
       { header: "Status", key: "status", width: 16 },
       { header: "Priority", key: "priority", width: 12 },
       { header: "Client", key: "client", width: 24 },
+      { header: "Agreement", key: "agreementType", width: 14 },
       { header: "Business Unit", key: "bu", width: 22 },
       { header: "Service Line", key: "sl", width: 20 },
       { header: "City", key: "city", width: 16 },
@@ -4380,8 +5195,19 @@ export const exportRequirements = async (req: Request, res: Response) => {
       { header: "Total Candidates", key: "total", width: 16 },
     ];
 
-    // Dynamic canonical stage columns — come from DB, never hardcoded.
-    // Header uses title-case label (e.g. "Offer In Progress") not raw enum key.
+    const saleValueCols = [
+      { header: "Band Code", key: "bandCode", width: 12 },
+      { header: "Band Name", key: "bandName", width: 18 },
+      { header: "Band Range", key: "bandRange", width: 18 },
+      { header: "Band Value", key: "bandValue", width: 14 },
+      { header: "Client %", key: "clientPct", width: 12 },
+      { header: "Salary Min", key: "salaryMin", width: 14 },
+      { header: "Salary Max", key: "salaryMax", width: 14 },
+      { header: "Req Sale Value", key: "reqSaleValue", width: 16 },
+      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+      { header: "Sale Basis", key: "saleValueBasis", width: 18 },
+    ];
+
     const canonicalCols = canonicalStageKeys.map((key) => ({
       header: key
         .split("_")
@@ -4391,39 +5217,84 @@ export const exportRequirements = async (req: Request, res: Response) => {
       width: 14,
     }));
 
-    sheet1.columns = [...fixedCols, ...canonicalCols];
+    sheet1.columns = [...fixedCols, ...saleValueCols, ...canonicalCols];
 
-    // Group header row (row 1): "Basic Info" spans fixed cols, "Pipeline Stages" spans dynamic cols
+    // Group header row (row 1)
     const basicSpan = fixedCols.length;
+    const saleSpan = saleValueCols.length;
     const stageSpan = canonicalCols.length;
 
     const groupRow = sheet1.getRow(1);
     groupRow.getCell(1).value = "Requirement Details";
-    groupRow.getCell(basicSpan + 1).value =
-      stageSpan > 0 ? "Pipeline Stages (from DB)" : "";
+    groupRow.getCell(basicSpan + 1).value = "Sale Value Computation";
+    groupRow.getCell(basicSpan + saleSpan + 1).value =
+      stageSpan > 0 ? "Pipeline Stages" : "";
+
     sheet1.mergeCells(1, 1, 1, basicSpan);
+    sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + saleSpan);
     if (stageSpan > 0) {
-      sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + stageSpan);
+      sheet1.mergeCells(
+        1,
+        basicSpan + saleSpan + 1,
+        1,
+        basicSpan + saleSpan + stageSpan
+      );
     }
     applyHeaderRow(groupRow);
-    groupRow.getCell(basicSpan + 1).fill = subHeaderFill;
+    groupRow.getCell(basicSpan + 1).fill = saleHeaderFill;
+    groupRow.getCell(basicSpan + saleSpan + 1).fill = subHeaderFill;
 
-    // Column header row (row 2)
+    // Column headers (row 2)
     const colHeaderRow = sheet1.getRow(2);
-    [...fixedCols, ...canonicalCols].forEach((col, i) => {
+    [...fixedCols, ...saleValueCols, ...canonicalCols].forEach((col, i) => {
       colHeaderRow.getCell(i + 1).value = col.header;
     });
     applyHeaderRow(colHeaderRow, subHeaderFill);
 
-    // Data rows (start at row 3)
+    // Data rows
     const now = Date.now();
+    let exportTotalSaleValue = 0;
+    let exportOmittedCount = 0;
+
     for (const req of requirements) {
       const totalCandidates = Object.values(
-        canonicalByReq[req.id] ?? {},
+        canonicalByReq[req.id] ?? {}
       ).reduce((s, n) => s + n, 0);
       const daysOpen = Math.floor(
-        (now - new Date(req.createdAt).getTime()) / 86400000,
+        (now - new Date(req.createdAt).getTime()) / 86400000
       );
+
+      const band = req.band
+        ? {
+            value: req.band.value ? Number(req.band.value) : null,
+            rangeFrom: req.band.rangeFrom ? Number(req.band.rangeFrom) : null,
+            rangeTo: req.band.rangeTo ? Number(req.band.rangeTo) : null,
+          }
+        : null;
+
+      const clientPct = req.client?.percentageValue
+        ? Number(req.client.percentageValue)
+        : null;
+
+      const { computedSaleValue, saleValueBasis } = computeSaleValue({
+        saleValue: req.saleValue,
+        totalOpenings: req.totalOpenings,
+        salaryMin: req.salaryMin,
+        salaryMax: req.salaryMax,
+        band: band, // band.value × openings if present
+        client: { percentageValue: clientPct }, // avg salary × pct × openings if no band
+      });
+
+      if (computedSaleValue != null) {
+        exportTotalSaleValue += computedSaleValue;
+      } else {
+        exportOmittedCount++;
+      }
+
+      const bandRange =
+        band?.rangeFrom != null && band?.rangeTo != null
+          ? `${band.rangeFrom} – ${band.rangeTo}`
+          : "";
 
       const rowData: Record<string, any> = {
         reqCode: req.reqCode,
@@ -4431,6 +5302,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         status: req.status,
         priority: req.priority,
         client: req.client?.name ?? "",
+        agreementType: req.client?.agreementType ?? "",
         bu: req.businessUnit?.name ?? "",
         sl: req.serviceLine?.name ?? "",
         city: req.city ?? "",
@@ -4445,9 +5317,20 @@ export const exportRequirements = async (req: Request, res: Response) => {
         breached:
           req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
         total: totalCandidates,
+
+        // Sale value section
+        bandCode: req.band?.code ?? "",
+        bandName: req.band?.name ?? "",
+        bandRange,
+        bandValue: band?.value ?? "",
+        clientPct: clientPct ?? "",
+        salaryMin: req.salaryMin ?? "",
+        salaryMax: req.salaryMax ?? "",
+        reqSaleValue: req.saleValue ?? "",
+        computedSaleValue: computedSaleValue ?? "",
+        saleValueBasis: saleValueBasis ?? "N/A",
       };
 
-      // Add canonical stage counts
       for (const key of canonicalStageKeys) {
         rowData[`cs_${key}`] = canonicalByReq[req.id]?.[key] ?? 0;
       }
@@ -4455,8 +5338,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       const dataRow = sheet1.addRow(rowData);
       dataRow.height = 20;
 
-      // Colour code status cell
-      const statusCell = dataRow.getCell("status");
+      // Status colour
       const statusColors: Record<string, string> = {
         ACTIVE: "FF00875A",
         CLOSED: "FFDE350B",
@@ -4467,15 +5349,18 @@ export const exportRequirements = async (req: Request, res: Response) => {
       };
       const statusColor = statusColors[req.status];
       if (statusColor) {
-        statusCell.fill = {
+        dataRow.getCell("status").fill = {
           type: "pattern",
           pattern: "solid",
           fgColor: { argb: statusColor },
         };
-        statusCell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+        dataRow.getCell("status").font = {
+          color: { argb: "FFFFFFFF" },
+          bold: true,
+        };
       }
 
-      // Colour breach cell
+      // Breach colour
       if (req.isRespondByBreached || req.isTurnaroundBreached) {
         dataRow.getCell("breached").fill = {
           type: "pattern",
@@ -4488,25 +5373,77 @@ export const exportRequirements = async (req: Request, res: Response) => {
         };
       }
 
-      // Format date cells — apply at cell level too for robustness
-      const createdAtCell = dataRow.getCell("createdAt");
-      createdAtCell.value = new Date(req.createdAt);
-      createdAtCell.numFmt = "dd-mmm-yyyy";
+      // Highlight rows with no computable sale value
+      if (computedSaleValue == null) {
+        dataRow.getCell("computedSaleValue").fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFFCE4D6" },
+        };
+        dataRow.getCell("saleValueBasis").font = {
+          color: { argb: "FFDE350B" },
+        };
+      } else {
+        // Green tint for computed value cell
+        dataRow.getCell("computedSaleValue").fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFE2EFDA" },
+        };
+        dataRow.getCell("computedSaleValue").font = { bold: true };
+        dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+      }
+
+      // Date cells
+      dataRow.getCell("createdAt").value = new Date(req.createdAt);
+      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy";
       if (req.respondBy) {
-        const respondByCell = dataRow.getCell("respondBy");
-        respondByCell.value = new Date(req.respondBy);
-        respondByCell.numFmt = "dd-mmm-yyyy";
+        dataRow.getCell("respondBy").value = new Date(req.respondBy);
+        dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
       }
     }
 
-    // Auto-filter on row 2
-    sheet1.autoFilter = {
-      from: { row: 2, column: 1 },
-      to: { row: 2, column: fixedCols.length + canonicalCols.length },
+    // Summary row at the bottom
+    const summaryRow = sheet1.addRow({});
+    summaryRow.height = 22;
+    const lastDataCol =
+      fixedCols.length + saleValueCols.length + canonicalCols.length;
+    // "Total Computed Sale Value" label in computedSaleValue column
+    const computedSaleValueColIdx =
+      fixedCols.length +
+      saleValueCols.findIndex((c) => c.key === "computedSaleValue") +
+      1;
+    const saleValueBasisColIdx =
+      fixedCols.length +
+      saleValueCols.findIndex((c) => c.key === "saleValueBasis") +
+      1;
+
+    summaryRow.getCell(computedSaleValueColIdx - 1).value = `Total (${
+      requirements.length - exportOmittedCount
+    } included, ${exportOmittedCount} omitted)`;
+    summaryRow.getCell(computedSaleValueColIdx - 1).font = {
+      bold: true,
+      italic: true,
+      size: 10,
+    };
+    summaryRow.getCell(computedSaleValueColIdx).value = exportTotalSaleValue;
+    summaryRow.getCell(computedSaleValueColIdx).numFmt = "#,##0.00";
+    summaryRow.getCell(computedSaleValueColIdx).font = {
+      bold: true,
+      color: { argb: "FF1A5C2A" },
+    };
+    summaryRow.getCell(computedSaleValueColIdx).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE2EFDA" },
     };
 
-    // ── Sheet 2: Candidates ────────────────────────────────────────────────
+    sheet1.autoFilter = {
+      from: { row: 2, column: 1 },
+      to: { row: 2, column: lastDataCol },
+    };
 
+    // ── Sheet 2: Candidates (unchanged logic) ─────────────────────────────
     const sheet2 = workbook.addWorksheet("Candidates", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -4555,12 +5492,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (!req) continue;
 
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       const totalPipelineMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0,
+          0
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
@@ -4579,7 +5516,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
           ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
           : "",
         addedOn: new Date(p.createdAt),
-        stageAge: Math.floor(stageAgeMins / 1440), // days
+        stageAge: Math.floor(stageAgeMins / 1440),
         stageAgingLabel: formatAging(stageAgeMins),
         totalDays: Math.floor(totalPipelineMins / 1440),
         totalAgingLabel: formatAging(totalPipelineMins),
@@ -4597,7 +5534,6 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (p.actualJoiningDate)
         dataRow.getCell("joiningDate").numFmt = "dd-mmm-yyyy";
 
-      // Flag rejected/withdrawn rows
       if (p.isRejected || p.isWithdrawn) {
         dataRow.eachCell((cell) => {
           cell.font = { ...cell.font, color: { argb: "FF7A869A" } };
@@ -4610,16 +5546,14 @@ export const exportRequirements = async (req: Request, res: Response) => {
       to: { row: 1, column: sheet2.columnCount },
     };
 
-    // ── Stream to response
+    // ── Stream ────────────────────────────────────────────────────────────
     const dateStr = new Date().toISOString().split("T")[0];
     const filename = `requirements-export-${dateStr}.xlsx`;
-
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -4629,3 +5563,902 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export requirements" });
   }
 };
+// export const getRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       priority,
+//       // NEW: which creators to show requirements for (default OWN)
+//       createdByScope = "OWN",
+//       // NEW: filter by a specific creator userId (superAdmin or manager use case)
+//       createdById,
+//       closedAt,
+//       closedById,
+//       dateFrom,
+//       dateTo,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "createdAt",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+//     const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+//       PermissionScope.OWN) as PermissionScope;
+
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
+
+//     // ── Base scope: requirements accessible to this user (existing service)
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+//     const where: any = { ...scopeWhere, deletedAt: null };
+
+//     // ── Creator scope filter (NEW default behaviour)
+//     // If a specific createdById is passed, use that directly.
+//     // Otherwise, compute the set of userIds based on createdByScope.
+//     if (createdById) {
+//       // Direct filter — manager looking at a specific person's requirements
+//       where.createdById = createdById;
+//     } else {
+//       const creatorIds = await getCreatorScopeUserIds(
+//         userId,
+//         isSuperAdmin,
+//         createdByScope
+//       );
+//       if (creatorIds !== null) {
+//         // Apply creator filter — only requirements made by these users
+//         where.createdById = { in: creatorIds };
+//       }
+//       // null means no filter (ALL / superAdmin)
+//     }
+
+//     if (status) where.status = status;
+//     if (priority) where.priority = priority;
+//     if (clientId) where.clientId = clientId;
+//     if (serviceLineId) where.serviceLineId = serviceLineId;
+//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+//     if (dateFrom || dateTo) {
+//       where.createdAt = {
+//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+//         ...(dateTo
+//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+//           : {}),
+//       };
+//     }
+
+//     if (search) {
+//       where.AND = [
+//         ...(where.AND ?? []),
+//         {
+//           OR: [
+//             { title: { contains: search, mode: "insensitive" } },
+//             { reqCode: { contains: search, mode: "insensitive" } },
+//             { primarySkills: { has: search } },
+//             { keySkills: { has: search } },
+//           ],
+//         },
+//       ];
+//     }
+
+//     const SORTABLE = [
+//       "createdAt",
+//       "updatedAt",
+//       "respondBy",
+//       "priority",
+//       "status",
+//     ];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { createdAt: "desc" as const };
+
+//     const [total, requirements] = await Promise.all([
+//       prisma.requirement.count({ where }),
+//       prisma.requirement.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           reqCode: true,
+//           title: true,
+//           status: true,
+//           priority: true,
+//           jobType: true,
+//           remoteType: true,
+//           totalOpenings: true,
+//           city: true,
+//           state: true,
+//           country: true,
+//           primarySkills: true,
+//           keySkills: true,
+//           jobOpenFor: true,
+//           targetDate: true,
+//           closedAt: true,
+//           closedById: true,
+//           closureReason: true,
+//           jdParseStatus: true,
+//           respondBy: true,
+//           isRespondByBreached: true,
+//           isTurnaroundBreached: true,
+//           createdAt: true,
+//           serviceLineId: true,
+//           client: {
+//             select: {
+//               id: true,
+//               name: true,
+//               agreementType: true,
+//               percentageValue: true,
+//             },
+//           },
+
+//           band: {
+//             select: {
+//               id: true,
+//               code: true,
+//               name: true,
+//               rangeFrom: true,
+//               rangeTo: true,
+//               value: true,
+//             },
+//           },
+//           saleValue: true,
+//           bandId: true,
+//           businessUnit: { select: { id: true, name: true } },
+//           serviceLine: { select: { id: true, name: true } },
+//           clientSpoc: {
+//             select: {
+//               handler: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//           },
+//           createdBy: { select: { id: true, firstName: true, lastName: true } },
+
+//           assignments: {
+//             where: { status: "ACTIVE" },
+//             select: {
+//               id: true,
+//               depth: true,
+//               allocatedOpenings: true,
+//               deadline: true,
+//               assignedTo: {
+//                 select: { id: true, firstName: true, lastName: true },
+//               },
+//             },
+//             orderBy: { depth: "asc" },
+//           },
+
+//           _count: { select: { pipelines: true, assignments: true } },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
+
+//     if (!requirements.length) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         meta: {
+//           total,
+//           page: parseInt(page),
+//           limit: take,
+//           pages: Math.ceil(total / take),
+//         },
+//         permissions: {
+//           canAdd: req.modulePermission.canAdd,
+//           canEdit: req.modulePermission.canEdit,
+//           canDelete: req.modulePermission.canDelete,
+//         },
+//       });
+//     }
+
+//     // ── Pipeline stage counts (existing two-bucket logic, unchanged)
+//     const reqIds = requirements.map((r) => r.id);
+//     const createdByMeIds = new Set(
+//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
+//     );
+//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
+
+//     const visibleRecruiterIds = await getVisibleRecruiterIds(
+//       userId,
+//       isSuperAdmin,
+//       canViewScope
+//     );
+
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//         canonicalStage: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+//     const [fullCounts, scopedCounts] = await Promise.all([
+//       createdByMeIds.size > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: { requirementId: { in: [...createdByMeIds] } },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//       assignedOnlyIds.length > 0
+//         ? prisma.requirementCandidatePipeline.groupBy({
+//             by: ["requirementId", "currentStageId"],
+//             where: {
+//               requirementId: { in: assignedOnlyIds },
+//               ...(visibleRecruiterIds !== null
+//                 ? { recruiterId: { in: visibleRecruiterIds } }
+//                 : {}),
+//             },
+//             _count: { id: true },
+//           })
+//         : Promise.resolve([]),
+//     ]);
+
+//     type StageCount = {
+//       stageId: string;
+//       code: string;
+//       label: string;
+//       order: number;
+//       canonicalStage: string | null;
+//       count: number;
+//     };
+
+//     const countsByReq: Record<string, StageCount[]> = {};
+
+//     const pushToCountsByReq = (rows: any[]) => {
+//       for (const sc of rows) {
+//         const stage = stageById[sc.currentStageId];
+//         if (!stage) continue;
+//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
+//         countsByReq[sc.requirementId].push({
+//           stageId: sc.currentStageId,
+//           code: stage.code,
+//           label: stage.label,
+//           order: stage.order,
+//           canonicalStage: stage.canonicalStage ?? null,
+//           count: sc._count.id,
+//         });
+//       }
+//     };
+
+//     pushToCountsByReq(fullCounts as any[]);
+//     pushToCountsByReq(scopedCounts as any[]);
+
+//     for (const key of Object.keys(countsByReq)) {
+//       countsByReq[key].sort((a, b) => a.order - b.order);
+//     }
+
+//     // ── Aggregate canonical stage counts per requirement.
+//     // All canonical stage keys from DB are included (even zeros) so the
+//     // frontend table always has consistent columns regardless of candidate counts.
+//     const allCanonicalKeys: string[] = await prisma.pipelineStage
+//       .findMany({
+//         where: { isActive: true, canonicalStage: { not: null } },
+//         select: { canonicalStage: true },
+//         distinct: ["canonicalStage"],
+//         orderBy: { order: "asc" },
+//       })
+//       .then((rows) =>
+//         rows
+//           .map((r) => r.canonicalStage!)
+//           .filter((v, i, a) => a.indexOf(v) === i)
+//       );
+
+//     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
+
+//     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
+//       // Start with all keys at zero — never hardcoded, pulled from DB
+//       const canonical: Record<string, number> = Object.fromEntries(
+//         allCanonicalKeys.map((k) => [k, 0])
+//       );
+//       for (const sc of stageCounts) {
+//         if (!sc.canonicalStage) continue;
+//         canonical[sc.canonicalStage] =
+//           (canonical[sc.canonicalStage] ?? 0) + sc.count;
+//       }
+//       canonicalCountsByReq[reqId] = canonical;
+//     }
+
+//     // Requirements with zero candidates also get full zero-filled canonical map
+//     for (const r of requirements) {
+//       if (!canonicalCountsByReq[r.id]) {
+//         canonicalCountsByReq[r.id] = Object.fromEntries(
+//           allCanonicalKeys.map((k) => [k, 0])
+//         );
+//       }
+//     }
+
+//     const enrichedRequirements = requirements.map((r) => ({
+//       ...r,
+//       pipelineStageCounts: countsByReq[r.id] ?? [],
+//       // Canonical stage rollup — dynamic, never hardcoded
+//       canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
+//     }));
+
+//     return res.json({
+//       success: true,
+//       data: enrichedRequirements,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//       // Echo back the active scope so the frontend scope switcher reflects
+//       // the current state. isSuperAdmin is exposed separately.
+//       scope: {
+//         createdByScope,
+//         canViewScope,
+//         isSuperAdmin,
+//       },
+//       permissions: {
+//         canAdd: req.modulePermission.canAdd,
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch requirements" });
+//   }
+// };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/export
+//
+// Downloads an Excel workbook (.xlsx) with two sheets:
+//
+// Sheet 1 — Requirements summary
+//   Columns: Req Code | Title | Status | Priority | Client | BU | Service Line |
+//            City | Country | Job Type | Remote | Total Openings | Created By |
+//            Created At | Days Open | Respond By | Breached? |
+//            + one column per canonical stage (from DB, never hardcoded)
+//
+// Sheet 2 — Candidates
+//   Columns: Req Code | Req Title | Candidate Name | Email | Phone |
+//            Current Title | Current Company | Exp (yrs) | Top Skills |
+//            Current Stage | Canonical Stage | Recruiter |
+//            Added On | Days in Current Stage | Total Pipeline Days |
+//            Is Rejected | Is Withdrawn | Is On Hold |
+//            Submitted At | Offer Status | Actual Joining Date
+//
+// Respects the same createdByScope + filters as getRequirements.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export const exportRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       priority,
+//       createdByScope = "OWN",
+//       createdById,
+//       // createdBy,
+//       dateFrom,
+//       dateTo,
+//     } = req.query as Record<string, string>;
+
+//     // const createdById = createdBy || null;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+
+//     // ── Build same where clause as getRequirements (no pagination)
+//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+//     const where: any = { ...scopeWhere, deletedAt: null };
+
+//     if (createdById) {
+//       where.createdById = createdById;
+//     } else {
+//       const creatorIds = await getCreatorScopeUserIds(
+//         userId,
+//         isSuperAdmin,
+//         createdByScope ?? "OWN"
+//       );
+//       if (creatorIds !== null) {
+//         where.createdById = { in: creatorIds };
+//       }
+//     }
+
+//     if (status) where.status = status;
+//     if (priority) where.priority = priority;
+//     if (clientId) where.clientId = clientId;
+//     if (createdById) where.createdById = createdById;
+//     if (serviceLineId) where.serviceLineId = serviceLineId;
+//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
+//     // ✅ Date range filter on createdAt
+//     if (dateFrom || dateTo) {
+//       where.createdAt = {
+//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+//         ...(dateTo
+//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+//           : {}),
+//       };
+//     }
+//     if (search) {
+//       where.AND = [
+//         ...(where.AND ?? []),
+//         {
+//           OR: [
+//             { title: { contains: search, mode: "insensitive" } },
+//             { reqCode: { contains: search, mode: "insensitive" } },
+//           ],
+//         },
+//       ];
+//     }
+//     console.log("where", where);
+//     // ── Fetch requirements (no limit for export — capped at 1000 rows)
+//     const requirements = await prisma.requirement.findMany({
+//       where,
+//       select: {
+//         id: true,
+//         reqCode: true,
+//         title: true,
+//         status: true,
+//         priority: true,
+//         jobType: true,
+//         remoteType: true,
+//         totalOpenings: true,
+//         city: true,
+//         state: true,
+//         country: true,
+//         respondBy: true,
+//         isRespondByBreached: true,
+//         isTurnaroundBreached: true,
+//         createdAt: true,
+//         client: { select: { name: true } },
+//         businessUnit: { select: { name: true } },
+//         serviceLine: { select: { id: true, name: true } },
+//         createdBy: { select: { firstName: true, lastName: true } },
+//       },
+//       orderBy: { createdAt: "desc" },
+//       take: 1000,
+//     });
+
+//     if (!requirements.length) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "No requirements found to export" });
+//     }
+
+//     const reqIds = requirements.map((r) => r.id);
+
+//     // ── Fetch all active pipeline stages from DB — no hardcoding
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         canonicalStage: true,
+//         serviceLineId: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+
+//     // ── Fetch all canonical stage keys from DB-backed enum
+//     // We read the distinct canonicalStage values that actually exist in PipelineStage
+//     // so export columns match what's configured — not what's in the Prisma enum.
+//     const canonicalStageKeys: string[] = await prisma.pipelineStage
+//       .findMany({
+//         where: { isActive: true, canonicalStage: { not: null } },
+//         select: { canonicalStage: true },
+//         distinct: ["canonicalStage"],
+//         orderBy: { order: "asc" },
+//       })
+//       .then((rows) =>
+//         rows
+//           .map((r) => r.canonicalStage!)
+//           .filter((v, i, a) => a.indexOf(v) === i)
+//       );
+
+//     // ── Fetch pipeline counts grouped by requirementId + currentStageId
+//     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
+//       by: ["requirementId", "currentStageId"],
+//       where: { requirementId: { in: reqIds } },
+//       _count: { id: true },
+//     });
+
+//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+
+//     // Build canonical count map per requirement
+//     // { reqId: { SOURCED: 3, SCREENING: 1, ... } }
+//     const canonicalByReq: Record<string, Record<string, number>> = {};
+//     for (const sc of stageCounts) {
+//       const stage = stageById[(sc as any).currentStageId];
+//       if (!stage?.canonicalStage) continue;
+//       if (!canonicalByReq[sc.requirementId])
+//         canonicalByReq[sc.requirementId] = {};
+//       canonicalByReq[sc.requirementId][stage.canonicalStage] =
+//         (canonicalByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
+//         (sc as any)._count.id;
+//     }
+
+//     // ── Fetch all pipeline rows for Sheet 2
+//     const pipelines = await prisma.requirementCandidatePipeline.findMany({
+//       where: { requirementId: { in: reqIds } },
+//       select: {
+//         id: true,
+//         requirementId: true,
+//         stageUpdatedAt: true,
+//         isRejected: true,
+//         isWithdrawn: true,
+//         isOnHold: true,
+//         submittedAt: true,
+//         offerStatus: true,
+//         actualJoiningDate: true,
+//         createdAt: true,
+//         currentStage: {
+//           select: { code: true, label: true, canonicalStage: true },
+//         },
+//         recruiter: { select: { firstName: true, lastName: true } },
+//         snapshot: {
+//           select: {
+//             fullName: true,
+//             email: true,
+//             phone: true,
+//             currentTitle: true,
+//             currentCompany: true,
+//             totalExpYears: true,
+//             topSkills: true,
+//           },
+//         },
+//         stageHistory: {
+//           select: { timeInPrevStageMins: true },
+//         },
+//       },
+//       orderBy: { createdAt: "asc" },
+//     });
+
+//     // Build a lookup for requirement basic info
+//     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
+
+//     // ─────────────────────────────────────────────────────────────────────────
+//     // Build workbook
+//     // ─────────────────────────────────────────────────────────────────────────
+
+//     const workbook = new ExcelJS.Workbook();
+//     workbook.creator = "TalentOS";
+//     workbook.created = new Date();
+
+//     // ── Header style helpers
+//     const headerFill: ExcelJS.Fill = {
+//       type: "pattern",
+//       pattern: "solid",
+//       fgColor: { argb: "FF1E3A5F" },
+//     };
+//     const headerFont: Partial<ExcelJS.Font> = {
+//       color: { argb: "FFFFFFFF" },
+//       bold: true,
+//       size: 11,
+//     };
+//     const subHeaderFill: ExcelJS.Fill = {
+//       type: "pattern",
+//       pattern: "solid",
+//       fgColor: { argb: "FF2D5986" },
+//     };
+
+//     const applyHeaderRow = (
+//       row: ExcelJS.Row,
+//       fill: ExcelJS.Fill = headerFill
+//     ) => {
+//       row.eachCell((cell) => {
+//         cell.fill = fill;
+//         cell.font = headerFont;
+//         cell.alignment = {
+//           vertical: "middle",
+//           horizontal: "center",
+//           wrapText: true,
+//         };
+//         cell.border = {
+//           bottom: { style: "thin", color: { argb: "FF4A90D9" } },
+//         };
+//       });
+//       row.height = 28;
+//     };
+
+//     // ── Sheet 1: Requirements summary ──────────────────────────────────────
+
+//     const sheet1 = workbook.addWorksheet("Requirements", {
+//       views: [{ state: "frozen", ySplit: 2 }],
+//     });
+
+//     // Fixed columns — date columns get numFmt at column level so Excel shows them correctly
+//     const fixedCols = [
+//       { header: "Req Code", key: "reqCode", width: 14 },
+//       { header: "Title", key: "title", width: 40 },
+//       { header: "Status", key: "status", width: 16 },
+//       { header: "Priority", key: "priority", width: 12 },
+//       { header: "Client", key: "client", width: 24 },
+//       { header: "Business Unit", key: "bu", width: 22 },
+//       { header: "Service Line", key: "sl", width: 20 },
+//       { header: "City", key: "city", width: 16 },
+//       { header: "Country", key: "country", width: 14 },
+//       { header: "Job Type", key: "jobType", width: 16 },
+//       { header: "Remote", key: "remote", width: 12 },
+//       { header: "Total Openings", key: "openings", width: 14 },
+//       { header: "Created By", key: "createdBy", width: 22 },
+//       {
+//         header: "Created Date",
+//         key: "createdAt",
+//         width: 18,
+//         numFmt: "dd-mmm-yyyy",
+//       },
+//       { header: "Days Open", key: "daysOpen", width: 12 },
+//       {
+//         header: "Respond By",
+//         key: "respondBy",
+//         width: 18,
+//         numFmt: "dd-mmm-yyyy",
+//       },
+//       { header: "SLA Breached?", key: "breached", width: 14 },
+//       { header: "Total Candidates", key: "total", width: 16 },
+//     ];
+
+//     // Dynamic canonical stage columns — come from DB, never hardcoded.
+//     // Header uses title-case label (e.g. "Offer In Progress") not raw enum key.
+//     const canonicalCols = canonicalStageKeys.map((key) => ({
+//       header: key
+//         .split("_")
+//         .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+//         .join(" "),
+//       key: `cs_${key}`,
+//       width: 14,
+//     }));
+
+//     sheet1.columns = [...fixedCols, ...canonicalCols];
+
+//     // Group header row (row 1): "Basic Info" spans fixed cols, "Pipeline Stages" spans dynamic cols
+//     const basicSpan = fixedCols.length;
+//     const stageSpan = canonicalCols.length;
+
+//     const groupRow = sheet1.getRow(1);
+//     groupRow.getCell(1).value = "Requirement Details";
+//     groupRow.getCell(basicSpan + 1).value =
+//       stageSpan > 0 ? "Pipeline Stages (from DB)" : "";
+//     sheet1.mergeCells(1, 1, 1, basicSpan);
+//     if (stageSpan > 0) {
+//       sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + stageSpan);
+//     }
+//     applyHeaderRow(groupRow);
+//     groupRow.getCell(basicSpan + 1).fill = subHeaderFill;
+
+//     // Column header row (row 2)
+//     const colHeaderRow = sheet1.getRow(2);
+//     [...fixedCols, ...canonicalCols].forEach((col, i) => {
+//       colHeaderRow.getCell(i + 1).value = col.header;
+//     });
+//     applyHeaderRow(colHeaderRow, subHeaderFill);
+
+//     // Data rows (start at row 3)
+//     const now = Date.now();
+//     for (const req of requirements) {
+//       const totalCandidates = Object.values(
+//         canonicalByReq[req.id] ?? {}
+//       ).reduce((s, n) => s + n, 0);
+//       const daysOpen = Math.floor(
+//         (now - new Date(req.createdAt).getTime()) / 86400000
+//       );
+
+//       const rowData: Record<string, any> = {
+//         reqCode: req.reqCode,
+//         title: req.title,
+//         status: req.status,
+//         priority: req.priority,
+//         client: req.client?.name ?? "",
+//         bu: req.businessUnit?.name ?? "",
+//         sl: req.serviceLine?.name ?? "",
+//         city: req.city ?? "",
+//         country: req.country ?? "",
+//         jobType: req.jobType,
+//         remote: req.remoteType,
+//         openings: req.totalOpenings,
+//         createdBy: `${req.createdBy.firstName} ${req.createdBy.lastName}`,
+//         createdAt: new Date(req.createdAt),
+//         daysOpen,
+//         respondBy: req.respondBy ? new Date(req.respondBy) : "",
+//         breached:
+//           req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
+//         total: totalCandidates,
+//       };
+
+//       // Add canonical stage counts
+//       for (const key of canonicalStageKeys) {
+//         rowData[`cs_${key}`] = canonicalByReq[req.id]?.[key] ?? 0;
+//       }
+
+//       const dataRow = sheet1.addRow(rowData);
+//       dataRow.height = 20;
+
+//       // Colour code status cell
+//       const statusCell = dataRow.getCell("status");
+//       const statusColors: Record<string, string> = {
+//         ACTIVE: "FF00875A",
+//         CLOSED: "FFDE350B",
+//         ON_HOLD: "FFFF991F",
+//         PENDING_APPROVAL: "FF0052CC",
+//         DRAFT: "FF6B778C",
+//         CANCELLED: "FF5E6C84",
+//       };
+//       const statusColor = statusColors[req.status];
+//       if (statusColor) {
+//         statusCell.fill = {
+//           type: "pattern",
+//           pattern: "solid",
+//           fgColor: { argb: statusColor },
+//         };
+//         statusCell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+//       }
+
+//       // Colour breach cell
+//       if (req.isRespondByBreached || req.isTurnaroundBreached) {
+//         dataRow.getCell("breached").fill = {
+//           type: "pattern",
+//           pattern: "solid",
+//           fgColor: { argb: "FFDE350B" },
+//         };
+//         dataRow.getCell("breached").font = {
+//           color: { argb: "FFFFFFFF" },
+//           bold: true,
+//         };
+//       }
+
+//       // Format date cells — apply at cell level too for robustness
+//       const createdAtCell = dataRow.getCell("createdAt");
+//       createdAtCell.value = new Date(req.createdAt);
+//       createdAtCell.numFmt = "dd-mmm-yyyy";
+//       if (req.respondBy) {
+//         const respondByCell = dataRow.getCell("respondBy");
+//         respondByCell.value = new Date(req.respondBy);
+//         respondByCell.numFmt = "dd-mmm-yyyy";
+//       }
+//     }
+
+//     // Auto-filter on row 2
+//     sheet1.autoFilter = {
+//       from: { row: 2, column: 1 },
+//       to: { row: 2, column: fixedCols.length + canonicalCols.length },
+//     };
+
+//     // ── Sheet 2: Candidates ────────────────────────────────────────────────
+
+//     const sheet2 = workbook.addWorksheet("Candidates", {
+//       views: [{ state: "frozen", ySplit: 1 }],
+//     });
+
+//     sheet2.columns = [
+//       { header: "Req Code", key: "reqCode", width: 14 },
+//       { header: "Requirement Title", key: "reqTitle", width: 36 },
+//       { header: "Candidate Name", key: "name", width: 26 },
+//       { header: "Email", key: "email", width: 30 },
+//       { header: "Phone", key: "phone", width: 16 },
+//       { header: "Current Title", key: "title", width: 26 },
+//       { header: "Current Company", key: "company", width: 24 },
+//       { header: "Exp (yrs)", key: "exp", width: 10 },
+//       { header: "Top Skills", key: "skills", width: 40 },
+//       { header: "Current Stage", key: "stage", width: 20 },
+//       { header: "Canonical Stage", key: "canonical", width: 20 },
+//       { header: "Recruiter", key: "recruiter", width: 22 },
+//       { header: "Added On", key: "addedOn", width: 16, numFmt: "dd-mmm-yyyy" },
+//       { header: "Days in Current Stage", key: "stageAge", width: 20 },
+//       { header: "Current Stage Aging", key: "stageAgingLabel", width: 18 },
+//       { header: "Total Pipeline Days", key: "totalDays", width: 18 },
+//       { header: "Total Pipeline Aging", key: "totalAgingLabel", width: 18 },
+//       { header: "Rejected?", key: "rejected", width: 12 },
+//       { header: "Withdrawn?", key: "withdrawn", width: 12 },
+//       { header: "On Hold?", key: "onHold", width: 12 },
+//       {
+//         header: "Submitted At",
+//         key: "submittedAt",
+//         width: 18,
+//         numFmt: "dd-mmm-yyyy hh:mm",
+//       },
+//       { header: "Offer Status", key: "offerStatus", width: 14 },
+//       {
+//         header: "Joining Date",
+//         key: "joiningDate",
+//         width: 16,
+//         numFmt: "dd-mmm-yyyy",
+//       },
+//     ];
+
+//     const s2Header = sheet2.getRow(1);
+//     applyHeaderRow(s2Header);
+
+//     for (const p of pipelines) {
+//       const req = reqLookup[p.requirementId];
+//       if (!req) continue;
+
+//       const stageAgeMins = Math.floor(
+//         (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+//       );
+//       const totalPipelineMins =
+//         (p.stageHistory ?? []).reduce(
+//           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
+//           0
+//         ) + stageAgeMins;
+
+//       const dataRow = sheet2.addRow({
+//         reqCode: req.reqCode,
+//         reqTitle: req.title,
+//         name: p.snapshot?.fullName ?? "",
+//         email: p.snapshot?.email ?? "",
+//         phone: p.snapshot?.phone ?? "",
+//         title: p.snapshot?.currentTitle ?? "",
+//         company: p.snapshot?.currentCompany ?? "",
+//         exp: p.snapshot?.totalExpYears ?? "",
+//         skills: (p.snapshot?.topSkills ?? []).join(", "),
+//         stage: p.currentStage?.label ?? "",
+//         canonical: p.currentStage?.canonicalStage ?? "",
+//         recruiter: p.recruiter
+//           ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
+//           : "",
+//         addedOn: new Date(p.createdAt),
+//         stageAge: Math.floor(stageAgeMins / 1440), // days
+//         stageAgingLabel: formatAging(stageAgeMins),
+//         totalDays: Math.floor(totalPipelineMins / 1440),
+//         totalAgingLabel: formatAging(totalPipelineMins),
+//         rejected: p.isRejected ? "Yes" : "No",
+//         withdrawn: p.isWithdrawn ? "Yes" : "No",
+//         onHold: p.isOnHold ? "Yes" : "No",
+//         submittedAt: p.submittedAt ? new Date(p.submittedAt) : "",
+//         offerStatus: p.offerStatus ?? "",
+//         joiningDate: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
+//       });
+
+//       dataRow.height = 18;
+//       dataRow.getCell("addedOn").numFmt = "dd-mmm-yyyy";
+//       if (p.submittedAt) dataRow.getCell("submittedAt").numFmt = "dd-mmm-yyyy";
+//       if (p.actualJoiningDate)
+//         dataRow.getCell("joiningDate").numFmt = "dd-mmm-yyyy";
+
+//       // Flag rejected/withdrawn rows
+//       if (p.isRejected || p.isWithdrawn) {
+//         dataRow.eachCell((cell) => {
+//           cell.font = { ...cell.font, color: { argb: "FF7A869A" } };
+//         });
+//       }
+//     }
+
+//     sheet2.autoFilter = {
+//       from: { row: 1, column: 1 },
+//       to: { row: 1, column: sheet2.columnCount },
+//     };
+
+//     // ── Stream to response
+//     const dateStr = new Date().toISOString().split("T")[0];
+//     const filename = `requirements-export-${dateStr}.xlsx`;
+
+//     res.setHeader(
+//       "Content-Type",
+//       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+//     );
+//     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+//     await workbook.xlsx.write(res);
+//     res.end();
+//   } catch (err) {
+//     console.error("exportRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to export requirements" });
+//   }
+// };
