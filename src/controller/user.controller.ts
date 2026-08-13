@@ -1057,11 +1057,11 @@ export const getUserTree = async (req: Request, res: Response) => {
           totalFilled: s._sum.filledOpenings ?? 0,
           totalAllocated: s._sum.allocatedOpenings ?? 0,
         },
-      ]),
+      ])
     );
 
     const reqsMap = new Map(
-      reqsCreated.map((r) => [r.createdById, r._count.id]),
+      reqsCreated.map((r) => [r.createdById, r._count.id])
     );
 
     const spocsMap = new Map<string, typeof spocs>();
@@ -1383,27 +1383,27 @@ export const getUserCard = async (req: Request, res: Response) => {
         acc[label] = (acc[label] || 0) + 1;
         return acc;
       },
-      {},
+      {}
     );
 
     const activeAssignments = user.assignmentsReceived.filter(
-      (a) => a.status === "ACTIVE",
+      (a) => a.status === "ACTIVE"
     );
 
     const aggregateStats = {
       activeReqs: user._count.assignmentsReceived,
       totalSubmissions: activeAssignments.reduce(
         (s, a) => s + a.submissionsCount,
-        0,
+        0
       ),
       totalInterviews: activeAssignments.reduce(
         (s, a) => s + a.interviewsCount,
-        0,
+        0
       ),
       totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
       totalAllocated: activeAssignments.reduce(
         (s, a) => s + (a.allocatedOpenings ?? 0),
-        0,
+        0
       ),
       totalAssignmentsGiven: user._count.assignmentsGiven,
       requirementsCreated: user._count.requirementsCreated,
@@ -1428,6 +1428,71 @@ export const getUserCard = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────
 // GET /users/subordinates
 // ─────────────────────────────────────────
+
+// export const getMySubordinates = async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.user!.id;
+
+//     const USER_SELECT = {
+//       id: true,
+//       firstName: true,
+//       lastName: true,
+//       email: true,
+//       employeeId: true,
+//       reportingToId: true,
+//       teamLeadId: true,
+//       department: { select: { id: true, name: true } },
+//       role: { select: { id: true, name: true } },
+//     } as const;
+
+//     const [reportees, extras] = await Promise.all([
+//       prisma.user.findMany({
+//         where: {
+//           isActive: true,
+//           OR: [{ reportingToId: userId }, { teamLeadId: userId }],
+//         },
+//         select: USER_SELECT,
+//         orderBy: { firstName: "asc" },
+//       }),
+//       prisma.userAssignableTo.findMany({
+//         where: {
+//           userId,
+//           target: { isActive: true },
+//         },
+//         select: {
+//           target: { select: USER_SELECT },
+//         },
+//       }),
+//     ]);
+
+//     const seen = new Set<string>();
+//     const merged: ((typeof reportees)[number] & {
+//       _source: "chain" | "extra";
+//     })[] = [];
+
+//     for (const u of reportees) {
+//       if (!seen.has(u.id)) {
+//         seen.add(u.id);
+//         merged.push({ ...u, _source: "chain" });
+//       }
+//     }
+//     for (const e of extras) {
+//       if (!seen.has(e.target.id)) {
+//         seen.add(e.target.id);
+//         merged.push({ ...e.target, _source: "extra" });
+//       }
+//     }
+
+//     merged.sort((a, b) => a.firstName.localeCompare(b.firstName));
+
+//     res.json({ success: true, data: merged });
+//   } catch (err) {
+//     console.error("getMySubordinates:", err);
+//     res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch subordinates" });
+//   }
+// };
 
 export const getMySubordinates = async (req: Request, res: Response) => {
   try {
@@ -1455,20 +1520,30 @@ export const getMySubordinates = async (req: Request, res: Response) => {
         orderBy: { firstName: "asc" },
       }),
       prisma.userAssignableTo.findMany({
-        where: {
-          userId,
-          target: { isActive: true },
-        },
-        select: {
-          target: { select: USER_SELECT },
-        },
+        where: { userId, target: { isActive: true } },
+        select: { target: { select: USER_SELECT } },
       }),
     ]);
 
     const seen = new Set<string>();
     const merged: ((typeof reportees)[number] & {
-      _source: "chain" | "extra";
+      _source: "chain" | "extra" | "self";
     })[] = [];
+
+    // ── Push self first so they appear at the top of the picker ──
+    seen.add(userId);
+    merged.push({
+      id: req.user!.id,
+      firstName: req.user!.firstName,
+      lastName: req.user!.lastName,
+      email: req.user!.email,
+      employeeId: req.user!.employeeId ?? null,
+      reportingToId: req.user!.reportingToId ?? null,
+      teamLeadId: req.user!.teamLeadId ?? null,
+      department: req.user!.department ?? null,
+      role: req.user!.role,
+      _source: "self",
+    });
 
     for (const u of reportees) {
       if (!seen.has(u.id)) {
@@ -1483,9 +1558,11 @@ export const getMySubordinates = async (req: Request, res: Response) => {
       }
     }
 
-    merged.sort((a, b) => a.firstName.localeCompare(b.firstName));
+    // self stays pinned at top, rest sorted alpha
+    const [self, ...rest] = merged;
+    rest.sort((a, b) => a.firstName.localeCompare(b.firstName));
 
-    res.json({ success: true, data: merged });
+    res.json({ success: true, data: [self, ...rest] });
   } catch (err) {
     console.error("getMySubordinates:", err);
     res
