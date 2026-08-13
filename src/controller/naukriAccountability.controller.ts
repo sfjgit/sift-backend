@@ -8,7 +8,10 @@ import {
   NaukriMsgAuthor,
 } from "@prisma/client";
 import type { Request, Response } from "express";
-import { fetchReconciliation } from "@/lib/naukriData.client";
+import {
+  fetchReconciliation,
+  fetchLiveActivity,
+} from "@/lib/naukriData.client";
 import {
   resolveViewerScope,
   getRandomMeme,
@@ -17,6 +20,10 @@ import {
 
 const prisma = new PrismaClient();
 const uid = (req: Request) => (req as any).user?.id as string;
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 // ── GET /naukri/me?from&to  (self only) ──────────────────────────────────────
 export async function getMe(req: Request, res: Response) {
@@ -60,8 +67,6 @@ export async function getMe(req: Request, res: Response) {
         difference: r.difference,
         flags: r.flags,
         atsBySource: r.atsBySource,
-        // NEW — 3-step activity breakdown, same fields the admin naukri-logs
-        // page shows, now available to the recruiter for their own data too.
         profilesViewed: r.naukriProfilesViewed,
         phonesRevealed: r.naukriPhonesRevealed,
         cvsDownloaded: r.naukriCvsDownloaded,
@@ -74,6 +79,56 @@ export async function getMe(req: Request, res: Response) {
       };
     }),
   );
+
+  // NEW — if "today" falls inside the requested range, override its ATS +
+  // 3-step numbers with LIVE data. The frozen snapshot for today either
+  // doesn't exist yet, or (if someone uploaded/reconciled early, like in
+  // testing) is already stale the moment new activity happens after that.
+  // Naukri itself is deliberately left alone — that number can only ever
+  // come from an actual uploaded report, there's no "live" version of it.
+  const todaysKey = todayStr();
+  if (todaysKey >= from && todaysKey <= to) {
+    const live = await fetchLiveActivity(userId, todaysKey);
+    if (live) {
+      let todayEntry = days.find((d) => d.reportDate === todaysKey);
+      if (todayEntry) {
+        todayEntry.ats = live.ats;
+        todayEntry.profilesViewed = live.profilesViewed;
+        todayEntry.phonesRevealed = live.phonesRevealed;
+        todayEntry.cvsDownloaded = live.cvsDownloaded;
+        todayEntry.completeProfiles = live.completeProfiles;
+      } else {
+        // No frozen row exists for today at all yet — build one from scratch,
+        // Naukri null since no report exists, story/meme neutral.
+        const story = buildStory({
+          naukri: null,
+          ats: live.ats,
+          diff: null,
+          promiseMade: false,
+          promiseStatus: "NONE",
+          totalBroken,
+        });
+        const meme = await getRandomMeme(story.tone);
+        days.push({
+          reportDate: todaysKey,
+          naukri: null,
+          ats: live.ats,
+          difference: null,
+          flags: [],
+          atsBySource: {},
+          profilesViewed: live.profilesViewed,
+          phonesRevealed: live.phonesRevealed,
+          cvsDownloaded: live.cvsDownloaded,
+          completeProfiles: live.completeProfiles,
+          reason: null,
+          promiseMade: false,
+          promiseStatus: "NONE",
+          story,
+          meme: meme ? { url: meme.url, caption: meme.caption } : null,
+        });
+      }
+    }
+  }
 
   res.json({
     scope: "me",
@@ -115,7 +170,6 @@ export async function getTeam(req: Request, res: Response) {
       totalAts: 0,
       gap: 0,
       days: 0,
-      // NEW — cumulative 3-step activity across the range
       totalProfilesViewed: 0,
       totalPhonesRevealed: 0,
       totalCvsDownloaded: 0,
