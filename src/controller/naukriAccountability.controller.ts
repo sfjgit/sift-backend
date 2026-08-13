@@ -8,7 +8,10 @@ import {
   NaukriMsgAuthor,
 } from "@prisma/client";
 import type { Request, Response } from "express";
-import { fetchReconciliation } from "@/lib/naukriData.client";
+import {
+  fetchReconciliation,
+  fetchLiveActivity,
+} from "@/lib/naukriData.client";
 import {
   resolveViewerScope,
   getRandomMeme,
@@ -17,6 +20,10 @@ import {
 
 const prisma = new PrismaClient();
 const uid = (req: Request) => (req as any).user?.id as string;
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 // ── GET /naukri/me?from&to  (self only) ──────────────────────────────────────
 export async function getMe(req: Request, res: Response) {
@@ -36,7 +43,7 @@ export async function getMe(req: Request, res: Response) {
   ]);
 
   const dailyByDate = new Map(
-    dailies.map((d) => [d.reportDate.toISOString().slice(0, 10), d])
+    dailies.map((d) => [d.reportDate.toISOString().slice(0, 10), d]),
   );
   const totalBroken = streak?.totalBroken ?? 0;
 
@@ -60,14 +67,68 @@ export async function getMe(req: Request, res: Response) {
         difference: r.difference,
         flags: r.flags,
         atsBySource: r.atsBySource,
+        profilesViewed: r.naukriProfilesViewed,
+        phonesRevealed: r.naukriPhonesRevealed,
+        cvsDownloaded: r.naukriCvsDownloaded,
+        completeProfiles: r.completeProfilesCaptured,
         reason: d?.reason ?? null,
         promiseMade: d?.promiseMade ?? false,
         promiseStatus: d?.promiseStatus ?? "NONE",
         story,
         meme: meme ? { url: meme.url, caption: meme.caption } : null,
       };
-    })
+    }),
   );
+
+  // NEW — if "today" falls inside the requested range, override its ATS +
+  // 3-step numbers with LIVE data. The frozen snapshot for today either
+  // doesn't exist yet, or (if someone uploaded/reconciled early, like in
+  // testing) is already stale the moment new activity happens after that.
+  // Naukri itself is deliberately left alone — that number can only ever
+  // come from an actual uploaded report, there's no "live" version of it.
+  const todaysKey = todayStr();
+  if (todaysKey >= from && todaysKey <= to) {
+    const live = await fetchLiveActivity(userId, todaysKey);
+    if (live) {
+      let todayEntry = days.find((d) => d.reportDate === todaysKey);
+      if (todayEntry) {
+        todayEntry.ats = live.ats;
+        todayEntry.profilesViewed = live.profilesViewed;
+        todayEntry.phonesRevealed = live.phonesRevealed;
+        todayEntry.cvsDownloaded = live.cvsDownloaded;
+        todayEntry.completeProfiles = live.completeProfiles;
+      } else {
+        // No frozen row exists for today at all yet — build one from scratch,
+        // Naukri null since no report exists, story/meme neutral.
+        const story = buildStory({
+          naukri: null,
+          ats: live.ats,
+          diff: null,
+          promiseMade: false,
+          promiseStatus: "NONE",
+          totalBroken,
+        });
+        const meme = await getRandomMeme(story.tone);
+        days.push({
+          reportDate: todaysKey,
+          naukri: null,
+          ats: live.ats,
+          difference: null,
+          flags: [],
+          atsBySource: {},
+          profilesViewed: live.profilesViewed,
+          phonesRevealed: live.phonesRevealed,
+          cvsDownloaded: live.cvsDownloaded,
+          completeProfiles: live.completeProfiles,
+          reason: null,
+          promiseMade: false,
+          promiseStatus: "NONE",
+          story,
+          meme: meme ? { url: meme.url, caption: meme.caption } : null,
+        });
+      }
+    }
+  }
 
   res.json({
     scope: "me",
@@ -109,11 +170,19 @@ export async function getTeam(req: Request, res: Response) {
       totalAts: 0,
       gap: 0,
       days: 0,
+      totalProfilesViewed: 0,
+      totalPhonesRevealed: 0,
+      totalCvsDownloaded: 0,
+      totalCompleteProfiles: 0,
     };
     a.totalNaukri += r.naukriCvConsumed ?? 0;
     a.totalAts += r.atsCaptured;
     a.gap += (r.naukriCvConsumed ?? 0) - r.atsCaptured;
     a.days += 1;
+    a.totalProfilesViewed += r.naukriProfilesViewed ?? 0;
+    a.totalPhonesRevealed += r.naukriPhonesRevealed ?? 0;
+    a.totalCvsDownloaded += r.naukriCvsDownloaded ?? 0;
+    a.totalCompleteProfiles += r.completeProfilesCaptured ?? 0;
     agg.set(r.recruiterId, a);
   }
 
@@ -242,7 +311,7 @@ export async function evaluatePromises(req: Request, res: Response) {
     }
 
     const meme = await getRandomMeme(
-      kept ? MemeCategory.CELEBRATE : MemeCategory.SHAME
+      kept ? MemeCategory.CELEBRATE : MemeCategory.SHAME,
     );
     await prisma.naukriRecruiterDaily.update({
       where: { id: p.id },
@@ -278,6 +347,6 @@ export async function listMemes(req: Request, res: Response) {
     ? { category: req.query.category as MemeCategory }
     : {};
   res.json(
-    await prisma.memeAsset.findMany({ where, orderBy: { createdAt: "desc" } })
+    await prisma.memeAsset.findMany({ where, orderBy: { createdAt: "desc" } }),
   );
 }
