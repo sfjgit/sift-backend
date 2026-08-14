@@ -3770,499 +3770,6 @@ function formatAging(mins: number): string {
   return `${Math.floor(d / 30)}mo`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /requirements
-//
-// KEY CHANGE: default scope is now "requirements I created" (OWN).
-// Use query param `createdByScope` to widen:
-//   ?createdByScope=TEAM       → mine + team
-//   ?createdByScope=REPORTING  → mine + reportees
-//   ?createdByScope=ALL        → all (superAdmin only)
-//
-// The existing pipeline count scoping (canViewScope from RBAC) still controls
-// which candidate counts are shown — that has NOT changed.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// File: requirementsController.ts
-// Path: src/controllers/requirementsController.ts
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SALE VALUE COMPUTATION HELPER
-// Priority:
-//   1. requirement.saleValue exists            → saleValue * openings
-//   2. band.value + client.percentageValue     → band.value * (pct/100) * openings
-//   3. salaryMin / salaryMax                   → avg(min,max) * openings
-//   4. none of the above                       → null (omitted)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// export function computeSaleValue(req: {
-//   saleValue?: number | null;
-//   totalOpenings: number;
-//   salaryMin?: number | null;
-//   salaryMax?: number | null;
-//   band?: {
-//     value?: number | null; // Decimal stored as number after Prisma toJSON
-//   } | null;
-//   client?: {
-//     percentageValue?: number | null; // Decimal → number
-//   } | null;
-// }): {
-//   computedSaleValue: number | null;
-//   saleValueBasis: "SALE_VALUE" | "BAND_PERCENTAGE" | "SALARY_AVG" | null;
-// } {
-//   const openings = req.totalOpenings ?? 1;
-
-//   // 1. Explicit sale value on requirement
-//   if (req.saleValue != null && req.saleValue > 0) {
-//     return {
-//       computedSaleValue: req.saleValue * openings,
-//       saleValueBasis: "SALE_VALUE",
-//     };
-//   }
-
-//   // 2. Band value + client percentage
-//   const bandValue = req.band?.value != null ? Number(req.band.value) : null;
-//   const pct =
-//     req.client?.percentageValue != null
-//       ? Number(req.client.percentageValue)
-//       : null;
-
-//   if (bandValue != null && bandValue > 0 && pct != null && pct > 0) {
-//     return {
-//       computedSaleValue: bandValue * (pct / 100) * openings,
-//       saleValueBasis: "BAND_PERCENTAGE",
-//     };
-//   }
-
-//   // 3. Salary min/max average
-//   const min = req.salaryMin != null ? Number(req.salaryMin) : null;
-//   const max = req.salaryMax != null ? Number(req.salaryMax) : null;
-
-//   if (min != null || max != null) {
-//     const avg = min != null && max != null ? (min + max) / 2 : (min ?? max)!;
-//     return {
-//       computedSaleValue: avg * openings,
-//       saleValueBasis: "SALARY_AVG",
-//     };
-//   }
-
-//   // 4. Cannot compute
-//   return { computedSaleValue: null, saleValueBasis: null };
-// }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// getRequirements — drop-in replacement
-// Additions vs previous version:
-//   • select adds: saleValue, bandId, band, salaryMin, salaryMax,
-//     client.agreementType, client.percentageValue (already there — unchanged),
-//     assignments.allocatedOpenings (already there)
-//   • enrichedRequirements gets computedSaleValue + saleValueBasis fields
-//   • response scope/permissions unchanged
-// ─────────────────────────────────────────────────────────────────────────────
-
-// export const getRequirements = async (req: Request, res: Response) => {
-//   try {
-//     const {
-//       search,
-//       status,
-//       buId,
-//       serviceLineId,
-//       clientId,
-//       priority,
-//       createdByScope = "OWN",
-//       createdById,
-//       dateFrom,
-//       dateTo,
-//       page = "1",
-//       limit = "25",
-//       sortBy = "createdAt",
-//       sortDir = "desc",
-//     } = req.query as Record<string, string>;
-
-//     const userId = req.user!.id;
-//     const isSuperAdmin = req.user!.isSuperAdmin;
-//     const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
-//       PermissionScope.OWN) as PermissionScope;
-
-//     const skip = (parseInt(page) - 1) * parseInt(limit);
-//     const take = Math.min(parseInt(limit), 100);
-
-//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-//     const where: any = { ...scopeWhere, deletedAt: null };
-
-//     if (createdById) {
-//       where.createdById = createdById;
-//     } else {
-//       const creatorIds = await getCreatorScopeUserIds(
-//         userId,
-//         isSuperAdmin,
-//         createdByScope
-//       );
-//       if (creatorIds !== null) {
-//         where.createdById = { in: creatorIds };
-//       }
-//     }
-
-//     if (status) where.status = status;
-//     if (priority) where.priority = priority;
-//     if (clientId) where.clientId = clientId;
-//     if (serviceLineId) where.serviceLineId = serviceLineId;
-//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-//     if (dateFrom || dateTo) {
-//       where.createdAt = {
-//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-//         ...(dateTo
-//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
-//           : {}),
-//       };
-//     }
-//     if (search) {
-//       where.AND = [
-//         ...(where.AND ?? []),
-//         {
-//           OR: [
-//             { title: { contains: search, mode: "insensitive" } },
-//             { reqCode: { contains: search, mode: "insensitive" } },
-//             { primarySkills: { has: search } },
-//             { keySkills: { has: search } },
-//           ],
-//         },
-//       ];
-//     }
-
-//     const SORTABLE = [
-//       "createdAt",
-//       "updatedAt",
-//       "respondBy",
-//       "priority",
-//       "status",
-//     ];
-//     const orderBy = SORTABLE.includes(sortBy)
-//       ? { [sortBy]: sortDir as "asc" | "desc" }
-//       : { createdAt: "desc" as const };
-
-//     const [total, requirements] = await Promise.all([
-//       prisma.requirement.count({ where }),
-//       prisma.requirement.findMany({
-//         where,
-//         select: {
-//           id: true,
-//           reqCode: true,
-//           title: true,
-//           status: true,
-//           priority: true,
-//           jobType: true,
-//           remoteType: true,
-//           totalOpenings: true,
-//           city: true,
-//           state: true,
-//           country: true,
-//           primarySkills: true,
-//           keySkills: true,
-//           jobOpenFor: true,
-//           targetDate: true,
-//           closedAt: true,
-//           closedById: true,
-//           closureReason: true,
-//           jdParseStatus: true,
-//           respondBy: true,
-//           isRespondByBreached: true,
-//           isTurnaroundBreached: true,
-//           createdAt: true,
-//           serviceLineId: true,
-
-//           // ── Sale value fields (NEW) ──────────────────────────────────────
-//           saleValue: true,
-//           salaryMin: true,
-//           salaryMax: true,
-//           salaryType: true,
-//           salaryCurrency: true,
-
-//           // ── Band (NEW — full detail for display + computation) ───────────
-//           bandId: true,
-//           band: {
-//             select: {
-//               id: true,
-//               code: true,
-//               name: true,
-//               rangeFrom: true,
-//               rangeTo: true,
-//               value: true,
-//             },
-//           },
-
-//           client: {
-//             select: {
-//               id: true,
-//               name: true,
-//               agreementType: true,
-//               percentageValue: true, // needed for BAND_PERCENTAGE computation
-//             },
-//           },
-
-//           businessUnit: { select: { id: true, name: true } },
-//           serviceLine: { select: { id: true, name: true } },
-
-//           clientSpoc: {
-//             select: {
-//               handler: {
-//                 select: { id: true, firstName: true, lastName: true },
-//               },
-//             },
-//           },
-//           createdBy: { select: { id: true, firstName: true, lastName: true } },
-
-//           assignments: {
-//             where: { status: "ACTIVE" },
-//             select: {
-//               id: true,
-//               depth: true,
-//               allocatedOpenings: true,
-//               deadline: true,
-//               assignedTo: {
-//                 select: { id: true, firstName: true, lastName: true },
-//               },
-//             },
-//             orderBy: { depth: "asc" },
-//           },
-
-//           _count: { select: { pipelines: true, assignments: true } },
-//         },
-//         orderBy,
-//         skip,
-//         take,
-//       }),
-//     ]);
-
-//     if (!requirements.length) {
-//       return res.json({
-//         success: true,
-//         data: [],
-//         meta: {
-//           total,
-//           page: parseInt(page),
-//           limit: take,
-//           pages: Math.ceil(total / take),
-//         },
-//         permissions: {
-//           canAdd: req.modulePermission.canAdd,
-//           canEdit: req.modulePermission.canEdit,
-//           canDelete: req.modulePermission.canDelete,
-//         },
-//       });
-//     }
-
-//     // ── Pipeline stage counts (unchanged logic) ──────────────────────────
-//     const reqIds = requirements.map((r) => r.id);
-//     const createdByMeIds = new Set(
-//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
-//     );
-//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
-
-//     const visibleRecruiterIds = await getVisibleRecruiterIds(
-//       userId,
-//       isSuperAdmin,
-//       canViewScope
-//     );
-
-//     const allStages = await prisma.pipelineStage.findMany({
-//       where: { isActive: true },
-//       select: {
-//         id: true,
-//         code: true,
-//         label: true,
-//         order: true,
-//         serviceLineId: true,
-//         canonicalStage: true,
-//       },
-//       orderBy: { order: "asc" },
-//     });
-//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-//     const [fullCounts, scopedCounts] = await Promise.all([
-//       createdByMeIds.size > 0
-//         ? prisma.requirementCandidatePipeline.groupBy({
-//             by: ["requirementId", "currentStageId"],
-//             where: { requirementId: { in: [...createdByMeIds] } },
-//             _count: { id: true },
-//           })
-//         : Promise.resolve([]),
-//       assignedOnlyIds.length > 0
-//         ? prisma.requirementCandidatePipeline.groupBy({
-//             by: ["requirementId", "currentStageId"],
-//             where: {
-//               requirementId: { in: assignedOnlyIds },
-//               ...(visibleRecruiterIds !== null
-//                 ? { recruiterId: { in: visibleRecruiterIds } }
-//                 : {}),
-//             },
-//             _count: { id: true },
-//           })
-//         : Promise.resolve([]),
-//     ]);
-
-//     type StageCount = {
-//       stageId: string;
-//       code: string;
-//       label: string;
-//       order: number;
-//       canonicalStage: string | null;
-//       count: number;
-//     };
-
-//     const countsByReq: Record<string, StageCount[]> = {};
-//     const pushToCountsByReq = (rows: any[]) => {
-//       for (const sc of rows) {
-//         const stage = stageById[sc.currentStageId];
-//         if (!stage) continue;
-//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
-//         countsByReq[sc.requirementId].push({
-//           stageId: sc.currentStageId,
-//           code: stage.code,
-//           label: stage.label,
-//           order: stage.order,
-//           canonicalStage: stage.canonicalStage ?? null,
-//           count: sc._count.id,
-//         });
-//       }
-//     };
-//     pushToCountsByReq(fullCounts as any[]);
-//     pushToCountsByReq(scopedCounts as any[]);
-//     for (const key of Object.keys(countsByReq)) {
-//       countsByReq[key].sort((a, b) => a.order - b.order);
-//     }
-
-//     const allCanonicalKeys: string[] = await prisma.pipelineStage
-//       .findMany({
-//         where: { isActive: true, canonicalStage: { not: null } },
-//         select: { canonicalStage: true },
-//         distinct: ["canonicalStage"],
-//         orderBy: { order: "asc" },
-//       })
-//       .then((rows) =>
-//         rows
-//           .map((r) => r.canonicalStage!)
-//           .filter((v, i, a) => a.indexOf(v) === i)
-//       );
-
-//     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
-//     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
-//       const canonical: Record<string, number> = Object.fromEntries(
-//         allCanonicalKeys.map((k) => [k, 0])
-//       );
-//       for (const sc of stageCounts) {
-//         if (!sc.canonicalStage) continue;
-//         canonical[sc.canonicalStage] =
-//           (canonical[sc.canonicalStage] ?? 0) + sc.count;
-//       }
-//       canonicalCountsByReq[reqId] = canonical;
-//     }
-//     for (const r of requirements) {
-//       if (!canonicalCountsByReq[r.id]) {
-//         canonicalCountsByReq[r.id] = Object.fromEntries(
-//           allCanonicalKeys.map((k) => [k, 0])
-//         );
-//       }
-//     }
-
-//     // ── Enrich with sale value computation ──────────────────────────────
-//     let totalSaleValue = 0;
-//     let omittedCount = 0;
-
-//     const enrichedRequirements = requirements.map((r) => {
-//       const { computedSaleValue, saleValueBasis } = computeSaleValue({
-//         saleValue: r.saleValue,
-//         totalOpenings: r.totalOpenings,
-//         salaryMin: r.salaryMin,
-//         salaryMax: r.salaryMax,
-//         band: r.band
-//           ? { value: r.band.value ? Number(r.band.value) : null }
-//           : null,
-//         client: r.client
-//           ? {
-//               percentageValue: r.client.percentageValue
-//                 ? Number(r.client.percentageValue)
-//                 : null,
-//             }
-//           : null,
-//       });
-
-//       if (computedSaleValue != null) {
-//         totalSaleValue += computedSaleValue;
-//       } else {
-//         omittedCount++;
-//       }
-
-//       return {
-//         ...r,
-//         // Coerce Decimal → number for JSON serialisation
-//         band: r.band
-//           ? {
-//               ...r.band,
-//               rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
-//               rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
-//               value: r.band.value ? Number(r.band.value) : null,
-//             }
-//           : null,
-//         client: r.client
-//           ? {
-//               ...r.client,
-//               percentageValue: r.client.percentageValue
-//                 ? Number(r.client.percentageValue)
-//                 : null,
-//             }
-//           : null,
-//         computedSaleValue,
-//         saleValueBasis,
-//         pipelineStageCounts: countsByReq[r.id] ?? [],
-//         canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
-//       };
-//     });
-
-//     return res.json({
-//       success: true,
-//       data: enrichedRequirements,
-//       meta: {
-//         total,
-//         page: parseInt(page),
-//         limit: take,
-//         pages: Math.ceil(total / take),
-//       },
-//       // ── Sale value aggregate (NEW) ─────────────────────────────────────
-//       saleValueSummary: {
-//         totalSaleValue, // sum of all computed values in this page
-//         omittedCount, // how many requirements had no computable value
-//         includedCount: requirements.length - omittedCount,
-//       },
-//       scope: {
-//         createdByScope,
-//         canViewScope,
-//         isSuperAdmin,
-//       },
-//       permissions: {
-//         canAdd: req.modulePermission.canAdd,
-//         canEdit: req.modulePermission.canEdit,
-//         canDelete: req.modulePermission.canDelete,
-//       },
-//     });
-//   } catch (err) {
-//     console.error("getRequirements:", err);
-//     return res
-//       .status(500)
-//       .json({ success: false, message: "Failed to fetch requirements" });
-//   }
-// };
-
-// File: exportRequirements.ts
-// Path: src/controllers/exportRequirements.ts
-
-// ─────────────────────────────────────────────────────────────────────────────
-// exportRequirements — full replacement
-// Adds: saleValue, band fields, client agreementType/percentageValue,
-//       computedSaleValue, saleValueBasis, salaryMin, salaryMax columns
-//       on Sheet 1. Sheet 2 (Candidates) unchanged.
-// ─────────────────────────────────────────────────────────────────────────────
-
 // File: requirementsController.ts
 // Path: src/controllers/requirementsController.ts
 
@@ -4271,81 +3778,69 @@ function formatAging(mins: number): string {
 //
 // Priority chain (stop at first match):
 //
-//  1. SALE_VALUE     — requirement.saleValue set
-//                      → saleValue × openings
+//  1. SALE_VALUE  — requirement.saleValue set
+//                   → saleValue × openings
 //
-//  2. BAND           — band.value set (client agreementType = BAND)
-//                      band.value is a fixed rupee amount per opening (e.g. ₹60k)
-//                      → band.value × openings
-//                      (no salary avg needed — band value IS the per-opening amount)
+//  2. BAND        — band.value set (client agreementType = BAND)
+//                   band.value is a fixed rupee amount per opening (e.g. ₹60k)
+//                   → band.value × openings
 //
-//  3. FIXED_PCT      — client.percentageValue set (client agreementType = FIXED)
-//                      + salaryMin / salaryMax available
-//                      → avg(salaryMin, salaryMax) × (percentageValue / 100) × openings
+//  3. FIXED_PCT   — client.percentageValue set + salaryMin available
+//                   → salaryMin × (percentageValue / 100) × openings
+//                   (use salaryMin only — not avg, not max)
 //
-//  4. SALARY_AVG     — salaryMin / salaryMax set, no band, no percentage
-//                      → avg(salaryMin, salaryMax) × openings
+//  4. SALARY_MIN  — salaryMin set, no band, no percentage
+//                   → salaryMin × openings
 //
-//  5. null           — not enough data to compute
+//  5. null        — not enough data to compute
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function computeSaleValue(req: {
+export function computeSaleValue(input: {
   saleValue?: number | null;
   totalOpenings: number;
   salaryMin?: number | null;
-  salaryMax?: number | null;
   band?: { value?: number | null } | null;
   client?: { percentageValue?: number | null } | null;
 }): {
   computedSaleValue: number | null;
-  saleValueBasis: "SALE_VALUE" | "BAND" | "FIXED_PCT" | "SALARY_AVG" | null;
+  saleValueBasis: "SALE_VALUE" | "BAND" | "FIXED_PCT" | "SALARY_MIN" | null;
 } {
-  const openings = req.totalOpenings ?? 1;
+  const openings = input.totalOpenings ?? 1;
 
   // 1. Explicit sale value on requirement
-  if (req.saleValue != null && req.saleValue > 0) {
+  if (input.saleValue != null && input.saleValue > 0) {
     return {
-      computedSaleValue: req.saleValue * openings,
+      computedSaleValue: input.saleValue * openings,
       saleValueBasis: "SALE_VALUE",
     };
   }
 
-  // 2. Band — fixed rupee value per opening, multiply directly
-  const bandValue = req.band?.value != null ? Number(req.band.value) : null;
+  // 2. Band — fixed rupee amount per opening
+  const bandValue = input.band?.value != null ? Number(input.band.value) : null;
   if (bandValue != null && bandValue > 0) {
-    return {
-      computedSaleValue: bandValue * openings,
-      saleValueBasis: "BAND",
-    };
+    return { computedSaleValue: bandValue * openings, saleValueBasis: "BAND" };
   }
 
-  // Helper: salary average (used by cases 3 and 4)
-  const salMin = req.salaryMin != null ? Number(req.salaryMin) : null;
-  const salMax = req.salaryMax != null ? Number(req.salaryMax) : null;
-  const hasSalary = salMin != null || salMax != null;
-  const salaryAvg =
-    salMin != null && salMax != null
-      ? (salMin + salMax) / 2
-      : salMin ?? salMax ?? null;
+  const salMin = input.salaryMin != null ? Number(input.salaryMin) : null;
 
-  // 3. Fixed percentage — avg salary × client percentage × openings
+  // 3. Fixed percentage — salaryMin × client% × openings
   const pct =
-    req.client?.percentageValue != null
-      ? Number(req.client.percentageValue)
+    input.client?.percentageValue != null
+      ? Number(input.client.percentageValue)
       : null;
-  if (pct != null && pct > 0 && salaryAvg != null) {
+  if (pct != null && pct > 0 && salMin != null && salMin > 0) {
     return {
-      computedSaleValue: salaryAvg * (pct / 100) * openings,
+      computedSaleValue: salMin * (pct / 100) * openings,
       saleValueBasis: "FIXED_PCT",
     };
   }
 
-  // 4. Salary avg only — no band, no percentage
-  if (hasSalary && salaryAvg != null) {
+  // 4. Salary min only
+  if (salMin != null && salMin > 0) {
     return {
-      computedSaleValue: salaryAvg * openings,
-      saleValueBasis: "SALARY_AVG",
+      computedSaleValue: salMin * openings,
+      saleValueBasis: "SALARY_MIN",
     };
   }
 
@@ -4354,13 +3849,123 @@ export function computeSaleValue(req: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getRequirements — drop-in replacement
-// Additions vs previous version:
-//   • select adds: saleValue, bandId, band, salaryMin, salaryMax,
-//     client.agreementType, client.percentageValue (already there — unchanged),
-//     assignments.allocatedOpenings (already there)
-//   • enrichedRequirements gets computedSaleValue + saleValueBasis fields
-//   • response scope/permissions unchanged
+// buildWhereClause
+// Shared between getRequirements and getSaleValueStats so filters are
+// always identical. page / limit are NOT part of this — callers handle that.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function buildRequirementsWhere(
+  filters: {
+    search?: string;
+    status?: string;
+    buId?: string;
+    serviceLineId?: string;
+    clientId?: string;
+    clientSpocId?: string; // NEW — filter by client SPOC
+    priority?: string;
+    createdById?: string; // direct filter — who actually created it in DB
+    dateFrom?: string;
+    dateTo?: string;
+  },
+  userId: string,
+  isSuperAdmin: boolean
+): Promise<any> {
+  const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+  const where: any = { ...scopeWhere, deletedAt: null };
+
+  // createdById — direct DB filter, no hierarchy resolution
+  // If passed, filter by exactly that userId. Scope switcher on frontend
+  // controls what set is visible; createdById narrows further within that.
+  if (filters.createdById) {
+    where.createdById = filters.createdById;
+  }
+
+  if (filters.status) where.status = filters.status;
+  if (filters.priority) where.priority = filters.priority;
+  if (filters.clientId) where.clientId = filters.clientId;
+  if (filters.clientSpocId) where.clientSpocId = filters.clientSpocId;
+  if (filters.serviceLineId) where.serviceLineId = filters.serviceLineId;
+  if (filters.buId) where.businessUnit = { ancestorIds: { has: filters.buId } };
+
+  if (filters.dateFrom || filters.dateTo) {
+    where.createdAt = {
+      ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}),
+      ...(filters.dateTo
+        ? { lte: new Date(new Date(filters.dateTo).setHours(23, 59, 59, 999)) }
+        : {}),
+    };
+  }
+
+  if (filters.search) {
+    where.AND = [
+      ...(where.AND ?? []),
+      {
+        OR: [
+          { title: { contains: filters.search, mode: "insensitive" } },
+          { reqCode: { contains: filters.search, mode: "insensitive" } },
+          { primarySkills: { has: filters.search } },
+          { keySkills: { has: filters.search } },
+        ],
+      },
+    ];
+  }
+
+  return where;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canSeeSaleValueData
+// A user can see sale value / band / salary / client % data if:
+//   - they are the creator of the requirement, OR
+//   - the creator reports to them (directly or transitively via reportingTo chain)
+// isSuperAdmin always sees everything.
+//
+// We resolve the set of userIds who are "managers of creatorId" by walking
+// the reportingTo chain upward from creatorId. If userId is in that set,
+// they can see the data.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function canSeeSaleValueData(
+  userId: string,
+  creatorId: string,
+  isSuperAdmin: boolean
+): Promise<boolean> {
+  if (isSuperAdmin) return true;
+  if (userId === creatorId) return true;
+
+  // Walk reportingTo chain upward from creator until we find userId or exhaust
+  let currentId: string | null = creatorId;
+  const visited = new Set<string>();
+
+  while (currentId) {
+    if (visited.has(currentId)) break; // cycle guard
+    visited.add(currentId);
+
+    const user = await prisma.user.findUnique({
+      where: { id: currentId },
+      select: { reportingToId: true },
+    });
+
+    if (!user?.reportingToId) break;
+    if (user.reportingToId === userId) return true;
+    currentId = user.reportingToId;
+  }
+
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirements
+// Changes vs previous version:
+//   - canonical stage rollup REMOVED (separate API, kills latency)
+//   - createdByScope REMOVED from this endpoint (was hierarchy-based,
+//     replaced by direct createdById filter)
+//   - clientSpocId filter ADDED
+//   - saleValueSummary REMOVED from response (page-scoped = useless,
+//     use GET /requirements/sale-value-stats for real totals)
+//   - sale value fields RBAC-gated per requirement row:
+//     creator + their managers up the chain see full data
+//     everyone else gets computedSaleValue only (no raw band/salary/pct)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirements = async (req: Request, res: Response) => {
@@ -4371,9 +3976,9 @@ export const getRequirements = async (req: Request, res: Response) => {
       buId,
       serviceLineId,
       clientId,
+      clientSpocId, // NEW
       priority,
-      createdByScope = "OWN",
-      createdById,
+      createdById, // direct DB filter — no scope resolution
       dateFrom,
       dateTo,
       page = "1",
@@ -4384,54 +3989,28 @@ export const getRequirements = async (req: Request, res: Response) => {
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
+    const canViewScope = (req.modulePermission?.canViewScope ??
       PermissionScope.OWN) as PermissionScope;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
 
-    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-    const where: any = { ...scopeWhere, deletedAt: null };
-
-    if (createdById) {
-      where.createdById = createdById;
-    } else {
-      const creatorIds = await getCreatorScopeUserIds(
-        userId,
-        isSuperAdmin,
-        createdByScope
-      );
-      if (creatorIds !== null) {
-        where.createdById = { in: creatorIds };
-      }
-    }
-
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (clientId) where.clientId = clientId;
-    if (serviceLineId) where.serviceLineId = serviceLineId;
-    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-    if (dateFrom || dateTo) {
-      where.createdAt = {
-        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-        ...(dateTo
-          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
-          : {}),
-      };
-    }
-    if (search) {
-      where.AND = [
-        ...(where.AND ?? []),
-        {
-          OR: [
-            { title: { contains: search, mode: "insensitive" } },
-            { reqCode: { contains: search, mode: "insensitive" } },
-            { primarySkills: { has: search } },
-            { keySkills: { has: search } },
-          ],
-        },
-      ];
-    }
+    const where = await buildRequirementsWhere(
+      {
+        search,
+        status,
+        buId,
+        serviceLineId,
+        clientId,
+        clientSpocId,
+        priority,
+        createdById,
+        dateFrom,
+        dateTo,
+      },
+      userId,
+      isSuperAdmin
+    );
 
     const SORTABLE = [
       "createdAt",
@@ -4474,14 +4053,12 @@ export const getRequirements = async (req: Request, res: Response) => {
           createdAt: true,
           serviceLineId: true,
 
-          // ── Sale value fields (NEW) ──────────────────────────────────────
+          // Sale value raw fields — fetched always, RBAC-gated before sending
           saleValue: true,
           salaryMin: true,
-          salaryMax: true,
           salaryType: true,
           salaryCurrency: true,
 
-          // ── Band (NEW — full detail for display + computation) ───────────
           bandId: true,
           band: {
             select: {
@@ -4499,20 +4076,23 @@ export const getRequirements = async (req: Request, res: Response) => {
               id: true,
               name: true,
               agreementType: true,
-              percentageValue: true, // needed for BAND_PERCENTAGE computation
+              percentageValue: true,
             },
           },
 
-          businessUnit: { select: { id: true, name: true } },
-          serviceLine: { select: { id: true, name: true } },
-
           clientSpoc: {
             select: {
+              id: true,
+              firstName: true,
+              lastName: true,
               handler: {
                 select: { id: true, firstName: true, lastName: true },
               },
             },
           },
+
+          businessUnit: { select: { id: true, name: true } },
+          serviceLine: { select: { id: true, name: true } },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
 
           assignments: {
@@ -4555,8 +4135,10 @@ export const getRequirements = async (req: Request, res: Response) => {
       });
     }
 
-    // ── Pipeline stage counts (unchanged logic) ──────────────────────────
+    // ── Pipeline stage counts (raw stages only — canonical removed) ────────
     const reqIds = requirements.map((r) => r.id);
+
+    // Two-bucket logic: creator sees all, assigned-only sees scoped recruiters
     const createdByMeIds = new Set(
       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
     );
@@ -4568,6 +4150,7 @@ export const getRequirements = async (req: Request, res: Response) => {
       canViewScope
     );
 
+    // Fetch all active stages — raw, no canonical grouping
     const allStages = await prisma.pipelineStage.findMany({
       where: { isActive: true },
       select: {
@@ -4576,7 +4159,6 @@ export const getRequirements = async (req: Request, res: Response) => {
         label: true,
         order: true,
         serviceLineId: true,
-        canonicalStage: true,
       },
       orderBy: { order: "asc" },
     });
@@ -4609,12 +4191,11 @@ export const getRequirements = async (req: Request, res: Response) => {
       code: string;
       label: string;
       order: number;
-      canonicalStage: string | null;
       count: number;
     };
-
     const countsByReq: Record<string, StageCount[]> = {};
-    const pushToCountsByReq = (rows: any[]) => {
+
+    const pushCounts = (rows: any[]) => {
       for (const sc of rows) {
         const stage = stageById[sc.currentStageId];
         if (!stage) continue;
@@ -4624,60 +4205,56 @@ export const getRequirements = async (req: Request, res: Response) => {
           code: stage.code,
           label: stage.label,
           order: stage.order,
-          canonicalStage: stage.canonicalStage ?? null,
           count: sc._count.id,
         });
       }
     };
-    pushToCountsByReq(fullCounts as any[]);
-    pushToCountsByReq(scopedCounts as any[]);
+    pushCounts(fullCounts as any[]);
+    pushCounts(scopedCounts as any[]);
     for (const key of Object.keys(countsByReq)) {
       countsByReq[key].sort((a, b) => a.order - b.order);
     }
 
-    const allCanonicalKeys: string[] = await prisma.pipelineStage
-      .findMany({
-        where: { isActive: true, canonicalStage: { not: null } },
-        select: { canonicalStage: true },
-        distinct: ["canonicalStage"],
-        orderBy: { order: "asc" },
-      })
-      .then((rows) =>
-        rows
-          .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i)
-      );
+    // ── RBAC-gated sale value enrichment ──────────────────────────────────
+    // Check visibility for all unique creators in batch to avoid N+1.
+    // We walk the reportingTo chain for each unique creatorId once.
+    const uniqueCreatorIds = [
+      ...new Set(requirements.map((r) => r.createdBy.id)),
+    ];
 
-    const canonicalCountsByReq: Record<string, Record<string, number>> = {};
-    for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
-      const canonical: Record<string, number> = Object.fromEntries(
-        allCanonicalKeys.map((k) => [k, 0])
-      );
-      for (const sc of stageCounts) {
-        if (!sc.canonicalStage) continue;
-        canonical[sc.canonicalStage] =
-          (canonical[sc.canonicalStage] ?? 0) + sc.count;
+    // For each creatorId, resolve the full chain of manager userIds
+    // so we can do a simple Set lookup per row.
+    const managerSetByCreator: Record<string, Set<string>> = {};
+    for (const creatorId of uniqueCreatorIds) {
+      const managers = new Set<string>();
+      let currentId: string | null = creatorId;
+      const visited = new Set<string>();
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+        const u = await prisma.user.findUnique({
+          where: { id: currentId },
+          select: { reportingToId: true },
+        });
+        if (!u?.reportingToId) break;
+        managers.add(u.reportingToId);
+        currentId = u.reportingToId;
       }
-      canonicalCountsByReq[reqId] = canonical;
+      managerSetByCreator[creatorId] = managers;
     }
-    for (const r of requirements) {
-      if (!canonicalCountsByReq[r.id]) {
-        canonicalCountsByReq[r.id] = Object.fromEntries(
-          allCanonicalKeys.map((k) => [k, 0])
-        );
-      }
-    }
-
-    // ── Enrich with sale value computation ──────────────────────────────
-    let totalSaleValue = 0;
-    let omittedCount = 0;
 
     const enrichedRequirements = requirements.map((r) => {
+      const creatorId = r.createdBy.id;
+      const canSeeSale =
+        isSuperAdmin ||
+        userId === creatorId ||
+        (managerSetByCreator[creatorId]?.has(userId) ?? false);
+
+      // Compute sale value (always — needed even when we strip raw fields)
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
         saleValue: r.saleValue,
         totalOpenings: r.totalOpenings,
         salaryMin: r.salaryMin,
-        salaryMax: r.salaryMax,
         band: r.band
           ? { value: r.band.value ? Number(r.band.value) : null }
           : null,
@@ -4690,35 +4267,55 @@ export const getRequirements = async (req: Request, res: Response) => {
           : null,
       });
 
-      if (computedSaleValue != null) {
-        totalSaleValue += computedSaleValue;
-      } else {
-        omittedCount++;
-      }
+      // Strip sensitive fields for users who aren't creator/manager
+      const saleFields = canSeeSale
+        ? {
+            saleValue: r.saleValue,
+            salaryMin: r.salaryMin,
+            salaryType: r.salaryType,
+            salaryCurrency: r.salaryCurrency,
+            band: r.band
+              ? {
+                  ...r.band,
+                  rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
+                  rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
+                  value: r.band.value ? Number(r.band.value) : null,
+                }
+              : null,
+            client: r.client
+              ? {
+                  ...r.client,
+                  percentageValue: r.client.percentageValue
+                    ? Number(r.client.percentageValue)
+                    : null,
+                }
+              : null,
+            computedSaleValue,
+            saleValueBasis,
+          }
+        : {
+            // Non-creator/non-manager sees computed total only — no raw inputs
+            saleValue: null,
+            salaryMin: null,
+            salaryType: null,
+            salaryCurrency: null,
+            band: null,
+            client: r.client
+              ? {
+                  id: r.client.id,
+                  name: r.client.name,
+                  agreementType: null,
+                  percentageValue: null,
+                }
+              : null,
+            computedSaleValue, // show the computed number
+            saleValueBasis: null, // but hide which method was used
+          };
 
       return {
         ...r,
-        // Coerce Decimal → number for JSON serialisation
-        band: r.band
-          ? {
-              ...r.band,
-              rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
-              rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
-              value: r.band.value ? Number(r.band.value) : null,
-            }
-          : null,
-        client: r.client
-          ? {
-              ...r.client,
-              percentageValue: r.client.percentageValue
-                ? Number(r.client.percentageValue)
-                : null,
-            }
-          : null,
-        computedSaleValue,
-        saleValueBasis,
+        ...saleFields,
         pipelineStageCounts: countsByReq[r.id] ?? [],
-        canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
       };
     });
 
@@ -4731,14 +4328,7 @@ export const getRequirements = async (req: Request, res: Response) => {
         limit: take,
         pages: Math.ceil(total / take),
       },
-      // ── Sale value aggregate (NEW) ─────────────────────────────────────
-      saleValueSummary: {
-        totalSaleValue, // sum of all computed values in this page
-        omittedCount, // how many requirements had no computable value
-        includedCount: requirements.length - omittedCount,
-      },
       scope: {
-        createdByScope,
         canViewScope,
         isSuperAdmin,
       },
@@ -4758,11 +4348,15 @@ export const getRequirements = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getSaleValueStats
-// Returns total computed sale value across ALL matching requirements.
-// Accepts every filter getRequirements accepts EXCEPT page and limit —
-// stats must reflect the full filtered dataset, not just the current page.
-//
 // GET /requirements/sale-value-stats
+//
+// Returns total computed sale value across the FULL filtered dataset.
+// NO page, NO limit — always aggregates everything matching the filters.
+// Same filters as getRequirements except pagination.
+//
+// ▼ THIS IS WHERE page/limit ARE INTENTIONALLY ABSENT ▼
+// The query below has no skip/take. Every matching requirement is loaded
+// (select is minimal — only fields needed for computation).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getSaleValueStats = async (req: Request, res: Response) => {
@@ -4773,62 +4367,37 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       buId,
       serviceLineId,
       clientId,
+      clientSpocId,
       priority,
-      createdByScope = "OWN",
       createdById,
       dateFrom,
       dateTo,
-      // page and limit intentionally NOT destructured — stats are always global
+      // ← page and limit are intentionally NOT here
     } = req.query as Record<string, string>;
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    // ── Same scope/where logic as getRequirements ──────────────────────────
-    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-    const where: any = { ...scopeWhere, deletedAt: null };
+    // ── Exact same where clause as getRequirements, minus pagination ───────
+    const where = await buildRequirementsWhere(
+      {
+        search,
+        status,
+        buId,
+        serviceLineId,
+        clientId,
+        clientSpocId,
+        priority,
+        createdById,
+        dateFrom,
+        dateTo,
+      },
+      userId,
+      isSuperAdmin
+    );
 
-    if (createdById) {
-      where.createdById = createdById;
-    } else {
-      const creatorIds = await getCreatorScopeUserIds(
-        userId,
-        isSuperAdmin,
-        createdByScope
-      );
-      if (creatorIds !== null) {
-        where.createdById = { in: creatorIds };
-      }
-    }
-
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (clientId) where.clientId = clientId;
-    if (serviceLineId) where.serviceLineId = serviceLineId;
-    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-    if (dateFrom || dateTo) {
-      where.createdAt = {
-        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-        ...(dateTo
-          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
-          : {}),
-      };
-    }
-    if (search) {
-      where.AND = [
-        ...(where.AND ?? []),
-        {
-          OR: [
-            { title: { contains: search, mode: "insensitive" } },
-            { reqCode: { contains: search, mode: "insensitive" } },
-            { primarySkills: { has: search } },
-            { keySkills: { has: search } },
-          ],
-        },
-      ];
-    }
-
-    // ── Fetch only the fields needed for computation — no pagination ───────
+    // ── Fetch ONLY the fields needed for computation ────────────────────────
+    // No skip. No take. Full dataset. This is correct and intentional.
     const requirements = await prisma.requirement.findMany({
       where,
       select: {
@@ -4836,30 +4405,62 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
         totalOpenings: true,
         saleValue: true,
         salaryMin: true,
-        salaryMax: true,
+        createdById: true,
         band: { select: { value: true } },
         client: { select: { percentageValue: true } },
       },
-      // No skip/take — full filtered dataset
     });
+
+    // ── Resolve RBAC for sale value visibility (same manager-chain logic) ──
+    const uniqueCreatorIds = [
+      ...new Set(requirements.map((r) => r.createdById)),
+    ];
+    const managerSetByCreator: Record<string, Set<string>> = {};
+    for (const creatorId of uniqueCreatorIds) {
+      const managers = new Set<string>();
+      let currentId: string | null = creatorId;
+      const visited = new Set<string>();
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+        const u = await prisma.user.findUnique({
+          where: { id: currentId },
+          select: { reportingToId: true },
+        });
+        if (!u?.reportingToId) break;
+        managers.add(u.reportingToId);
+        currentId = u.reportingToId;
+      }
+      managerSetByCreator[creatorId] = managers;
+    }
 
     let totalSaleValue = 0;
     let omittedCount = 0;
+    let hiddenCount = 0; // requirements where user can't see sale data at all
 
-    // Breakdown by basis for the stats summary
     const byBasis: Record<string, { count: number; total: number }> = {
       SALE_VALUE: { count: 0, total: 0 },
       BAND: { count: 0, total: 0 },
       FIXED_PCT: { count: 0, total: 0 },
-      SALARY_AVG: { count: 0, total: 0 },
+      SALARY_MIN: { count: 0, total: 0 },
     };
 
     for (const r of requirements) {
+      const canSeeSale =
+        isSuperAdmin ||
+        userId === r.createdById ||
+        (managerSetByCreator[r.createdById]?.has(userId) ?? false);
+
+      if (!canSeeSale) {
+        // Count but don't include in total — user can't see this requirement's value
+        hiddenCount++;
+        continue;
+      }
+
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
         saleValue: r.saleValue,
         totalOpenings: r.totalOpenings,
         salaryMin: r.salaryMin,
-        salaryMax: r.salaryMax,
         band: r.band
           ? { value: r.band.value ? Number(r.band.value) : null }
           : null,
@@ -4885,10 +4486,11 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       success: true,
       data: {
         totalRequirements: requirements.length,
-        includedCount: requirements.length - omittedCount,
-        omittedCount,
-        totalSaleValue,
-        byBasis, // breakdown: how many used each method + their subtotal
+        includedCount: requirements.length - omittedCount - hiddenCount,
+        omittedCount, // had no computable data
+        hiddenCount, // RBAC — user can't see those requirements' values
+        totalSaleValue, // sum across full filtered dataset (RBAC-gated)
+        byBasis,
       },
     });
   } catch (err) {
@@ -4899,15 +4501,125 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
   }
 };
 
-// File: exportRequirements.ts
-// Path: src/controllers/exportRequirements.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirementsFilters
+// GET /requirements/filters
+//
+// Returns all dropdown filter options for the requirements page:
+//   - statuses with counts (from stats)
+//   - priorities
+//   - business units
+//   - service lines
+//   - clients (active only)
+//   - client SPOCs (scoped to what the user can see)
+//   - createdBy users — ALL unique creators across the full table visible
+//     to this user (not hierarchy-filtered, just "who has created requirements
+//     that you can see"). No page/limit.
+//
+// This is a single round-trip instead of 5+ separate API calls.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// exportRequirements — full replacement
-// Adds: saleValue, band fields, client agreementType/percentageValue,
-//       computedSaleValue, saleValueBasis, salaryMin, salaryMax columns
-//       on Sheet 1. Sheet 2 (Candidates) unchanged.
-// ─────────────────────────────────────────────────────────────────────────────
+export const getRequirementsFilters = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // Scope where for requirements visible to this user (existing helper)
+    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
+    const baseWhere = { ...scopeWhere, deletedAt: null };
+
+    const [
+      businessUnits,
+      serviceLines,
+      clients,
+      clientSpocs,
+      createdByUsers,
+      statusCounts,
+    ] = await Promise.all([
+      // Business units — all active
+      prisma.businessUnit.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+
+      // Service lines — all active
+      prisma.serviceLine.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+
+      // Clients — active only
+      prisma.client.findMany({
+        where: { status: "ACTIVE", deletedAt: null },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+
+      // Client SPOCs — active, scoped to requirements visible to this user
+      prisma.clientSpoc.findMany({
+        where: {
+          isActive: true,
+          requirements: { some: baseWhere },
+        },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          client: { select: { id: true, name: true } },
+        },
+        orderBy: { firstName: "asc" },
+      }),
+
+      // createdBy — distinct creators across ALL requirements visible to user
+      // No page/limit. Direct DB query, no hierarchy resolution.
+      prisma.requirement.findMany({
+        where: baseWhere,
+        select: {
+          createdBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+        distinct: ["createdById"],
+        orderBy: { createdBy: { firstName: "asc" } },
+      }),
+
+      // Status counts — same scope, no pagination
+      prisma.requirement.groupBy({
+        by: ["status"],
+        where: baseWhere,
+        _count: { id: true },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        businessUnits,
+        serviceLines,
+        clients,
+        clientSpocs: clientSpocs.map((s) => ({
+          id: s.id,
+          name: `${s.firstName} ${s.lastName}`,
+          clientId: s.client.id,
+          clientName: s.client.name,
+        })),
+        createdBy: createdByUsers.map((r) => ({
+          id: r.createdBy.id,
+          name: `${r.createdBy.firstName} ${r.createdBy.lastName}`.trim(),
+        })),
+        statusCounts: Object.fromEntries(
+          statusCounts.map((s) => [s.status, s._count.id])
+        ),
+        priorities: ["HIGH", "MEDIUM", "LOW"],
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementsFilters:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch filter options" });
+  }
+};
 
 export const exportRequirements = async (req: Request, res: Response) => {
   try {

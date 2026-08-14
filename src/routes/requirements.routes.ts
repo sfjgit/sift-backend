@@ -81,6 +81,8 @@ import {
   getRequirementCandidateById,
   exportRequirements,
   bulkUploadRequirementsController,
+  getRequirementsFilters,
+  getSaleValueStats,
 } from "@/controller/requirement.controller";
 import {
   pushCandidate,
@@ -119,6 +121,9 @@ router.get("/export", authenticateUser, scope, exportRequirements);
 // createdByScope defaults to OWN — you only see what you created.
 // Widen to TEAM or REPORTING to see your team's requirements.
 router.get("/", authenticateUser, scope, getRequirements);
+
+router.get("/filters", authenticateUser, scope, getRequirementsFilters);
+router.get("/sale-value-stats", authenticateUser, scope, getSaleValueStats);
 
 router.post(
   "/",
