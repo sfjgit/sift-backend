@@ -17,6 +17,7 @@ import {
 import ExcelJS from "exceljs";
 import { parseUploadedFile } from "@/utils/bulkRequirementParser";
 import { validateRequirementRow } from "@/utils/bulkRequirements";
+import { updateRequirementSchema } from "@/validators/requirement.validators";
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — compute aging string from a date to now
 // "2h 15m", "3d 4h", "1m 2d"
@@ -2353,17 +2354,36 @@ export const updateRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const actorId = req.user!.id;
-    const body = req.body;
 
+    // ── Validate input ───────────────────────────────────────────────────────
+    const parsed = updateRequirementSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: parsed.error.flatten().fieldErrors,
+      });
+    }
+    const body = parsed.data;
+
+    // ── Fetch existing requirement ───────────────────────────────────────────
     const existing = await prisma.requirement.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, status: true, clientId: true },
+      select: {
+        id: true,
+        status: true,
+        clientId: true,
+        startDate: true,
+        targetDate: true,
+        reqCode: true,
+      },
     });
 
-    if (!existing)
+    if (!existing) {
       return res
         .status(404)
         .json({ success: false, message: "Requirement not found" });
+    }
 
     if (["CLOSED", "CANCELLED"].includes(existing.status)) {
       return res.status(400).json({
@@ -2372,15 +2392,21 @@ export const updateRequirement = async (req: Request, res: Response) => {
       });
     }
 
-    // ── Client/SPOC change — derive everything from the SPOC ──────────────
+    // ── SPOC / client change — derive related IDs from the new SPOC ─────────
+    //
+    // When clientSpocId is sent, we re-derive clientId, serviceLineId, and
+    // businessUnitId from the SPOC row. This covers:
+    //   • Pure SPOC change within the same client
+    //   • Full client + SPOC change
+    //
     let derived: {
-      clientId?: string;
-      clientSpocId?: string;
-      serviceLineId?: string;
-      businessUnitId?: string;
+      clientSpocId: string;
+      clientId: string;
+      serviceLineId: string;
+      businessUnitId: string;
     } | null = null;
 
-    if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
+    if (body.clientSpocId !== undefined) {
       const spoc = await prisma.clientSpoc.findUnique({
         where: { id: body.clientSpocId },
         select: {
@@ -2401,13 +2427,16 @@ export const updateRequirement = async (req: Request, res: Response) => {
       derived = {
         clientSpocId: body.clientSpocId,
         clientId: spoc.clientId,
-        businessUnitId: spoc.businessUnitId,
         serviceLineId: spoc.serviceLineId,
+        businessUnitId: spoc.businessUnitId,
       };
     }
 
-    // ── Validate band belongs to the correct client ───────────────────────
-    // Use the derived clientId if SPOC is also changing, otherwise use existing
+    // ── Validate bandId belongs to the correct client ────────────────────────
+    //
+    // Use the newly derived clientId if SPOC is also changing, otherwise fall
+    // back to the existing requirement's clientId. Pass null to clear the band.
+    //
     if (body.bandId !== undefined && body.bandId !== null) {
       const targetClientId = derived?.clientId ?? existing.clientId;
       const band = await prisma.band.findFirst({
@@ -2422,124 +2451,174 @@ export const updateRequirement = async (req: Request, res: Response) => {
       }
     }
 
+    // ── Auto-compute turnaroundDays ───────────────────────────────────────────
+    //
+    // If either date is being changed and the caller didn't send turnaroundDays
+    // explicitly, compute it from the resolved start + target values.
+    //
+    let computedTurnaround: number | null | undefined = undefined; // undefined = don't touch
+
+    if (body.turnaroundDays !== undefined) {
+      // Caller sent it directly — trust it.
+      computedTurnaround = body.turnaroundDays;
+    } else if (body.startDate !== undefined || body.targetDate !== undefined) {
+      // At least one date is changing — recompute.
+      const resolvedStart =
+        body.startDate !== undefined
+          ? body.startDate
+            ? new Date(body.startDate)
+            : null
+          : existing.startDate;
+
+      const resolvedTarget =
+        body.targetDate !== undefined
+          ? body.targetDate
+            ? new Date(body.targetDate)
+            : null
+          : existing.targetDate;
+
+      if (resolvedStart && resolvedTarget) {
+        const days = Math.ceil(
+          (resolvedTarget.getTime() - resolvedStart.getTime()) /
+            (1000 * 60 * 60 * 24)
+        );
+        computedTurnaround = days > 0 ? days : null;
+      } else {
+        // One of the dates was cleared — clear the turnaround too.
+        computedTurnaround = null;
+      }
+    }
+
+    // ── Build update data ────────────────────────────────────────────────────
+    //
+    // Only spread a field when it was actually sent in the body (PATCH).
+    // Explicit null values (e.g. bandId: null) are preserved so the column
+    // can be cleared.
+    //
+    const data: Record<string, unknown> = {};
+
+    if (body.title !== undefined) data.title = body.title;
+    if (body.description !== undefined) data.description = body.description;
+    if (body.jobType !== undefined) data.jobType = body.jobType;
+    if (body.remoteType !== undefined) data.remoteType = body.remoteType;
+    if (body.priority !== undefined) data.priority = body.priority;
+    if (body.jobOpenFor !== undefined) data.jobOpenFor = body.jobOpenFor;
+    if (body.totalOpenings !== undefined)
+      data.totalOpenings = body.totalOpenings;
+
+    if (body.city !== undefined) data.city = body.city;
+    if (body.state !== undefined) data.state = body.state;
+    if (body.country !== undefined) data.country = body.country;
+
+    if (body.experienceMin !== undefined)
+      data.experienceMin = body.experienceMin;
+    if (body.experienceMax !== undefined)
+      data.experienceMax = body.experienceMax;
+
+    if (body.salaryMin !== undefined) data.salaryMin = body.salaryMin;
+    if (body.salaryMax !== undefined) data.salaryMax = body.salaryMax;
+    if (body.salaryType !== undefined) data.salaryType = body.salaryType;
+    if (body.salaryCurrency !== undefined)
+      data.salaryCurrency = body.salaryCurrency;
+    if (body.bonusAmount !== undefined) data.bonusAmount = body.bonusAmount;
+    if (body.hideSalaryFromCandidate !== undefined)
+      data.hideSalaryFromCandidate = body.hideSalaryFromCandidate;
+    if (body.showMedianSalary !== undefined)
+      data.showMedianSalary = body.showMedianSalary;
+
+    if (body.primarySkills !== undefined)
+      data.primarySkills = body.primarySkills;
+    if (body.keySkills !== undefined) data.keySkills = body.keySkills;
+    if (body.targetCompanies !== undefined)
+      data.targetCompanies = body.targetCompanies;
+    if (body.noPoachCompanies !== undefined)
+      data.noPoachCompanies = body.noPoachCompanies;
+
+    if (body.education !== undefined) data.education = body.education;
+    if (body.functionalArea !== undefined)
+      data.functionalArea = body.functionalArea;
+    if (body.shift !== undefined) data.shift = body.shift;
+
+    if (body.startDate !== undefined)
+      data.startDate = body.startDate ? new Date(body.startDate) : null;
+    if (body.targetDate !== undefined)
+      data.targetDate = body.targetDate ? new Date(body.targetDate) : null;
+    if (body.respondBy !== undefined)
+      data.respondBy = body.respondBy ? new Date(body.respondBy) : null;
+
+    if (computedTurnaround !== undefined)
+      data.turnaroundDays = computedTurnaround;
+
+    if (body.jdFileKey !== undefined) {
+      data.jdFileKey = body.jdFileKey;
+      if (body.jdFileKey) data.jdUploadedAt = new Date();
+    }
+    if (body.jdFileName !== undefined) data.jdFileName = body.jdFileName;
+    if (body.jdFileType !== undefined) data.jdFileType = body.jdFileType;
+    if (body.jdParsedAt !== undefined)
+      data.jdParsedAt = body.jdParsedAt ? new Date(body.jdParsedAt) : null;
+    if (body.jdParseStatus !== undefined)
+      data.jdParseStatus = body.jdParseStatus;
+    if (body.jdParsedFields !== undefined)
+      data.jdParsedFields = body.jdParsedFields;
+
+    // Band + sale value — null is a valid value (clears the field)
+    if (body.bandId !== undefined) data.bandId = body.bandId ?? null;
+    if (body.saleValue !== undefined)
+      data.saleValue = body.saleValue != null ? Number(body.saleValue) : null;
+
+    // Derived SPOC/client fields — written as an atomic block
+    if (derived) {
+      data.clientSpocId = derived.clientSpocId;
+      data.clientId = derived.clientId;
+      data.serviceLineId = derived.serviceLineId;
+      data.businessUnitId = derived.businessUnitId;
+    }
+
+    // ── Persist ──────────────────────────────────────────────────────────────
     const updated = await prisma.requirement.update({
       where: { id },
-      data: {
-        ...(body.title !== undefined && { title: body.title }),
-        ...(body.description !== undefined && {
-          description: body.description,
-        }),
-        ...(body.jobType !== undefined && { jobType: body.jobType }),
-        ...(body.remoteType !== undefined && { remoteType: body.remoteType }),
-        ...(body.priority !== undefined && { priority: body.priority }),
-        ...(body.jobOpenFor !== undefined && { jobOpenFor: body.jobOpenFor }),
-        ...(body.totalOpenings !== undefined && {
-          totalOpenings: body.totalOpenings,
-        }),
-
-        ...(body.city !== undefined && { city: body.city }),
-        ...(body.state !== undefined && { state: body.state }),
-        ...(body.country !== undefined && { country: body.country }),
-
-        ...(body.experienceMin !== undefined && {
-          experienceMin: body.experienceMin,
-        }),
-        ...(body.experienceMax !== undefined && {
-          experienceMax: body.experienceMax,
-        }),
-
-        ...(body.salaryMin !== undefined && { salaryMin: body.salaryMin }),
-        ...(body.salaryMax !== undefined && { salaryMax: body.salaryMax }),
-        ...(body.salaryType !== undefined && { salaryType: body.salaryType }),
-        ...(body.salaryCurrency !== undefined && {
-          salaryCurrency: body.salaryCurrency,
-        }),
-        ...(body.bonusAmount !== undefined && {
-          bonusAmount: body.bonusAmount,
-        }),
-        ...(body.hideSalaryFromCandidate !== undefined && {
-          hideSalaryFromCandidate: body.hideSalaryFromCandidate,
-        }),
-        ...(body.showMedianSalary !== undefined && {
-          showMedianSalary: body.showMedianSalary,
-        }),
-
-        ...(body.primarySkills !== undefined && {
-          primarySkills: body.primarySkills,
-        }),
-        ...(body.keySkills !== undefined && { keySkills: body.keySkills }),
-        ...(body.targetCompanies !== undefined && {
-          targetCompanies: body.targetCompanies,
-        }),
-        ...(body.noPoachCompanies !== undefined && {
-          noPoachCompanies: body.noPoachCompanies,
-        }),
-
-        ...(body.education !== undefined && { education: body.education }),
-        ...(body.functionalArea !== undefined && {
-          functionalArea: body.functionalArea,
-        }),
-        ...(body.shift !== undefined && { shift: body.shift }),
-
-        ...(body.startDate !== undefined && {
-          startDate: body.startDate ? new Date(body.startDate) : null,
-        }),
-        ...(body.targetDate !== undefined && {
-          targetDate: body.targetDate ? new Date(body.targetDate) : null,
-        }),
-        ...(body.respondBy !== undefined && {
-          respondBy: body.respondBy ? new Date(body.respondBy) : null,
-        }),
-        ...(body.turnaroundDays !== undefined && {
-          turnaroundDays: body.turnaroundDays,
-        }),
-
-        ...(body.jdFileKey !== undefined && {
-          jdFileKey: body.jdFileKey,
-          jdUploadedAt: new Date(),
-        }),
-        ...(body.jdFileName !== undefined && { jdFileName: body.jdFileName }),
-        ...(body.jdFileType !== undefined && { jdFileType: body.jdFileType }),
-        ...(body.jdParsedAt !== undefined && {
-          jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
-        }),
-        ...(body.jdParseStatus !== undefined && {
-          jdParseStatus: body.jdParseStatus,
-        }),
-        ...(body.jdParsedFields !== undefined && {
-          jdParsedFields: body.jdParsedFields,
-        }),
-
-        // ── NEW ────────────────────────────────────────────────────────────
-        ...(body.bandId !== undefined && { bandId: body.bandId ?? null }),
-        ...(body.saleValue !== undefined && {
-          saleValue: body.saleValue != null ? Number(body.saleValue) : null,
-        }),
-
-        ...(derived && {
-          clientSpocId: derived.clientSpocId,
-          clientId: derived.clientId,
-          businessUnitId: derived.businessUnitId,
-          serviceLineId: derived.serviceLineId,
-        }),
-      },
+      data,
       select: {
         id: true,
         reqCode: true,
         title: true,
         status: true,
         updatedAt: true,
+        client: { select: { id: true, name: true } },
+        clientSpoc: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        serviceLine: { select: { id: true, name: true } },
+        businessUnit: { select: { id: true, name: true } },
+        bandId: true,
+        saleValue: true,
       },
     });
+
+    // ── Activity log ─────────────────────────────────────────────────────────
+    const activitySummary = derived
+      ? `Client/SPOC changed on ${updated.reqCode}`
+      : `Requirement ${updated.reqCode} updated`;
 
     await prisma.requirementActivity.create({
       data: {
         requirementId: id,
         actorId,
         type: "STATUS_CHANGED",
-        summary: derived
-          ? `Client/SPOC changed on ${updated.reqCode}`
-          : `Requirement ${updated.reqCode} updated`,
+        summary: activitySummary,
+        meta: derived
+          ? {
+              newClientId: derived.clientId,
+              newSpocId: derived.clientSpocId,
+              newServiceLineId: derived.serviceLineId,
+              newBusinessUnitId: derived.businessUnitId,
+            }
+          : undefined,
       },
     });
 
@@ -2555,6 +2634,213 @@ export const updateRequirement = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to update requirement" });
   }
 };
+
+// export const updateRequirement = async (req: Request, res: Response) => {
+//   try {
+//     const { id } = req.params;
+//     const actorId = req.user!.id;
+//     const body = req.body;
+
+//     const existing = await prisma.requirement.findFirst({
+//       where: { id, deletedAt: null },
+//       select: { id: true, status: true, clientId: true },
+//     });
+
+//     if (!existing)
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "Requirement not found" });
+
+//     if (["CLOSED", "CANCELLED"].includes(existing.status)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Cannot edit a closed or cancelled requirement",
+//       });
+//     }
+
+//     // ── Client/SPOC change — derive everything from the SPOC ──────────────
+//     let derived: {
+//       clientId?: string;
+//       clientSpocId?: string;
+//       serviceLineId?: string;
+//       businessUnitId?: string;
+//     } | null = null;
+
+//     if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
+//       const spoc = await prisma.clientSpoc.findUnique({
+//         where: { id: body.clientSpocId },
+//         select: {
+//           clientId: true,
+//           serviceLineId: true,
+//           businessUnitId: true,
+//           isActive: true,
+//         },
+//       });
+
+//       if (!spoc || !spoc.isActive) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Invalid or inactive SPOC selected",
+//         });
+//       }
+
+//       derived = {
+//         clientSpocId: body.clientSpocId,
+//         clientId: spoc.clientId,
+//         businessUnitId: spoc.businessUnitId,
+//         serviceLineId: spoc.serviceLineId,
+//       };
+//     }
+
+//     // ── Validate band belongs to the correct client ───────────────────────
+//     // Use the derived clientId if SPOC is also changing, otherwise use existing
+//     if (body.bandId !== undefined && body.bandId !== null) {
+//       const targetClientId = derived?.clientId ?? existing.clientId;
+//       const band = await prisma.band.findFirst({
+//         where: { id: body.bandId, clientId: targetClientId },
+//         select: { id: true },
+//       });
+//       if (!band) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Selected band does not belong to this client",
+//         });
+//       }
+//     }
+
+//     const updated = await prisma.requirement.update({
+//       where: { id },
+//       data: {
+//         ...(body.title !== undefined && { title: body.title }),
+//         ...(body.description !== undefined && {
+//           description: body.description,
+//         }),
+//         ...(body.jobType !== undefined && { jobType: body.jobType }),
+//         ...(body.remoteType !== undefined && { remoteType: body.remoteType }),
+//         ...(body.priority !== undefined && { priority: body.priority }),
+//         ...(body.jobOpenFor !== undefined && { jobOpenFor: body.jobOpenFor }),
+//         ...(body.totalOpenings !== undefined && {
+//           totalOpenings: body.totalOpenings,
+//         }),
+
+//         ...(body.city !== undefined && { city: body.city }),
+//         ...(body.state !== undefined && { state: body.state }),
+//         ...(body.country !== undefined && { country: body.country }),
+
+//         ...(body.experienceMin !== undefined && {
+//           experienceMin: body.experienceMin,
+//         }),
+//         ...(body.experienceMax !== undefined && {
+//           experienceMax: body.experienceMax,
+//         }),
+
+//         ...(body.salaryMin !== undefined && { salaryMin: body.salaryMin }),
+//         ...(body.salaryMax !== undefined && { salaryMax: body.salaryMax }),
+//         ...(body.salaryType !== undefined && { salaryType: body.salaryType }),
+//         ...(body.salaryCurrency !== undefined && {
+//           salaryCurrency: body.salaryCurrency,
+//         }),
+//         ...(body.bonusAmount !== undefined && {
+//           bonusAmount: body.bonusAmount,
+//         }),
+//         ...(body.hideSalaryFromCandidate !== undefined && {
+//           hideSalaryFromCandidate: body.hideSalaryFromCandidate,
+//         }),
+//         ...(body.showMedianSalary !== undefined && {
+//           showMedianSalary: body.showMedianSalary,
+//         }),
+
+//         ...(body.primarySkills !== undefined && {
+//           primarySkills: body.primarySkills,
+//         }),
+//         ...(body.keySkills !== undefined && { keySkills: body.keySkills }),
+//         ...(body.targetCompanies !== undefined && {
+//           targetCompanies: body.targetCompanies,
+//         }),
+//         ...(body.noPoachCompanies !== undefined && {
+//           noPoachCompanies: body.noPoachCompanies,
+//         }),
+
+//         ...(body.education !== undefined && { education: body.education }),
+//         ...(body.functionalArea !== undefined && {
+//           functionalArea: body.functionalArea,
+//         }),
+//         ...(body.shift !== undefined && { shift: body.shift }),
+
+//         ...(body.startDate !== undefined && {
+//           startDate: body.startDate ? new Date(body.startDate) : null,
+//         }),
+//         ...(body.targetDate !== undefined && {
+//           targetDate: body.targetDate ? new Date(body.targetDate) : null,
+//         }),
+//         ...(body.respondBy !== undefined && {
+//           respondBy: body.respondBy ? new Date(body.respondBy) : null,
+//         }),
+//         ...(body.turnaroundDays !== undefined && {
+//           turnaroundDays: body.turnaroundDays,
+//         }),
+
+//         ...(body.jdFileKey !== undefined && {
+//           jdFileKey: body.jdFileKey,
+//           jdUploadedAt: new Date(),
+//         }),
+//         ...(body.jdFileName !== undefined && { jdFileName: body.jdFileName }),
+//         ...(body.jdFileType !== undefined && { jdFileType: body.jdFileType }),
+//         ...(body.jdParsedAt !== undefined && {
+//           jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
+//         }),
+//         ...(body.jdParseStatus !== undefined && {
+//           jdParseStatus: body.jdParseStatus,
+//         }),
+//         ...(body.jdParsedFields !== undefined && {
+//           jdParsedFields: body.jdParsedFields,
+//         }),
+
+//         // ── NEW ────────────────────────────────────────────────────────────
+//         ...(body.bandId !== undefined && { bandId: body.bandId ?? null }),
+//         ...(body.saleValue !== undefined && {
+//           saleValue: body.saleValue != null ? Number(body.saleValue) : null,
+//         }),
+
+//         ...(derived && {
+//           clientSpocId: derived.clientSpocId,
+//           clientId: derived.clientId,
+//           businessUnitId: derived.businessUnitId,
+//           serviceLineId: derived.serviceLineId,
+//         }),
+//       },
+//       select: {
+//         id: true,
+//         reqCode: true,
+//         title: true,
+//         status: true,
+//         updatedAt: true,
+//       },
+//     });
+
+//     await prisma.requirementActivity.create({
+//       data: {
+//         requirementId: id,
+//         actorId,
+//         type: "STATUS_CHANGED",
+//         summary: derived
+//           ? `Client/SPOC changed on ${updated.reqCode}`
+//           : `Requirement ${updated.reqCode} updated`,
+//       },
+//     });
+
+//     return res.json({
+//       success: true,
+//       message: "Requirement updated",
+//       data: updated,
+//     });
+//   } catch (err) {
+//     console.error("updateRequirement:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to update requirement" });
+//   }
+// };
 
 export const updateRequirementStatus = async (req: Request, res: Response) => {
   try {
@@ -3775,25 +4061,6 @@ function formatAging(mins: number): string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SALE VALUE COMPUTATION HELPER
-//
-// Priority chain (stop at first match):
-//
-//  1. SALE_VALUE  — requirement.saleValue set
-//                   → saleValue × openings
-//
-//  2. BAND        — band.value set (client agreementType = BAND)
-//                   band.value is a fixed rupee amount per opening (e.g. ₹60k)
-//                   → band.value × openings
-//
-//  3. FIXED_PCT   — client.percentageValue set + salaryMin available
-//                   → salaryMin × (percentageValue / 100) × openings
-//                   (use salaryMin only — not avg, not max)
-//
-//  4. SALARY_MIN  — salaryMin set, no band, no percentage
-//                   → salaryMin × openings
-//
-//  5. null        — not enough data to compute
-//
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function computeSaleValue(input: {
@@ -3807,51 +4074,34 @@ export function computeSaleValue(input: {
   saleValueBasis: "SALE_VALUE" | "BAND" | "FIXED_PCT" | "SALARY_MIN" | null;
 } {
   const openings = input.totalOpenings ?? 1;
-
-  // 1. Explicit sale value on requirement
-  if (input.saleValue != null && input.saleValue > 0) {
+  if (input.saleValue != null && input.saleValue > 0)
     return {
       computedSaleValue: input.saleValue * openings,
       saleValueBasis: "SALE_VALUE",
     };
-  }
-
-  // 2. Band — fixed rupee amount per opening
   const bandValue = input.band?.value != null ? Number(input.band.value) : null;
-  if (bandValue != null && bandValue > 0) {
+  if (bandValue != null && bandValue > 0)
     return { computedSaleValue: bandValue * openings, saleValueBasis: "BAND" };
-  }
-
   const salMin = input.salaryMin != null ? Number(input.salaryMin) : null;
-
-  // 3. Fixed percentage — salaryMin × client% × openings
   const pct =
     input.client?.percentageValue != null
       ? Number(input.client.percentageValue)
       : null;
-  if (pct != null && pct > 0 && salMin != null && salMin > 0) {
+  if (pct != null && pct > 0 && salMin != null && salMin > 0)
     return {
       computedSaleValue: salMin * (pct / 100) * openings,
       saleValueBasis: "FIXED_PCT",
     };
-  }
-
-  // 4. Salary min only
-  if (salMin != null && salMin > 0) {
+  if (salMin != null && salMin > 0)
     return {
       computedSaleValue: salMin * openings,
       saleValueBasis: "SALARY_MIN",
     };
-  }
-
-  // 5. Cannot compute
   return { computedSaleValue: null, saleValueBasis: null };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// buildWhereClause
-// Shared between getRequirements and getSaleValueStats so filters are
-// always identical. page / limit are NOT part of this — callers handle that.
+// buildRequirementsWhere
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function buildRequirementsWhere(
@@ -3861,9 +4111,9 @@ export async function buildRequirementsWhere(
     buId?: string;
     serviceLineId?: string;
     clientId?: string;
-    clientSpocId?: string; // NEW — filter by client SPOC
+    clientSpocId?: string;
     priority?: string;
-    createdById?: string; // direct filter — who actually created it in DB
+    createdById?: string;
     dateFrom?: string;
     dateTo?: string;
   },
@@ -3872,21 +4122,13 @@ export async function buildRequirementsWhere(
 ): Promise<any> {
   const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
   const where: any = { ...scopeWhere, deletedAt: null };
-
-  // createdById — direct DB filter, no hierarchy resolution
-  // If passed, filter by exactly that userId. Scope switcher on frontend
-  // controls what set is visible; createdById narrows further within that.
-  if (filters.createdById) {
-    where.createdById = filters.createdById;
-  }
-
+  if (filters.createdById) where.createdById = filters.createdById;
   if (filters.status) where.status = filters.status;
   if (filters.priority) where.priority = filters.priority;
   if (filters.clientId) where.clientId = filters.clientId;
   if (filters.clientSpocId) where.clientSpocId = filters.clientSpocId;
   if (filters.serviceLineId) where.serviceLineId = filters.serviceLineId;
   if (filters.buId) where.businessUnit = { ancestorIds: { has: filters.buId } };
-
   if (filters.dateFrom || filters.dateTo) {
     where.createdAt = {
       ...(filters.dateFrom ? { gte: new Date(filters.dateFrom) } : {}),
@@ -3895,7 +4137,6 @@ export async function buildRequirementsWhere(
         : {}),
     };
   }
-
   if (filters.search) {
     where.AND = [
       ...(where.AND ?? []),
@@ -3909,63 +4150,50 @@ export async function buildRequirementsWhere(
       },
     ];
   }
-
   return where;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// canSeeSaleValueData
-// A user can see sale value / band / salary / client % data if:
-//   - they are the creator of the requirement, OR
-//   - the creator reports to them (directly or transitively via reportingTo chain)
-// isSuperAdmin always sees everything.
-//
-// We resolve the set of userIds who are "managers of creatorId" by walking
-// the reportingTo chain upward from creatorId. If userId is in that set,
-// they can see the data.
+// resolveManagerSets — walk reportingTo chain upward per creator (batched)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function canSeeSaleValueData(
-  userId: string,
-  creatorId: string,
-  isSuperAdmin: boolean
-): Promise<boolean> {
-  if (isSuperAdmin) return true;
-  if (userId === creatorId) return true;
-
-  // Walk reportingTo chain upward from creator until we find userId or exhaust
-  let currentId: string | null = creatorId;
-  const visited = new Set<string>();
-
-  while (currentId) {
-    if (visited.has(currentId)) break; // cycle guard
-    visited.add(currentId);
-
-    const user = await prisma.user.findUnique({
-      where: { id: currentId },
-      select: { reportingToId: true },
-    });
-
-    if (!user?.reportingToId) break;
-    if (user.reportingToId === userId) return true;
-    currentId = user.reportingToId;
+async function resolveManagerSets(
+  creatorIds: string[]
+): Promise<Record<string, Set<string>>> {
+  const result: Record<string, Set<string>> = {};
+  for (const creatorId of creatorIds) {
+    const managers = new Set<string>();
+    let currentId: string | null = creatorId;
+    const visited = new Set<string>();
+    while (currentId) {
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      const u = await prisma.user.findUnique({
+        where: { id: currentId },
+        select: { reportingToId: true },
+      });
+      if (!u?.reportingToId) break;
+      managers.add(u.reportingToId);
+      currentId = u.reportingToId;
+    }
+    result[creatorId] = managers;
   }
-
-  return false;
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getRequirements
-// Changes vs previous version:
-//   - canonical stage rollup REMOVED (separate API, kills latency)
-//   - createdByScope REMOVED from this endpoint (was hierarchy-based,
-//     replaced by direct createdById filter)
-//   - clientSpocId filter ADDED
-//   - saleValueSummary REMOVED from response (page-scoped = useless,
-//     use GET /requirements/sale-value-stats for real totals)
-//   - sale value fields RBAC-gated per requirement row:
-//     creator + their managers up the chain see full data
-//     everyone else gets computedSaleValue only (no raw band/salary/pct)
+// GET /requirements
+//
+// Pipeline counting:
+//   totalFunnelCount = _count.pipelines (all candidates ever linked, simple)
+//   terminalStageCounts = per-terminal-stage candidate counts (isTerminal=true stages only)
+//   terminalCount = sum of terminalStageCounts values
+//   achievedValue = (terminalCount / totalOpenings) × computedSaleValue
+//
+// The response also includes:
+//   meta.terminalStageDefs — all terminal stage definitions visible to this
+//     serviceLineId filter (for frontend to build dynamic columns)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirements = async (req: Request, res: Response) => {
@@ -3976,9 +4204,9 @@ export const getRequirements = async (req: Request, res: Response) => {
       buId,
       serviceLineId,
       clientId,
-      clientSpocId, // NEW
+      clientSpocId,
       priority,
-      createdById, // direct DB filter — no scope resolution
+      createdById,
       dateFrom,
       dateTo,
       page = "1",
@@ -3989,8 +4217,6 @@ export const getRequirements = async (req: Request, res: Response) => {
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-    const canViewScope = (req.modulePermission?.canViewScope ??
-      PermissionScope.OWN) as PermissionScope;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
@@ -4053,9 +4279,9 @@ export const getRequirements = async (req: Request, res: Response) => {
           createdAt: true,
           serviceLineId: true,
 
-          // Sale value raw fields — fetched always, RBAC-gated before sending
           saleValue: true,
           salaryMin: true,
+          salaryMax: true,
           salaryType: true,
           salaryCurrency: true,
 
@@ -4070,7 +4296,6 @@ export const getRequirements = async (req: Request, res: Response) => {
               value: true,
             },
           },
-
           client: {
             select: {
               id: true,
@@ -4079,18 +4304,7 @@ export const getRequirements = async (req: Request, res: Response) => {
               percentageValue: true,
             },
           },
-
-          clientSpoc: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              handler: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-            },
-          },
-
+          clientSpoc: { select: { id: true, firstName: true, lastName: true } },
           businessUnit: { select: { id: true, name: true } },
           serviceLine: { select: { id: true, name: true } },
           createdBy: { select: { id: true, firstName: true, lastName: true } },
@@ -4109,7 +4323,8 @@ export const getRequirements = async (req: Request, res: Response) => {
             orderBy: { depth: "asc" },
           },
 
-          _count: { select: { pipelines: true, assignments: true } },
+          // _count.pipelines = total funnel (all candidates linked to this req)
+          _count: { select: { pipelines: true } },
         },
         orderBy,
         skip,
@@ -4126,6 +4341,7 @@ export const getRequirements = async (req: Request, res: Response) => {
           page: parseInt(page),
           limit: take,
           pages: Math.ceil(total / take),
+          terminalStageDefs: [],
         },
         permissions: {
           canAdd: req.modulePermission.canAdd,
@@ -4135,24 +4351,19 @@ export const getRequirements = async (req: Request, res: Response) => {
       });
     }
 
-    // ── Pipeline stage counts (raw stages only — canonical removed) ────────
-    const reqIds = requirements.map((r) => r.id);
-
-    // Two-bucket logic: creator sees all, assigned-only sees scoped recruiters
-    const createdByMeIds = new Set(
-      requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
-    );
-    const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
-
-    const visibleRecruiterIds = await getVisibleRecruiterIds(
-      userId,
-      isSuperAdmin,
-      canViewScope
-    );
-
-    // Fetch all active stages — raw, no canonical grouping
-    const allStages = await prisma.pipelineStage.findMany({
-      where: { isActive: true },
+    // ── Fetch terminal stage definitions from DB ───────────────────────────────
+    // These are the "achieved" stages. Service-line aware:
+    //   serviceLineId = null  → applies to ALL requirements
+    //   serviceLineId = X     → only for requirements in service line X
+    const terminalStageDefs = await prisma.pipelineStage.findMany({
+      where: {
+        isActive: true,
+        isTerminal: true,
+        // If a serviceLineId filter is active, only fetch stages relevant to it
+        ...(serviceLineId
+          ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
+          : {}),
+      },
       select: {
         id: true,
         code: true,
@@ -4162,87 +4373,42 @@ export const getRequirements = async (req: Request, res: Response) => {
       },
       orderBy: { order: "asc" },
     });
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
+    const terminalStageIds = terminalStageDefs.map((s) => s.id);
 
-    const [fullCounts, scopedCounts] = await Promise.all([
-      createdByMeIds.size > 0
-        ? prisma.requirementCandidatePipeline.groupBy({
-            by: ["requirementId", "currentStageId"],
-            where: { requirementId: { in: [...createdByMeIds] } },
-            _count: { id: true },
-          })
-        : Promise.resolve([]),
-      assignedOnlyIds.length > 0
-        ? prisma.requirementCandidatePipeline.groupBy({
+    // ── Count candidates currently in terminal stages per requirement ──────────
+    // Simple groupBy: requirementId × currentStageId, filtered to terminal stages only.
+    // No scope complexity here — terminal counts are universal (everyone sees achieved).
+    const reqIds = requirements.map((r) => r.id);
+
+    const terminalCounts =
+      terminalStageIds.length > 0
+        ? await prisma.requirementCandidatePipeline.groupBy({
             by: ["requirementId", "currentStageId"],
             where: {
-              requirementId: { in: assignedOnlyIds },
-              ...(visibleRecruiterIds !== null
-                ? { recruiterId: { in: visibleRecruiterIds } }
-                : {}),
+              requirementId: { in: reqIds },
+              currentStageId: { in: terminalStageIds },
             },
             _count: { id: true },
           })
-        : Promise.resolve([]),
-    ]);
+        : [];
 
-    type StageCount = {
-      stageId: string;
-      code: string;
-      label: string;
-      order: number;
-      count: number;
-    };
-    const countsByReq: Record<string, StageCount[]> = {};
-
-    const pushCounts = (rows: any[]) => {
-      for (const sc of rows) {
-        const stage = stageById[sc.currentStageId];
-        if (!stage) continue;
-        if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
-        countsByReq[sc.requirementId].push({
-          stageId: sc.currentStageId,
-          code: stage.code,
-          label: stage.label,
-          order: stage.order,
-          count: sc._count.id,
-        });
-      }
-    };
-    pushCounts(fullCounts as any[]);
-    pushCounts(scopedCounts as any[]);
-    for (const key of Object.keys(countsByReq)) {
-      countsByReq[key].sort((a, b) => a.order - b.order);
+    // Build map: requirementId → { stageId → count }
+    const terminalByReq: Record<string, Record<string, number>> = {};
+    for (const tc of terminalCounts) {
+      if (!terminalByReq[tc.requirementId])
+        terminalByReq[tc.requirementId] = {};
+      terminalByReq[tc.requirementId][(tc as any).currentStageId] = (
+        tc as any
+      )._count.id;
     }
 
-    // ── RBAC-gated sale value enrichment ──────────────────────────────────
-    // Check visibility for all unique creators in batch to avoid N+1.
-    // We walk the reportingTo chain for each unique creatorId once.
+    // ── RBAC: sale value gating ───────────────────────────────────────────────
     const uniqueCreatorIds = [
       ...new Set(requirements.map((r) => r.createdBy.id)),
     ];
+    const managerSetByCreator = await resolveManagerSets(uniqueCreatorIds);
 
-    // For each creatorId, resolve the full chain of manager userIds
-    // so we can do a simple Set lookup per row.
-    const managerSetByCreator: Record<string, Set<string>> = {};
-    for (const creatorId of uniqueCreatorIds) {
-      const managers = new Set<string>();
-      let currentId: string | null = creatorId;
-      const visited = new Set<string>();
-      while (currentId) {
-        if (visited.has(currentId)) break;
-        visited.add(currentId);
-        const u = await prisma.user.findUnique({
-          where: { id: currentId },
-          select: { reportingToId: true },
-        });
-        if (!u?.reportingToId) break;
-        managers.add(u.reportingToId);
-        currentId = u.reportingToId;
-      }
-      managerSetByCreator[creatorId] = managers;
-    }
-
+    // ── Enrich ────────────────────────────────────────────────────────────────
     const enrichedRequirements = requirements.map((r) => {
       const creatorId = r.createdBy.id;
       const canSeeSale =
@@ -4250,53 +4416,89 @@ export const getRequirements = async (req: Request, res: Response) => {
         userId === creatorId ||
         (managerSetByCreator[creatorId]?.has(userId) ?? false);
 
-      // Compute sale value (always — needed even when we strip raw fields)
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
         saleValue: r.saleValue,
         totalOpenings: r.totalOpenings,
         salaryMin: r.salaryMin,
         band: r.band
-          ? { value: r.band.value ? Number(r.band.value) : null }
+          ? { value: r.band.value != null ? Number(r.band.value) : null }
           : null,
         client: r.client
           ? {
-              percentageValue: r.client.percentageValue
-                ? Number(r.client.percentageValue)
-                : null,
+              percentageValue:
+                r.client.percentageValue != null
+                  ? Number(r.client.percentageValue)
+                  : null,
             }
           : null,
       });
 
-      // Strip sensitive fields for users who aren't creator/manager
+      // totalFunnelCount — straight from _count.pipelines, no groupBy needed
+      const totalFunnelCount = r._count.pipelines;
+
+      // Terminal counts per stage — { stageId: count }
+      // Only includes terminal stages relevant to this req's service line
+      const reqTerminalCounts = terminalByReq[r.id] ?? {};
+      const terminalStageCounts: Record<string, number> = {};
+      let terminalCount = 0;
+      for (const tsDef of terminalStageDefs) {
+        // Stage applies if: no service line restriction, or matches this req's service line
+        if (tsDef.serviceLineId && tsDef.serviceLineId !== r.serviceLineId)
+          continue;
+        const cnt = reqTerminalCounts[tsDef.id] ?? 0;
+        terminalStageCounts[tsDef.id] = cnt;
+        terminalCount += cnt;
+      }
+
+      // achievedValue = (terminalCount / totalOpenings) × computedSaleValue
+      // Universal — everyone can see it (it's derived from computedSaleValue which is universal)
+      const achievedValue =
+        computedSaleValue != null && r.totalOpenings > 0
+          ? (terminalCount / r.totalOpenings) * computedSaleValue
+          : null;
+
+      const achievedPct =
+        r.totalOpenings > 0
+          ? Math.min(
+              100,
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+            )
+          : 0;
+
+      // Sale value fields — RBAC gated
       const saleFields = canSeeSale
         ? {
             saleValue: r.saleValue,
             salaryMin: r.salaryMin,
+            salaryMax: r.salaryMax,
             salaryType: r.salaryType,
             salaryCurrency: r.salaryCurrency,
             band: r.band
               ? {
                   ...r.band,
-                  rangeFrom: r.band.rangeFrom ? Number(r.band.rangeFrom) : null,
-                  rangeTo: r.band.rangeTo ? Number(r.band.rangeTo) : null,
-                  value: r.band.value ? Number(r.band.value) : null,
+                  rangeFrom:
+                    r.band.rangeFrom != null ? Number(r.band.rangeFrom) : null,
+                  rangeTo:
+                    r.band.rangeTo != null ? Number(r.band.rangeTo) : null,
+                  value: r.band.value != null ? Number(r.band.value) : null,
                 }
               : null,
             client: r.client
               ? {
                   ...r.client,
-                  percentageValue: r.client.percentageValue
-                    ? Number(r.client.percentageValue)
-                    : null,
+                  percentageValue:
+                    r.client.percentageValue != null
+                      ? Number(r.client.percentageValue)
+                      : null,
                 }
               : null,
             computedSaleValue,
             saleValueBasis,
           }
         : {
-            // Non-creator/non-manager sees computed total only — no raw inputs
             saleValue: null,
             salaryMin: null,
+            salaryMax: null,
             salaryType: null,
             salaryCurrency: null,
             band: null,
@@ -4308,14 +4510,18 @@ export const getRequirements = async (req: Request, res: Response) => {
                   percentageValue: null,
                 }
               : null,
-            computedSaleValue, // show the computed number
-            saleValueBasis: null, // but hide which method was used
+            computedSaleValue, // universal
+            saleValueBasis: null,
           };
 
       return {
         ...r,
         ...saleFields,
-        pipelineStageCounts: countsByReq[r.id] ?? [],
+        totalFunnelCount, // universal: total candidates in pipeline
+        terminalCount, // universal: candidates in terminal stages
+        terminalStageCounts, // universal: { stageId → count } for each terminal stage
+        achievedValue, // universal: derived from computedSaleValue
+        achievedPct, // universal: terminalCount / openings %
       };
     });
 
@@ -4327,11 +4533,17 @@ export const getRequirements = async (req: Request, res: Response) => {
         page: parseInt(page),
         limit: take,
         pages: Math.ceil(total / take),
+        // Terminal stage definitions for this page's filter context
+        // Frontend uses these to render one column per terminal stage
+        terminalStageDefs: terminalStageDefs.map((s) => ({
+          id: s.id,
+          code: s.code,
+          label: s.label,
+          order: s.order,
+          serviceLineId: s.serviceLineId,
+        })),
       },
-      scope: {
-        canViewScope,
-        isSuperAdmin,
-      },
+      scope: { isSuperAdmin },
       permissions: {
         canAdd: req.modulePermission.canAdd,
         canEdit: req.modulePermission.canEdit,
@@ -4349,14 +4561,7 @@ export const getRequirements = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // getSaleValueStats
 // GET /requirements/sale-value-stats
-//
-// Returns total computed sale value across the FULL filtered dataset.
-// NO page, NO limit — always aggregates everything matching the filters.
-// Same filters as getRequirements except pagination.
-//
-// ▼ THIS IS WHERE page/limit ARE INTENTIONALLY ABSENT ▼
-// The query below has no skip/take. Every matching requirement is loaded
-// (select is minimal — only fields needed for computation).
+// Full dataset (NO page/limit). Aggregates computedSaleValue + achievedValue.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getSaleValueStats = async (req: Request, res: Response) => {
@@ -4372,13 +4577,11 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       createdById,
       dateFrom,
       dateTo,
-      // ← page and limit are intentionally NOT here
     } = req.query as Record<string, string>;
 
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    // ── Exact same where clause as getRequirements, minus pagination ───────
     const where = await buildRequirementsWhere(
       {
         search,
@@ -4396,8 +4599,7 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       isSuperAdmin
     );
 
-    // ── Fetch ONLY the fields needed for computation ────────────────────────
-    // No skip. No take. Full dataset. This is correct and intentional.
+    // Minimal select — no page/limit
     const requirements = await prisma.requirement.findMany({
       where,
       select: {
@@ -4405,39 +4607,65 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
         totalOpenings: true,
         saleValue: true,
         salaryMin: true,
-        createdById: true,
+        serviceLineId: true,
         band: { select: { value: true } },
         client: { select: { percentageValue: true } },
       },
     });
 
-    // ── Resolve RBAC for sale value visibility (same manager-chain logic) ──
-    const uniqueCreatorIds = [
-      ...new Set(requirements.map((r) => r.createdById)),
-    ];
-    const managerSetByCreator: Record<string, Set<string>> = {};
-    for (const creatorId of uniqueCreatorIds) {
-      const managers = new Set<string>();
-      let currentId: string | null = creatorId;
-      const visited = new Set<string>();
-      while (currentId) {
-        if (visited.has(currentId)) break;
-        visited.add(currentId);
-        const u = await prisma.user.findUnique({
-          where: { id: currentId },
-          select: { reportingToId: true },
-        });
-        if (!u?.reportingToId) break;
-        managers.add(u.reportingToId);
-        currentId = u.reportingToId;
-      }
-      managerSetByCreator[creatorId] = managers;
+    if (!requirements.length) {
+      return res.json({
+        success: true,
+        data: {
+          totalRequirements: 0,
+          includedCount: 0,
+          omittedCount: 0,
+          totalSaleValue: 0,
+          totalAchievedValue: 0,
+          byBasis: {},
+        },
+      });
+    }
+
+    // ── Terminal stage counts — same logic as getRequirements ────────────────
+    const reqIds = requirements.map((r) => r.id);
+    const terminalStageDefs = await prisma.pipelineStage.findMany({
+      where: {
+        isActive: true,
+        isTerminal: true,
+        ...(serviceLineId
+          ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
+          : {}),
+      },
+      select: { id: true, serviceLineId: true },
+    });
+    const terminalStageIds = terminalStageDefs.map((s) => s.id);
+
+    const terminalCounts =
+      terminalStageIds.length > 0
+        ? await prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: {
+              requirementId: { in: reqIds },
+              currentStageId: { in: terminalStageIds },
+            },
+            _count: { id: true },
+          })
+        : [];
+
+    // { reqId → { stageId → count } }
+    const terminalByReq: Record<string, Record<string, number>> = {};
+    for (const tc of terminalCounts) {
+      if (!terminalByReq[tc.requirementId])
+        terminalByReq[tc.requirementId] = {};
+      terminalByReq[tc.requirementId][(tc as any).currentStageId] = (
+        tc as any
+      )._count.id;
     }
 
     let totalSaleValue = 0;
+    let totalAchievedValue = 0;
     let omittedCount = 0;
-    let hiddenCount = 0; // requirements where user can't see sale data at all
-
     const byBasis: Record<string, { count: number; total: number }> = {
       SALE_VALUE: { count: 0, total: 0 },
       BAND: { count: 0, total: 0 },
@@ -4446,29 +4674,19 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
     };
 
     for (const r of requirements) {
-      const canSeeSale =
-        isSuperAdmin ||
-        userId === r.createdById ||
-        (managerSetByCreator[r.createdById]?.has(userId) ?? false);
-
-      if (!canSeeSale) {
-        // Count but don't include in total — user can't see this requirement's value
-        hiddenCount++;
-        continue;
-      }
-
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
         saleValue: r.saleValue,
         totalOpenings: r.totalOpenings,
         salaryMin: r.salaryMin,
         band: r.band
-          ? { value: r.band.value ? Number(r.band.value) : null }
+          ? { value: r.band.value != null ? Number(r.band.value) : null }
           : null,
         client: r.client
           ? {
-              percentageValue: r.client.percentageValue
-                ? Number(r.client.percentageValue)
-                : null,
+              percentageValue:
+                r.client.percentageValue != null
+                  ? Number(r.client.percentageValue)
+                  : null,
             }
           : null,
       });
@@ -4477,6 +4695,19 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
         totalSaleValue += computedSaleValue;
         byBasis[saleValueBasis].count++;
         byBasis[saleValueBasis].total += computedSaleValue;
+
+        // Terminal count for this req (service-line-aware)
+        const reqTerminal = terminalByReq[r.id] ?? {};
+        let termCount = 0;
+        for (const tsDef of terminalStageDefs) {
+          if (tsDef.serviceLineId && tsDef.serviceLineId !== r.serviceLineId)
+            continue;
+          termCount += reqTerminal[tsDef.id] ?? 0;
+        }
+        if (r.totalOpenings > 0) {
+          totalAchievedValue +=
+            (termCount / r.totalOpenings) * computedSaleValue;
+        }
       } else {
         omittedCount++;
       }
@@ -4486,10 +4717,10 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       success: true,
       data: {
         totalRequirements: requirements.length,
-        includedCount: requirements.length - omittedCount - hiddenCount,
-        omittedCount, // had no computable data
-        hiddenCount, // RBAC — user can't see those requirements' values
-        totalSaleValue, // sum across full filtered dataset (RBAC-gated)
+        includedCount: requirements.length - omittedCount,
+        omittedCount,
+        totalSaleValue,
+        totalAchievedValue, // NEW — sum of achievedValue across all matching reqs
         byBasis,
       },
     });
@@ -4504,27 +4735,12 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // getRequirementsFilters
 // GET /requirements/filters
-//
-// Returns all dropdown filter options for the requirements page:
-//   - statuses with counts (from stats)
-//   - priorities
-//   - business units
-//   - service lines
-//   - clients (active only)
-//   - client SPOCs (scoped to what the user can see)
-//   - createdBy users — ALL unique creators across the full table visible
-//     to this user (not hierarchy-filtered, just "who has created requirements
-//     that you can see"). No page/limit.
-//
-// This is a single round-trip instead of 5+ separate API calls.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementsFilters = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
-
-    // Scope where for requirements visible to this user (existing helper)
     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
     const baseWhere = { ...scopeWhere, deletedAt: null };
 
@@ -4536,33 +4752,23 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
       createdByUsers,
       statusCounts,
     ] = await Promise.all([
-      // Business units — all active
       prisma.businessUnit.findMany({
         where: { isActive: true },
         select: { id: true, name: true },
         orderBy: { name: "asc" },
       }),
-
-      // Service lines — all active
       prisma.serviceLine.findMany({
         where: { isActive: true },
         select: { id: true, name: true },
         orderBy: { name: "asc" },
       }),
-
-      // Clients — active only
       prisma.client.findMany({
         where: { status: "ACTIVE", deletedAt: null },
         select: { id: true, name: true },
         orderBy: { name: "asc" },
       }),
-
-      // Client SPOCs — active, scoped to requirements visible to this user
       prisma.clientSpoc.findMany({
-        where: {
-          isActive: true,
-          requirements: { some: baseWhere },
-        },
+        where: { isActive: true, requirements: { some: baseWhere } },
         select: {
           id: true,
           firstName: true,
@@ -4571,9 +4777,6 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
         },
         orderBy: { firstName: "asc" },
       }),
-
-      // createdBy — distinct creators across ALL requirements visible to user
-      // No page/limit. Direct DB query, no hierarchy resolution.
       prisma.requirement.findMany({
         where: baseWhere,
         select: {
@@ -4582,8 +4785,6 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
         distinct: ["createdById"],
         orderBy: { createdBy: { firstName: "asc" } },
       }),
-
-      // Status counts — same scope, no pagination
       prisma.requirement.groupBy({
         by: ["status"],
         where: baseWhere,
@@ -4621,7 +4822,44 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
   }
 };
 
-export const exportRequirements = async (req: Request, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirementsPipelineSummary
+// GET /requirements/pipeline-summary
+//
+// Returns per-requirement pipeline breakdown using ONLY terminal stages
+// (isTerminal = true in PipelineStage).
+//
+// "Achieved" = candidates currently sitting in any terminal stage.
+// No canonical stages. No complex stage mapping. Just terminal.
+//
+// Service-line aware:
+//   stage.serviceLineId = null  → applies to ALL requirements
+//   stage.serviceLineId = X     → only for requirements whose serviceLineId = X
+//
+// Accepts same filters as getRequirements. NO page / NO limit — full dataset.
+//
+// Response:
+// {
+//   data: [{
+//     requirementId,
+//     totalOpenings,
+//     totalFunnelCount,          — _count.pipelines (all candidates)
+//     terminalCount,             — candidates in ANY terminal stage
+//     terminalStageCounts,       — { stageId: count } per terminal stage
+//     achievedPct,               — terminalCount / totalOpenings × 100
+//     computedSaleValue,         — universal
+//     achievedValue,             — (terminalCount / totalOpenings) × computedSaleValue
+//   }],
+//   meta: {
+//     terminalStageDefs: [{ id, code, label, order, serviceLineId }]
+//   }
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRequirementsPipelineSummary = async (
+  req: Request,
+  res: Response
+) => {
   try {
     const {
       search,
@@ -4629,8 +4867,8 @@ export const exportRequirements = async (req: Request, res: Response) => {
       buId,
       serviceLineId,
       clientId,
+      clientSpocId,
       priority,
-      createdByScope = "OWN",
       createdById,
       dateFrom,
       dateTo,
@@ -4639,48 +4877,232 @@ export const exportRequirements = async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
-    const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-    const where: any = { ...scopeWhere, deletedAt: null };
+    const where = await buildRequirementsWhere(
+      {
+        search,
+        status,
+        buId,
+        serviceLineId,
+        clientId,
+        clientSpocId,
+        priority,
+        createdById,
+        dateFrom,
+        dateTo,
+      },
+      userId,
+      isSuperAdmin
+    );
 
-    if (createdById) {
-      where.createdById = createdById;
-    } else {
-      const creatorIds = await getCreatorScopeUserIds(
-        userId,
-        isSuperAdmin,
-        createdByScope ?? "OWN"
-      );
-      if (creatorIds !== null) {
-        where.createdById = { in: creatorIds };
-      }
+    // Minimal fields — only what's needed for computation
+    const requirements = await prisma.requirement.findMany({
+      where,
+      select: {
+        id: true,
+        totalOpenings: true,
+        serviceLineId: true,
+        saleValue: true,
+        salaryMin: true,
+        band: { select: { value: true } },
+        client: { select: { percentageValue: true } },
+        _count: { select: { pipelines: true } },
+      },
+    });
+
+    if (!requirements.length) {
+      return res.json({
+        success: true,
+        data: [],
+        meta: { terminalStageDefs: [] },
+      });
     }
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (clientId) where.clientId = clientId;
-    if (serviceLineId) where.serviceLineId = serviceLineId;
-    if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-    if (dateFrom || dateTo) {
-      where.createdAt = {
-        ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-        ...(dateTo
-          ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
+    const reqIds = requirements.map((r) => r.id);
+
+    // ── Fetch terminal stage definitions ──────────────────────────────────────
+    // isTerminal = true only. Service-line scoped if filter is active.
+    const terminalStageDefs = await prisma.pipelineStage.findMany({
+      where: {
+        isActive: true,
+        isTerminal: true,
+        ...(serviceLineId
+          ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
           : {}),
-      };
-    }
-    if (search) {
-      where.AND = [
-        ...(where.AND ?? []),
-        {
-          OR: [
-            { title: { contains: search, mode: "insensitive" } },
-            { reqCode: { contains: search, mode: "insensitive" } },
-          ],
-        },
-      ];
+      },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    const terminalStageIds = terminalStageDefs.map((s) => s.id);
+
+    // ── Count candidates in terminal stages per requirement ───────────────────
+    // Single groupBy — only terminal stage rows, no complexity
+    const terminalCounts =
+      terminalStageIds.length > 0
+        ? await prisma.requirementCandidatePipeline.groupBy({
+            by: ["requirementId", "currentStageId"],
+            where: {
+              requirementId: { in: reqIds },
+              currentStageId: { in: terminalStageIds },
+            },
+            _count: { id: true },
+          })
+        : [];
+
+    // Build: { reqId → { stageId → count } }
+    const terminalByReq: Record<string, Record<string, number>> = {};
+    for (const tc of terminalCounts as any[]) {
+      if (!terminalByReq[tc.requirementId])
+        terminalByReq[tc.requirementId] = {};
+      terminalByReq[tc.requirementId][tc.currentStageId] = tc._count.id;
     }
 
-    // ── Fetch (cap 1000) ────────────────────────────────────────────────────
+    // ── Build per-requirement summary ─────────────────────────────────────────
+    const data = requirements.map((r) => {
+      const { computedSaleValue } = computeSaleValue({
+        saleValue: r.saleValue,
+        totalOpenings: r.totalOpenings,
+        salaryMin: r.salaryMin,
+        band: r.band
+          ? { value: r.band.value != null ? Number(r.band.value) : null }
+          : null,
+        client: r.client
+          ? {
+              percentageValue:
+                r.client.percentageValue != null
+                  ? Number(r.client.percentageValue)
+                  : null,
+            }
+          : null,
+      });
+
+      // Total funnel — all candidates ever linked (simple _count)
+      const totalFunnelCount = r._count.pipelines;
+
+      // Terminal counts — per stage, service-line-aware
+      const reqTerminal = terminalByReq[r.id] ?? {};
+      const terminalStageCounts: Record<string, number> = {};
+      let terminalCount = 0;
+
+      for (const tsDef of terminalStageDefs) {
+        // Skip stage if it belongs to a different service line
+        if (tsDef.serviceLineId && tsDef.serviceLineId !== r.serviceLineId)
+          continue;
+        const cnt = reqTerminal[tsDef.id] ?? 0;
+        terminalStageCounts[tsDef.id] = cnt;
+        terminalCount += cnt;
+      }
+
+      const achievedPct =
+        r.totalOpenings > 0
+          ? Math.min(
+              100,
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+            )
+          : 0;
+
+      const achievedValue =
+        computedSaleValue != null && r.totalOpenings > 0
+          ? (terminalCount / r.totalOpenings) * computedSaleValue
+          : null;
+
+      return {
+        requirementId: r.id,
+        totalOpenings: r.totalOpenings,
+        totalFunnelCount,
+        terminalCount,
+        terminalStageCounts, // { stageId → count } — frontend maps against terminalStageDefs
+        achievedPct,
+        computedSaleValue,
+        achievedValue,
+      };
+    });
+
+    return res.json({
+      success: true,
+      data,
+      meta: {
+        terminalStageDefs: terminalStageDefs.map((s) => ({
+          id: s.id,
+          code: s.code,
+          label: s.label,
+          order: s.order,
+          serviceLineId: s.serviceLineId,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementsPipelineSummary:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch pipeline summary" });
+  }
+};
+// File: exportRequirements.ts
+// Path: src/controllers/exportRequirements.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// exportRequirements
+//
+// Sheet 1 — Requirements: one row per requirement
+//   • Fixed info columns (code, title, status, priority, client, SPOC, BU, SL, …)
+//   • Sale Value section (RBAC-gated: only for creator + their managers up chain)
+//       Band Code / Band Name / Band Range / Band Value / Client % /
+//       Salary Min / Salary Max / Req. Sale Value / Computed Sale Value / Basis
+//   • computedSaleValue shown to everyone (not RBAC-gated)
+//   • Achieved section (terminal stage headcounts + achieved value)
+//       one column per terminal stage (from DB, not hardcoded) + Achieved % + Achieved Value
+//   • Summary row at bottom: totals for computedSaleValue and achievedValue
+//
+// Sheet 2 — Candidates: one row per pipeline entry
+//
+// Filters: same as getRequirements (uses buildRequirementsWhere)
+// Cap: 1000 requirements
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const exportRequirements = async (req: Request, res: Response) => {
+  try {
+    const {
+      search,
+      status,
+      buId,
+      serviceLineId,
+      clientId,
+      clientSpocId,
+      priority,
+      createdById,
+      dateFrom,
+      dateTo,
+    } = req.query as Record<string, string>;
+
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    // ── Build where using shared helper (same as getRequirements) ─────────────
+    const where = await buildRequirementsWhere(
+      {
+        search,
+        status,
+        buId,
+        serviceLineId,
+        clientId,
+        clientSpocId,
+        priority,
+        createdById,
+        dateFrom,
+        dateTo,
+      },
+      userId,
+      isSuperAdmin
+    );
+
+    // ── Fetch requirements (cap 1000) ─────────────────────────────────────────
     const requirements = await prisma.requirement.findMany({
       where,
       select: {
@@ -4699,8 +5121,9 @@ export const exportRequirements = async (req: Request, res: Response) => {
         isRespondByBreached: true,
         isTurnaroundBreached: true,
         createdAt: true,
+        serviceLineId: true,
 
-        // ── Sale value fields ───────────────────────────────────────────
+        // Sale value fields (RBAC-gated per row below)
         saleValue: true,
         salaryMin: true,
         salaryMax: true,
@@ -4717,18 +5140,16 @@ export const exportRequirements = async (req: Request, res: Response) => {
             value: true,
           },
         },
-
         client: {
-          select: {
-            name: true,
-            agreementType: true,
-            percentageValue: true,
-          },
+          select: { name: true, agreementType: true, percentageValue: true },
         },
+
+        // SPOC — always shown (not sensitive)
+        clientSpoc: { select: { id: true, firstName: true, lastName: true } },
 
         businessUnit: { select: { name: true } },
         serviceLine: { select: { id: true, name: true } },
-        createdBy: { select: { firstName: true, lastName: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
       },
       orderBy: { createdAt: "desc" },
       take: 1000,
@@ -4742,7 +5163,34 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     const reqIds = requirements.map((r) => r.id);
 
-    // ── Pipeline stages ──────────────────────────────────────────────────
+    // ── RBAC: resolve manager sets for all unique creators ────────────────────
+    const uniqueCreatorIds = [
+      ...new Set(requirements.map((r) => r.createdBy.id)),
+    ];
+    const managerSetByCreator = await resolveManagerSets(uniqueCreatorIds);
+
+    // ── Terminal stages from DB (for "Achieved" columns) ─────────────────────
+    // isTerminal = true → candidate has been placed / achieved
+    // Scoped by serviceLineId filter if provided (same logic as pipeline summary)
+    const terminalStages = await prisma.pipelineStage.findMany({
+      where: {
+        isActive: true,
+        isTerminal: true,
+        ...(serviceLineId
+          ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
+          : {}),
+      },
+      select: {
+        id: true,
+        code: true,
+        label: true,
+        order: true,
+        serviceLineId: true,
+      },
+      orderBy: { order: "asc" },
+    });
+
+    // ── All active stages (for pipeline counts) ───────────────────────────────
     const allStages = await prisma.pipelineStage.findMany({
       where: { isActive: true },
       select: {
@@ -4750,44 +5198,29 @@ export const exportRequirements = async (req: Request, res: Response) => {
         code: true,
         label: true,
         order: true,
-        canonicalStage: true,
         serviceLineId: true,
+        isTerminal: true,
       },
       orderBy: { order: "asc" },
     });
+    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
 
-    const canonicalStageKeys: string[] = await prisma.pipelineStage
-      .findMany({
-        where: { isActive: true, canonicalStage: { not: null } },
-        select: { canonicalStage: true },
-        distinct: ["canonicalStage"],
-        orderBy: { order: "asc" },
-      })
-      .then((rows) =>
-        rows
-          .map((r) => r.canonicalStage!)
-          .filter((v, i, a) => a.indexOf(v) === i)
-      );
-
-    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
+    // ── Pipeline counts per requirement ───────────────────────────────────────
+    const pipelineCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
       _count: { id: true },
     });
 
-    const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-    const canonicalByReq: Record<string, Record<string, number>> = {};
-    for (const sc of stageCounts) {
-      const stage = stageById[(sc as any).currentStageId];
-      if (!stage?.canonicalStage) continue;
-      if (!canonicalByReq[sc.requirementId])
-        canonicalByReq[sc.requirementId] = {};
-      canonicalByReq[sc.requirementId][stage.canonicalStage] =
-        (canonicalByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
-        (sc as any)._count.id;
+    // Build per-req stage count map
+    const countsByReq: Record<string, Record<string, number>> = {};
+    for (const pc of pipelineCounts) {
+      if (!countsByReq[pc.requirementId]) countsByReq[pc.requirementId] = {};
+      countsByReq[pc.requirementId][(pc as any).currentStageId] =
+        (pc as any)._count?.id ?? 0;
     }
 
-    // ── Pipeline rows for Sheet 2 ────────────────────────────────────────
+    // ── Pipeline rows for Sheet 2 ─────────────────────────────────────────────
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: { requirementId: { in: reqIds } },
       select: {
@@ -4801,9 +5234,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         offerStatus: true,
         actualJoiningDate: true,
         createdAt: true,
-        currentStage: {
-          select: { code: true, label: true, canonicalStage: true },
-        },
+        currentStage: { select: { code: true, label: true, isTerminal: true } },
         recruiter: { select: { firstName: true, lastName: true } },
         snapshot: {
           select: {
@@ -4823,41 +5254,47 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
     // Build workbook
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
 
-    const headerFill: ExcelJS.Fill = {
+    // ── Style helpers ─────────────────────────────────────────────────────────
+    const mkFill = (argb: string): ExcelJS.Fill => ({
       type: "pattern",
       pattern: "solid",
-      fgColor: { argb: "FF1E3A5F" },
-    };
-    const headerFont: Partial<ExcelJS.Font> = {
+      fgColor: { argb },
+    });
+    const WHITE_FONT: Partial<ExcelJS.Font> = {
       color: { argb: "FFFFFFFF" },
       bold: true,
       size: 11,
     };
-    const subHeaderFill: ExcelJS.Fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FF2D5986" },
+    const FILLS = {
+      darkBlue: mkFill("FF1E3A5F"),
+      midBlue: mkFill("FF2D5986"),
+      darkGreen: mkFill("FF1A5C2A"),
+      midGreen: mkFill("FF2E7D32"),
+      purple: mkFill("FF4A148C"),
+      lightGreen: mkFill("FFE2EFDA"),
+      lightRed: mkFill("FFFCE4D6"),
+      lightPurple: mkFill("FFEDE7F6"),
     };
-    const saleHeaderFill: ExcelJS.Fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FF1A5C2A" }, // dark green group header for sale value section
+    const STATUS_COLORS: Record<string, string> = {
+      ACTIVE: "FF00875A",
+      CLOSED: "FFDE350B",
+      ON_HOLD: "FFFF991F",
+      PENDING_APPROVAL: "FF0052CC",
+      DRAFT: "FF6B778C",
+      CANCELLED: "FF5E6C84",
     };
 
-    const applyHeaderRow = (
-      row: ExcelJS.Row,
-      fill: ExcelJS.Fill = headerFill
-    ) => {
+    const applyHeader = (row: ExcelJS.Row, fill = FILLS.darkBlue) => {
       row.eachCell((cell) => {
         cell.fill = fill;
-        cell.font = headerFont;
+        cell.font = WHITE_FONT;
         cell.alignment = {
           vertical: "middle",
           horizontal: "center",
@@ -4870,17 +5307,21 @@ export const exportRequirements = async (req: Request, res: Response) => {
       row.height = 28;
     };
 
-    // ── Sheet 1: Requirements ──────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // SHEET 1 — Requirements
+    // ─────────────────────────────────────────────────────────────────────────
     const sheet1 = workbook.addWorksheet("Requirements", {
       views: [{ state: "frozen", ySplit: 2 }],
     });
 
+    // Fixed info columns — always shown to everyone
     const fixedCols = [
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Title", key: "title", width: 38 },
       { header: "Status", key: "status", width: 16 },
       { header: "Priority", key: "priority", width: 12 },
       { header: "Client", key: "client", width: 24 },
+      { header: "Client SPOC", key: "spoc", width: 22 }, // NEW
       { header: "Agreement", key: "agreementType", width: 14 },
       { header: "Business Unit", key: "bu", width: 22 },
       { header: "Service Line", key: "sl", width: 20 },
@@ -4904,258 +5345,316 @@ export const exportRequirements = async (req: Request, res: Response) => {
         numFmt: "dd-mmm-yyyy",
       },
       { header: "SLA Breached?", key: "breached", width: 14 },
-      { header: "Total Candidates", key: "total", width: 16 },
+      { header: "Total Funnel", key: "totalFunnel", width: 14 }, // everyone sees this
     ];
 
+    // Sale value columns — RBAC-gated (creator + managers see real values; others see — or computed only)
     const saleValueCols = [
       { header: "Band Code", key: "bandCode", width: 12 },
       { header: "Band Name", key: "bandName", width: 18 },
-      { header: "Band Range", key: "bandRange", width: 18 },
+      { header: "Band Range", key: "bandRange", width: 20 },
       { header: "Band Value", key: "bandValue", width: 14 },
       { header: "Client %", key: "clientPct", width: 12 },
       { header: "Salary Min", key: "salaryMin", width: 14 },
-      { header: "Salary Max", key: "salaryMax", width: 14 },
-      { header: "Req Sale Value", key: "reqSaleValue", width: 16 },
+      { header: "Salary Max", key: "salaryMax", width: 14 }, // NEW
+      { header: "Req. Sale Value", key: "reqSaleValue", width: 16 },
       { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
       { header: "Sale Basis", key: "saleValueBasis", width: 18 },
     ];
 
-    const canonicalCols = canonicalStageKeys.map((key) => ({
-      header: key
-        .split("_")
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join(" "),
-      key: `cs_${key}`,
-      width: 14,
-    }));
+    // Achieved columns — one per terminal stage (dynamic from DB) + totals
+    // achievedValue is universal (derived from computedSaleValue which is universal)
+    const achievedCols = [
+      ...terminalStages.map((s) => ({
+        header: `Achieved: ${s.label}`,
+        key: `term_${s.id}`,
+        width: 18,
+      })),
+      { header: "Achieved (Total Headcount)", key: "terminalCount", width: 22 },
+      { header: "Achieved %", key: "achievedPct", width: 14 },
+      { header: "Achieved Value", key: "achievedValue", width: 20 },
+    ];
 
-    sheet1.columns = [...fixedCols, ...saleValueCols, ...canonicalCols];
+    sheet1.columns = [...fixedCols, ...saleValueCols, ...achievedCols];
 
     // Group header row (row 1)
-    const basicSpan = fixedCols.length;
-    const saleSpan = saleValueCols.length;
-    const stageSpan = canonicalCols.length;
+    const nFixed = fixedCols.length;
+    const nSale = saleValueCols.length;
+    const nAchieved = achievedCols.length;
 
     const groupRow = sheet1.getRow(1);
     groupRow.getCell(1).value = "Requirement Details";
-    groupRow.getCell(basicSpan + 1).value = "Sale Value Computation";
-    groupRow.getCell(basicSpan + saleSpan + 1).value =
-      stageSpan > 0 ? "Pipeline Stages" : "";
+    groupRow.getCell(nFixed + 1).value = "Sale Value (Creator / Manager Only)";
+    groupRow.getCell(nFixed + nSale + 1).value = "Achieved (Terminal Stages)";
 
-    sheet1.mergeCells(1, 1, 1, basicSpan);
-    sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + saleSpan);
-    if (stageSpan > 0) {
-      sheet1.mergeCells(
-        1,
-        basicSpan + saleSpan + 1,
-        1,
-        basicSpan + saleSpan + stageSpan
-      );
-    }
-    applyHeaderRow(groupRow);
-    groupRow.getCell(basicSpan + 1).fill = saleHeaderFill;
-    groupRow.getCell(basicSpan + saleSpan + 1).fill = subHeaderFill;
+    sheet1.mergeCells(1, 1, 1, nFixed);
+    sheet1.mergeCells(1, nFixed + 1, 1, nFixed + nSale);
+    if (nAchieved > 0)
+      sheet1.mergeCells(1, nFixed + nSale + 1, 1, nFixed + nSale + nAchieved);
 
-    // Column headers (row 2)
+    applyHeader(groupRow);
+    groupRow.getCell(nFixed + 1).fill = FILLS.darkGreen;
+    groupRow.getCell(nFixed + nSale + 1).fill = FILLS.purple;
+
+    // Column header row (row 2)
     const colHeaderRow = sheet1.getRow(2);
-    [...fixedCols, ...saleValueCols, ...canonicalCols].forEach((col, i) => {
+    [...fixedCols, ...saleValueCols, ...achievedCols].forEach((col, i) => {
       colHeaderRow.getCell(i + 1).value = col.header;
     });
-    applyHeaderRow(colHeaderRow, subHeaderFill);
+    applyHeader(colHeaderRow, FILLS.midBlue);
 
-    // Data rows
+    // ── Data rows ─────────────────────────────────────────────────────────────
     const now = Date.now();
     let exportTotalSaleValue = 0;
+    let exportTotalAchieved = 0;
     let exportOmittedCount = 0;
 
-    for (const req of requirements) {
-      const totalCandidates = Object.values(
-        canonicalByReq[req.id] ?? {}
-      ).reduce((s, n) => s + n, 0);
+    for (const r of requirements) {
       const daysOpen = Math.floor(
-        (now - new Date(req.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86400000
       );
 
-      const band = req.band
+      // RBAC check for this row
+      const canSeeSale =
+        isSuperAdmin ||
+        userId === r.createdBy.id ||
+        (managerSetByCreator[r.createdBy.id]?.has(userId) ?? false);
+
+      // Compute sale value always
+      const band = r.band
         ? {
-            value: req.band.value ? Number(req.band.value) : null,
-            rangeFrom: req.band.rangeFrom ? Number(req.band.rangeFrom) : null,
-            rangeTo: req.band.rangeTo ? Number(req.band.rangeTo) : null,
+            value: r.band.value != null ? Number(r.band.value) : null,
+            rangeFrom:
+              r.band.rangeFrom != null ? Number(r.band.rangeFrom) : null,
+            rangeTo: r.band.rangeTo != null ? Number(r.band.rangeTo) : null,
           }
         : null;
-
-      const clientPct = req.client?.percentageValue
-        ? Number(req.client.percentageValue)
-        : null;
+      const clientPct =
+        r.client?.percentageValue != null
+          ? Number(r.client.percentageValue)
+          : null;
 
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
-        saleValue: req.saleValue,
-        totalOpenings: req.totalOpenings,
-        salaryMin: req.salaryMin,
-        salaryMax: req.salaryMax,
-        band: band, // band.value × openings if present
-        client: { percentageValue: clientPct }, // avg salary × pct × openings if no band
+        saleValue: r.saleValue,
+        totalOpenings: r.totalOpenings,
+        salaryMin: r.salaryMin,
+        band: band ? { value: band.value } : null,
+        client: { percentageValue: clientPct },
       });
 
-      if (computedSaleValue != null) {
-        exportTotalSaleValue += computedSaleValue;
-      } else {
-        exportOmittedCount++;
+      if (computedSaleValue != null) exportTotalSaleValue += computedSaleValue;
+      else exportOmittedCount++;
+
+      // Stage counts for this requirement
+      const reqStageCounts = countsByReq[r.id] ?? {};
+
+      // Total funnel across all stages
+      const totalFunnel = Object.values(reqStageCounts).reduce(
+        (s, n) => s + n,
+        0
+      );
+
+      // Terminal counts per stage — filter to stages relevant to this req's service line
+      const termCountPerStage: Record<string, number> = {};
+      let terminalTotal = 0;
+      for (const ts of terminalStages) {
+        // Stage applies to this req if: stage has no serviceLineId, or matches req's serviceLineId
+        if (ts.serviceLineId && ts.serviceLineId !== r.serviceLineId) {
+          termCountPerStage[ts.id] = 0;
+          continue;
+        }
+        const cnt = reqStageCounts[ts.id] ?? 0;
+        termCountPerStage[ts.id] = cnt;
+        terminalTotal += cnt;
       }
 
-      const bandRange =
-        band?.rangeFrom != null && band?.rangeTo != null
-          ? `${band.rangeFrom} – ${band.rangeTo}`
-          : "";
+      const achievedPct =
+        r.totalOpenings > 0
+          ? Math.min(100, (terminalTotal / r.totalOpenings) * 100)
+          : 0;
+      // achievedValue: universal (computed from computedSaleValue which is universal)
+      const achievedValue =
+        computedSaleValue != null && r.totalOpenings > 0
+          ? (terminalTotal / r.totalOpenings) * computedSaleValue
+          : null;
+      if (achievedValue != null) exportTotalAchieved += achievedValue;
 
+      // Build row data
       const rowData: Record<string, any> = {
-        reqCode: req.reqCode,
-        title: req.title,
-        status: req.status,
-        priority: req.priority,
-        client: req.client?.name ?? "",
-        agreementType: req.client?.agreementType ?? "",
-        bu: req.businessUnit?.name ?? "",
-        sl: req.serviceLine?.name ?? "",
-        city: req.city ?? "",
-        country: req.country ?? "",
-        jobType: req.jobType,
-        remote: req.remoteType,
-        openings: req.totalOpenings,
-        createdBy: `${req.createdBy.firstName} ${req.createdBy.lastName}`,
-        createdAt: new Date(req.createdAt),
+        // Fixed
+        reqCode: r.reqCode,
+        title: r.title,
+        status: r.status,
+        priority: r.priority,
+        client: r.client?.name ?? "",
+        spoc: r.clientSpoc
+          ? `${r.clientSpoc.firstName} ${r.clientSpoc.lastName}`
+          : "",
+        agreementType: r.client?.agreementType ?? "",
+        bu: r.businessUnit?.name ?? "",
+        sl: r.serviceLine?.name ?? "",
+        city: r.city ?? "",
+        country: r.country ?? "",
+        jobType: r.jobType,
+        remote: r.remoteType,
+        openings: r.totalOpenings,
+        createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
+        createdAt: new Date(r.createdAt),
         daysOpen,
-        respondBy: req.respondBy ? new Date(req.respondBy) : "",
+        respondBy: r.respondBy ? new Date(r.respondBy) : "",
         breached:
-          req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
-        total: totalCandidates,
+          r.isRespondByBreached || r.isTurnaroundBreached ? "Yes" : "No",
+        totalFunnel,
 
-        // Sale value section
-        bandCode: req.band?.code ?? "",
-        bandName: req.band?.name ?? "",
-        bandRange,
-        bandValue: band?.value ?? "",
-        clientPct: clientPct ?? "",
-        salaryMin: req.salaryMin ?? "",
-        salaryMax: req.salaryMax ?? "",
-        reqSaleValue: req.saleValue ?? "",
-        computedSaleValue: computedSaleValue ?? "",
-        saleValueBasis: saleValueBasis ?? "N/A",
+        // Sale value — gated
+        bandCode: canSeeSale ? r.band?.code ?? "" : "—",
+        bandName: canSeeSale ? r.band?.name ?? "" : "—",
+        bandRange:
+          canSeeSale && band?.rangeFrom != null && band?.rangeTo != null
+            ? `${band.rangeFrom} – ${band.rangeTo}`
+            : canSeeSale
+            ? ""
+            : "—",
+        bandValue: canSeeSale ? band?.value ?? "" : "—",
+        clientPct: canSeeSale ? clientPct ?? "" : "—",
+        salaryMin: canSeeSale ? r.salaryMin ?? "" : "—",
+        salaryMax: canSeeSale ? r.salaryMax ?? "" : "—", // NEW
+        reqSaleValue: canSeeSale ? r.saleValue ?? "" : "—",
+        computedSaleValue: computedSaleValue ?? "", // EVERYONE sees this
+        saleValueBasis: canSeeSale ? saleValueBasis ?? "N/A" : "—",
+
+        // Achieved — everyone
+        ...Object.fromEntries(
+          terminalStages.map((ts) => [
+            `term_${ts.id}`,
+            termCountPerStage[ts.id] ?? 0,
+          ])
+        ),
+        terminalCount: terminalTotal,
+        achievedPct: Math.round(achievedPct * 10) / 10,
+        achievedValue: achievedValue ?? "",
       };
-
-      for (const key of canonicalStageKeys) {
-        rowData[`cs_${key}`] = canonicalByReq[req.id]?.[key] ?? 0;
-      }
 
       const dataRow = sheet1.addRow(rowData);
       dataRow.height = 20;
 
       // Status colour
-      const statusColors: Record<string, string> = {
-        ACTIVE: "FF00875A",
-        CLOSED: "FFDE350B",
-        ON_HOLD: "FFFF991F",
-        PENDING_APPROVAL: "FF0052CC",
-        DRAFT: "FF6B778C",
-        CANCELLED: "FF5E6C84",
-      };
-      const statusColor = statusColors[req.status];
-      if (statusColor) {
-        dataRow.getCell("status").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: statusColor },
-        };
+      const sCls = STATUS_COLORS[r.status];
+      if (sCls) {
+        dataRow.getCell("status").fill = mkFill(sCls);
         dataRow.getCell("status").font = {
           color: { argb: "FFFFFFFF" },
           bold: true,
         };
       }
 
-      // Breach colour
-      if (req.isRespondByBreached || req.isTurnaroundBreached) {
-        dataRow.getCell("breached").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFDE350B" },
-        };
+      // Breach highlight
+      if (r.isRespondByBreached || r.isTurnaroundBreached) {
+        dataRow.getCell("breached").fill = mkFill("FFDE350B");
         dataRow.getCell("breached").font = {
           color: { argb: "FFFFFFFF" },
           bold: true,
         };
       }
 
-      // Highlight rows with no computable sale value
-      if (computedSaleValue == null) {
-        dataRow.getCell("computedSaleValue").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFFCE4D6" },
-        };
-        dataRow.getCell("saleValueBasis").font = {
-          color: { argb: "FFDE350B" },
-        };
-      } else {
-        // Green tint for computed value cell
-        dataRow.getCell("computedSaleValue").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFE2EFDA" },
-        };
+      // Sale value cell — green if computed, red-tint if missing
+      if (computedSaleValue != null) {
+        dataRow.getCell("computedSaleValue").fill = FILLS.lightGreen;
         dataRow.getCell("computedSaleValue").font = { bold: true };
         dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+      } else {
+        dataRow.getCell("computedSaleValue").fill = FILLS.lightRed;
+        dataRow.getCell("computedSaleValue").font = {
+          color: { argb: "FFDE350B" },
+        };
       }
 
-      // Date cells
-      dataRow.getCell("createdAt").value = new Date(req.createdAt);
-      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy";
-      if (req.respondBy) {
-        dataRow.getCell("respondBy").value = new Date(req.respondBy);
-        dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
+      // Achieved value — purple tint
+      if (achievedValue != null && achievedValue > 0) {
+        dataRow.getCell("achievedValue").fill = FILLS.lightPurple;
+        dataRow.getCell("achievedValue").font = { bold: true };
+        dataRow.getCell("achievedValue").numFmt = "#,##0.00";
       }
+
+      // Achieved % — colour scale
+      if (achievedPct >= 100) {
+        dataRow.getCell("achievedPct").fill = mkFill("FF00875A");
+        dataRow.getCell("achievedPct").font = {
+          color: { argb: "FFFFFFFF" },
+          bold: true,
+        };
+      } else if (achievedPct >= 50) {
+        dataRow.getCell("achievedPct").fill = mkFill("FFFFE082");
+      }
+
+      // Grey out gated cells for non-creator/non-manager
+      if (!canSeeSale) {
+        [
+          "bandCode",
+          "bandName",
+          "bandRange",
+          "bandValue",
+          "clientPct",
+          "salaryMin",
+          "salaryMax",
+          "reqSaleValue",
+          "saleValueBasis",
+        ].forEach((k) => {
+          dataRow.getCell(k).font = {
+            color: { argb: "FFBDBDBD" },
+            italic: true,
+          };
+        });
+      }
+
+      // Date formatting
+      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy";
+      if (r.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
     }
 
-    // Summary row at the bottom
+    // ── Summary row ───────────────────────────────────────────────────────────
     const summaryRow = sheet1.addRow({});
-    summaryRow.height = 22;
-    const lastDataCol =
-      fixedCols.length + saleValueCols.length + canonicalCols.length;
-    // "Total Computed Sale Value" label in computedSaleValue column
-    const computedSaleValueColIdx =
-      fixedCols.length +
-      saleValueCols.findIndex((c) => c.key === "computedSaleValue") +
-      1;
-    const saleValueBasisColIdx =
-      fixedCols.length +
-      saleValueCols.findIndex((c) => c.key === "saleValueBasis") +
-      1;
+    summaryRow.height = 24;
+    const svColIdx =
+      [...fixedCols, ...saleValueCols].findIndex(
+        (c) => c.key === "computedSaleValue"
+      ) + 1;
+    const achValColIdx = nFixed + nSale + terminalStages.length + 3; // after terminal stage cols + count + pct
 
-    summaryRow.getCell(computedSaleValueColIdx - 1).value = `Total (${
+    summaryRow.getCell(svColIdx - 1).value = `Total (${
       requirements.length - exportOmittedCount
-    } included, ${exportOmittedCount} omitted)`;
-    summaryRow.getCell(computedSaleValueColIdx - 1).font = {
+    } computed, ${exportOmittedCount} no data)`;
+    summaryRow.getCell(svColIdx - 1).font = {
       bold: true,
       italic: true,
       size: 10,
+      color: { argb: "FF1E3A5F" },
     };
-    summaryRow.getCell(computedSaleValueColIdx).value = exportTotalSaleValue;
-    summaryRow.getCell(computedSaleValueColIdx).numFmt = "#,##0.00";
-    summaryRow.getCell(computedSaleValueColIdx).font = {
+
+    summaryRow.getCell(svColIdx).value = exportTotalSaleValue;
+    summaryRow.getCell(svColIdx).numFmt = "#,##0.00";
+    summaryRow.getCell(svColIdx).font = {
       bold: true,
       color: { argb: "FF1A5C2A" },
     };
-    summaryRow.getCell(computedSaleValueColIdx).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFE2EFDA" },
+    summaryRow.getCell(svColIdx).fill = FILLS.lightGreen;
+
+    summaryRow.getCell(achValColIdx).value = exportTotalAchieved;
+    summaryRow.getCell(achValColIdx).numFmt = "#,##0.00";
+    summaryRow.getCell(achValColIdx).font = {
+      bold: true,
+      color: { argb: "FF4A148C" },
     };
+    summaryRow.getCell(achValColIdx).fill = FILLS.lightPurple;
 
     sheet1.autoFilter = {
       from: { row: 2, column: 1 },
-      to: { row: 2, column: lastDataCol },
+      to: { row: 2, column: nFixed + nSale + nAchieved },
     };
 
-    // ── Sheet 2: Candidates (unchanged logic) ─────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // SHEET 2 — Candidates (one row per pipeline entry)
+    // ─────────────────────────────────────────────────────────────────────────
     const sheet2 = workbook.addWorksheet("Candidates", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -5163,6 +5662,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
     sheet2.columns = [
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Requirement Title", key: "reqTitle", width: 36 },
+      { header: "Service Line", key: "reqSL", width: 18 },
       { header: "Candidate Name", key: "name", width: 26 },
       { header: "Email", key: "email", width: 30 },
       { header: "Phone", key: "phone", width: 16 },
@@ -5170,14 +5670,13 @@ export const exportRequirements = async (req: Request, res: Response) => {
       { header: "Current Company", key: "company", width: 24 },
       { header: "Exp (yrs)", key: "exp", width: 10 },
       { header: "Top Skills", key: "skills", width: 40 },
-      { header: "Current Stage", key: "stage", width: 20 },
-      { header: "Canonical Stage", key: "canonical", width: 20 },
+      { header: "Current Stage", key: "stage", width: 22 },
+      { header: "Is Terminal?", key: "isTerminal", width: 14 }, // NEW
       { header: "Recruiter", key: "recruiter", width: 22 },
       { header: "Added On", key: "addedOn", width: 16, numFmt: "dd-mmm-yyyy" },
       { header: "Days in Current Stage", key: "stageAge", width: 20 },
       { header: "Current Stage Aging", key: "stageAgingLabel", width: 18 },
       { header: "Total Pipeline Days", key: "totalDays", width: 18 },
-      { header: "Total Pipeline Aging", key: "totalAgingLabel", width: 18 },
       { header: "Rejected?", key: "rejected", width: 12 },
       { header: "Withdrawn?", key: "withdrawn", width: 12 },
       { header: "On Hold?", key: "onHold", width: 12 },
@@ -5196,12 +5695,11 @@ export const exportRequirements = async (req: Request, res: Response) => {
       },
     ];
 
-    const s2Header = sheet2.getRow(1);
-    applyHeaderRow(s2Header);
+    applyHeader(sheet2.getRow(1));
 
     for (const p of pipelines) {
-      const req = reqLookup[p.requirementId];
-      if (!req) continue;
+      const r = reqLookup[p.requirementId];
+      if (!r) continue;
 
       const stageAgeMins = Math.floor(
         (now - new Date(p.stageUpdatedAt).getTime()) / 60000
@@ -5213,8 +5711,9 @@ export const exportRequirements = async (req: Request, res: Response) => {
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
-        reqCode: req.reqCode,
-        reqTitle: req.title,
+        reqCode: r.reqCode,
+        reqTitle: r.title,
+        reqSL: r.serviceLine?.name ?? "",
         name: p.snapshot?.fullName ?? "",
         email: p.snapshot?.email ?? "",
         phone: p.snapshot?.phone ?? "",
@@ -5223,7 +5722,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         exp: p.snapshot?.totalExpYears ?? "",
         skills: (p.snapshot?.topSkills ?? []).join(", "),
         stage: p.currentStage?.label ?? "",
-        canonical: p.currentStage?.canonicalStage ?? "",
+        isTerminal: p.currentStage?.isTerminal ? "Yes" : "No",
         recruiter: p.recruiter
           ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
           : "",
@@ -5231,7 +5730,6 @@ export const exportRequirements = async (req: Request, res: Response) => {
         stageAge: Math.floor(stageAgeMins / 1440),
         stageAgingLabel: formatAging(stageAgeMins),
         totalDays: Math.floor(totalPipelineMins / 1440),
-        totalAgingLabel: formatAging(totalPipelineMins),
         rejected: p.isRejected ? "Yes" : "No",
         withdrawn: p.isWithdrawn ? "Yes" : "No",
         onHold: p.isOnHold ? "Yes" : "No",
@@ -5246,9 +5744,20 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (p.actualJoiningDate)
         dataRow.getCell("joiningDate").numFmt = "dd-mmm-yyyy";
 
+      // Highlight terminal (achieved) rows in green
+      if (p.currentStage?.isTerminal) {
+        dataRow.getCell("stage").fill = FILLS.lightGreen;
+        dataRow.getCell("isTerminal").fill = FILLS.lightGreen;
+        dataRow.getCell("isTerminal").font = {
+          bold: true,
+          color: { argb: "FF1A5C2A" },
+        };
+      }
+
+      // Grey out rejected/withdrawn
       if (p.isRejected || p.isWithdrawn) {
         dataRow.eachCell((cell) => {
-          cell.font = { ...cell.font, color: { argb: "FF7A869A" } };
+          cell.font = { ...cell.font, color: { argb: "FF9E9E9E" } };
         });
       }
     }
@@ -5258,7 +5767,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       to: { row: 1, column: sheet2.columnCount },
     };
 
-    // ── Stream ────────────────────────────────────────────────────────────
+    // ── Stream ────────────────────────────────────────────────────────────────
     const dateStr = new Date().toISOString().split("T")[0];
     const filename = `requirements-export-${dateStr}.xlsx`;
     res.setHeader(
@@ -5275,902 +5784,3 @@ export const exportRequirements = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export requirements" });
   }
 };
-// export const getRequirements = async (req: Request, res: Response) => {
-//   try {
-//     const {
-//       search,
-//       status,
-//       buId,
-//       serviceLineId,
-//       clientId,
-//       priority,
-//       // NEW: which creators to show requirements for (default OWN)
-//       createdByScope = "OWN",
-//       // NEW: filter by a specific creator userId (superAdmin or manager use case)
-//       createdById,
-//       closedAt,
-//       closedById,
-//       dateFrom,
-//       dateTo,
-//       page = "1",
-//       limit = "25",
-//       sortBy = "createdAt",
-//       sortDir = "desc",
-//     } = req.query as Record<string, string>;
-
-//     const userId = req.user!.id;
-//     const isSuperAdmin = req.user!.isSuperAdmin;
-//     const canViewScope: PermissionScope = (req.modulePermission?.canViewScope ??
-//       PermissionScope.OWN) as PermissionScope;
-
-//     const skip = (parseInt(page) - 1) * parseInt(limit);
-//     const take = Math.min(parseInt(limit), 100);
-
-//     // ── Base scope: requirements accessible to this user (existing service)
-//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-//     const where: any = { ...scopeWhere, deletedAt: null };
-
-//     // ── Creator scope filter (NEW default behaviour)
-//     // If a specific createdById is passed, use that directly.
-//     // Otherwise, compute the set of userIds based on createdByScope.
-//     if (createdById) {
-//       // Direct filter — manager looking at a specific person's requirements
-//       where.createdById = createdById;
-//     } else {
-//       const creatorIds = await getCreatorScopeUserIds(
-//         userId,
-//         isSuperAdmin,
-//         createdByScope
-//       );
-//       if (creatorIds !== null) {
-//         // Apply creator filter — only requirements made by these users
-//         where.createdById = { in: creatorIds };
-//       }
-//       // null means no filter (ALL / superAdmin)
-//     }
-
-//     if (status) where.status = status;
-//     if (priority) where.priority = priority;
-//     if (clientId) where.clientId = clientId;
-//     if (serviceLineId) where.serviceLineId = serviceLineId;
-//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-//     if (dateFrom || dateTo) {
-//       where.createdAt = {
-//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-//         ...(dateTo
-//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
-//           : {}),
-//       };
-//     }
-
-//     if (search) {
-//       where.AND = [
-//         ...(where.AND ?? []),
-//         {
-//           OR: [
-//             { title: { contains: search, mode: "insensitive" } },
-//             { reqCode: { contains: search, mode: "insensitive" } },
-//             { primarySkills: { has: search } },
-//             { keySkills: { has: search } },
-//           ],
-//         },
-//       ];
-//     }
-
-//     const SORTABLE = [
-//       "createdAt",
-//       "updatedAt",
-//       "respondBy",
-//       "priority",
-//       "status",
-//     ];
-//     const orderBy = SORTABLE.includes(sortBy)
-//       ? { [sortBy]: sortDir as "asc" | "desc" }
-//       : { createdAt: "desc" as const };
-
-//     const [total, requirements] = await Promise.all([
-//       prisma.requirement.count({ where }),
-//       prisma.requirement.findMany({
-//         where,
-//         select: {
-//           id: true,
-//           reqCode: true,
-//           title: true,
-//           status: true,
-//           priority: true,
-//           jobType: true,
-//           remoteType: true,
-//           totalOpenings: true,
-//           city: true,
-//           state: true,
-//           country: true,
-//           primarySkills: true,
-//           keySkills: true,
-//           jobOpenFor: true,
-//           targetDate: true,
-//           closedAt: true,
-//           closedById: true,
-//           closureReason: true,
-//           jdParseStatus: true,
-//           respondBy: true,
-//           isRespondByBreached: true,
-//           isTurnaroundBreached: true,
-//           createdAt: true,
-//           serviceLineId: true,
-//           client: {
-//             select: {
-//               id: true,
-//               name: true,
-//               agreementType: true,
-//               percentageValue: true,
-//             },
-//           },
-
-//           band: {
-//             select: {
-//               id: true,
-//               code: true,
-//               name: true,
-//               rangeFrom: true,
-//               rangeTo: true,
-//               value: true,
-//             },
-//           },
-//           saleValue: true,
-//           bandId: true,
-//           businessUnit: { select: { id: true, name: true } },
-//           serviceLine: { select: { id: true, name: true } },
-//           clientSpoc: {
-//             select: {
-//               handler: {
-//                 select: { id: true, firstName: true, lastName: true },
-//               },
-//             },
-//           },
-//           createdBy: { select: { id: true, firstName: true, lastName: true } },
-
-//           assignments: {
-//             where: { status: "ACTIVE" },
-//             select: {
-//               id: true,
-//               depth: true,
-//               allocatedOpenings: true,
-//               deadline: true,
-//               assignedTo: {
-//                 select: { id: true, firstName: true, lastName: true },
-//               },
-//             },
-//             orderBy: { depth: "asc" },
-//           },
-
-//           _count: { select: { pipelines: true, assignments: true } },
-//         },
-//         orderBy,
-//         skip,
-//         take,
-//       }),
-//     ]);
-
-//     if (!requirements.length) {
-//       return res.json({
-//         success: true,
-//         data: [],
-//         meta: {
-//           total,
-//           page: parseInt(page),
-//           limit: take,
-//           pages: Math.ceil(total / take),
-//         },
-//         permissions: {
-//           canAdd: req.modulePermission.canAdd,
-//           canEdit: req.modulePermission.canEdit,
-//           canDelete: req.modulePermission.canDelete,
-//         },
-//       });
-//     }
-
-//     // ── Pipeline stage counts (existing two-bucket logic, unchanged)
-//     const reqIds = requirements.map((r) => r.id);
-//     const createdByMeIds = new Set(
-//       requirements.filter((r) => r.createdBy.id === userId).map((r) => r.id)
-//     );
-//     const assignedOnlyIds = reqIds.filter((id) => !createdByMeIds.has(id));
-
-//     const visibleRecruiterIds = await getVisibleRecruiterIds(
-//       userId,
-//       isSuperAdmin,
-//       canViewScope
-//     );
-
-//     const allStages = await prisma.pipelineStage.findMany({
-//       where: { isActive: true },
-//       select: {
-//         id: true,
-//         code: true,
-//         label: true,
-//         order: true,
-//         serviceLineId: true,
-//         canonicalStage: true,
-//       },
-//       orderBy: { order: "asc" },
-//     });
-//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-//     const [fullCounts, scopedCounts] = await Promise.all([
-//       createdByMeIds.size > 0
-//         ? prisma.requirementCandidatePipeline.groupBy({
-//             by: ["requirementId", "currentStageId"],
-//             where: { requirementId: { in: [...createdByMeIds] } },
-//             _count: { id: true },
-//           })
-//         : Promise.resolve([]),
-//       assignedOnlyIds.length > 0
-//         ? prisma.requirementCandidatePipeline.groupBy({
-//             by: ["requirementId", "currentStageId"],
-//             where: {
-//               requirementId: { in: assignedOnlyIds },
-//               ...(visibleRecruiterIds !== null
-//                 ? { recruiterId: { in: visibleRecruiterIds } }
-//                 : {}),
-//             },
-//             _count: { id: true },
-//           })
-//         : Promise.resolve([]),
-//     ]);
-
-//     type StageCount = {
-//       stageId: string;
-//       code: string;
-//       label: string;
-//       order: number;
-//       canonicalStage: string | null;
-//       count: number;
-//     };
-
-//     const countsByReq: Record<string, StageCount[]> = {};
-
-//     const pushToCountsByReq = (rows: any[]) => {
-//       for (const sc of rows) {
-//         const stage = stageById[sc.currentStageId];
-//         if (!stage) continue;
-//         if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = [];
-//         countsByReq[sc.requirementId].push({
-//           stageId: sc.currentStageId,
-//           code: stage.code,
-//           label: stage.label,
-//           order: stage.order,
-//           canonicalStage: stage.canonicalStage ?? null,
-//           count: sc._count.id,
-//         });
-//       }
-//     };
-
-//     pushToCountsByReq(fullCounts as any[]);
-//     pushToCountsByReq(scopedCounts as any[]);
-
-//     for (const key of Object.keys(countsByReq)) {
-//       countsByReq[key].sort((a, b) => a.order - b.order);
-//     }
-
-//     // ── Aggregate canonical stage counts per requirement.
-//     // All canonical stage keys from DB are included (even zeros) so the
-//     // frontend table always has consistent columns regardless of candidate counts.
-//     const allCanonicalKeys: string[] = await prisma.pipelineStage
-//       .findMany({
-//         where: { isActive: true, canonicalStage: { not: null } },
-//         select: { canonicalStage: true },
-//         distinct: ["canonicalStage"],
-//         orderBy: { order: "asc" },
-//       })
-//       .then((rows) =>
-//         rows
-//           .map((r) => r.canonicalStage!)
-//           .filter((v, i, a) => a.indexOf(v) === i)
-//       );
-
-//     const canonicalCountsByReq: Record<string, Record<string, number>> = {};
-
-//     for (const [reqId, stageCounts] of Object.entries(countsByReq)) {
-//       // Start with all keys at zero — never hardcoded, pulled from DB
-//       const canonical: Record<string, number> = Object.fromEntries(
-//         allCanonicalKeys.map((k) => [k, 0])
-//       );
-//       for (const sc of stageCounts) {
-//         if (!sc.canonicalStage) continue;
-//         canonical[sc.canonicalStage] =
-//           (canonical[sc.canonicalStage] ?? 0) + sc.count;
-//       }
-//       canonicalCountsByReq[reqId] = canonical;
-//     }
-
-//     // Requirements with zero candidates also get full zero-filled canonical map
-//     for (const r of requirements) {
-//       if (!canonicalCountsByReq[r.id]) {
-//         canonicalCountsByReq[r.id] = Object.fromEntries(
-//           allCanonicalKeys.map((k) => [k, 0])
-//         );
-//       }
-//     }
-
-//     const enrichedRequirements = requirements.map((r) => ({
-//       ...r,
-//       pipelineStageCounts: countsByReq[r.id] ?? [],
-//       // Canonical stage rollup — dynamic, never hardcoded
-//       canonicalStageCounts: canonicalCountsByReq[r.id] ?? {},
-//     }));
-
-//     return res.json({
-//       success: true,
-//       data: enrichedRequirements,
-//       meta: {
-//         total,
-//         page: parseInt(page),
-//         limit: take,
-//         pages: Math.ceil(total / take),
-//       },
-//       // Echo back the active scope so the frontend scope switcher reflects
-//       // the current state. isSuperAdmin is exposed separately.
-//       scope: {
-//         createdByScope,
-//         canViewScope,
-//         isSuperAdmin,
-//       },
-//       permissions: {
-//         canAdd: req.modulePermission.canAdd,
-//         canEdit: req.modulePermission.canEdit,
-//         canDelete: req.modulePermission.canDelete,
-//       },
-//     });
-//   } catch (err) {
-//     console.error("getRequirements:", err);
-//     return res
-//       .status(500)
-//       .json({ success: false, message: "Failed to fetch requirements" });
-//   }
-// };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /requirements/export
-//
-// Downloads an Excel workbook (.xlsx) with two sheets:
-//
-// Sheet 1 — Requirements summary
-//   Columns: Req Code | Title | Status | Priority | Client | BU | Service Line |
-//            City | Country | Job Type | Remote | Total Openings | Created By |
-//            Created At | Days Open | Respond By | Breached? |
-//            + one column per canonical stage (from DB, never hardcoded)
-//
-// Sheet 2 — Candidates
-//   Columns: Req Code | Req Title | Candidate Name | Email | Phone |
-//            Current Title | Current Company | Exp (yrs) | Top Skills |
-//            Current Stage | Canonical Stage | Recruiter |
-//            Added On | Days in Current Stage | Total Pipeline Days |
-//            Is Rejected | Is Withdrawn | Is On Hold |
-//            Submitted At | Offer Status | Actual Joining Date
-//
-// Respects the same createdByScope + filters as getRequirements.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// export const exportRequirements = async (req: Request, res: Response) => {
-//   try {
-//     const {
-//       search,
-//       status,
-//       buId,
-//       serviceLineId,
-//       clientId,
-//       priority,
-//       createdByScope = "OWN",
-//       createdById,
-//       // createdBy,
-//       dateFrom,
-//       dateTo,
-//     } = req.query as Record<string, string>;
-
-//     // const createdById = createdBy || null;
-
-//     const userId = req.user!.id;
-//     const isSuperAdmin = req.user!.isSuperAdmin;
-
-//     // ── Build same where clause as getRequirements (no pagination)
-//     const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
-//     const where: any = { ...scopeWhere, deletedAt: null };
-
-//     if (createdById) {
-//       where.createdById = createdById;
-//     } else {
-//       const creatorIds = await getCreatorScopeUserIds(
-//         userId,
-//         isSuperAdmin,
-//         createdByScope ?? "OWN"
-//       );
-//       if (creatorIds !== null) {
-//         where.createdById = { in: creatorIds };
-//       }
-//     }
-
-//     if (status) where.status = status;
-//     if (priority) where.priority = priority;
-//     if (clientId) where.clientId = clientId;
-//     if (createdById) where.createdById = createdById;
-//     if (serviceLineId) where.serviceLineId = serviceLineId;
-//     if (buId) where.businessUnit = { ancestorIds: { has: buId } };
-//     // ✅ Date range filter on createdAt
-//     if (dateFrom || dateTo) {
-//       where.createdAt = {
-//         ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
-//         ...(dateTo
-//           ? { lte: new Date(new Date(dateTo).setHours(23, 59, 59, 999)) }
-//           : {}),
-//       };
-//     }
-//     if (search) {
-//       where.AND = [
-//         ...(where.AND ?? []),
-//         {
-//           OR: [
-//             { title: { contains: search, mode: "insensitive" } },
-//             { reqCode: { contains: search, mode: "insensitive" } },
-//           ],
-//         },
-//       ];
-//     }
-//     console.log("where", where);
-//     // ── Fetch requirements (no limit for export — capped at 1000 rows)
-//     const requirements = await prisma.requirement.findMany({
-//       where,
-//       select: {
-//         id: true,
-//         reqCode: true,
-//         title: true,
-//         status: true,
-//         priority: true,
-//         jobType: true,
-//         remoteType: true,
-//         totalOpenings: true,
-//         city: true,
-//         state: true,
-//         country: true,
-//         respondBy: true,
-//         isRespondByBreached: true,
-//         isTurnaroundBreached: true,
-//         createdAt: true,
-//         client: { select: { name: true } },
-//         businessUnit: { select: { name: true } },
-//         serviceLine: { select: { id: true, name: true } },
-//         createdBy: { select: { firstName: true, lastName: true } },
-//       },
-//       orderBy: { createdAt: "desc" },
-//       take: 1000,
-//     });
-
-//     if (!requirements.length) {
-//       return res
-//         .status(404)
-//         .json({ success: false, message: "No requirements found to export" });
-//     }
-
-//     const reqIds = requirements.map((r) => r.id);
-
-//     // ── Fetch all active pipeline stages from DB — no hardcoding
-//     const allStages = await prisma.pipelineStage.findMany({
-//       where: { isActive: true },
-//       select: {
-//         id: true,
-//         code: true,
-//         label: true,
-//         order: true,
-//         canonicalStage: true,
-//         serviceLineId: true,
-//       },
-//       orderBy: { order: "asc" },
-//     });
-
-//     // ── Fetch all canonical stage keys from DB-backed enum
-//     // We read the distinct canonicalStage values that actually exist in PipelineStage
-//     // so export columns match what's configured — not what's in the Prisma enum.
-//     const canonicalStageKeys: string[] = await prisma.pipelineStage
-//       .findMany({
-//         where: { isActive: true, canonicalStage: { not: null } },
-//         select: { canonicalStage: true },
-//         distinct: ["canonicalStage"],
-//         orderBy: { order: "asc" },
-//       })
-//       .then((rows) =>
-//         rows
-//           .map((r) => r.canonicalStage!)
-//           .filter((v, i, a) => a.indexOf(v) === i)
-//       );
-
-//     // ── Fetch pipeline counts grouped by requirementId + currentStageId
-//     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
-//       by: ["requirementId", "currentStageId"],
-//       where: { requirementId: { in: reqIds } },
-//       _count: { id: true },
-//     });
-
-//     const stageById = Object.fromEntries(allStages.map((s) => [s.id, s]));
-
-//     // Build canonical count map per requirement
-//     // { reqId: { SOURCED: 3, SCREENING: 1, ... } }
-//     const canonicalByReq: Record<string, Record<string, number>> = {};
-//     for (const sc of stageCounts) {
-//       const stage = stageById[(sc as any).currentStageId];
-//       if (!stage?.canonicalStage) continue;
-//       if (!canonicalByReq[sc.requirementId])
-//         canonicalByReq[sc.requirementId] = {};
-//       canonicalByReq[sc.requirementId][stage.canonicalStage] =
-//         (canonicalByReq[sc.requirementId][stage.canonicalStage] ?? 0) +
-//         (sc as any)._count.id;
-//     }
-
-//     // ── Fetch all pipeline rows for Sheet 2
-//     const pipelines = await prisma.requirementCandidatePipeline.findMany({
-//       where: { requirementId: { in: reqIds } },
-//       select: {
-//         id: true,
-//         requirementId: true,
-//         stageUpdatedAt: true,
-//         isRejected: true,
-//         isWithdrawn: true,
-//         isOnHold: true,
-//         submittedAt: true,
-//         offerStatus: true,
-//         actualJoiningDate: true,
-//         createdAt: true,
-//         currentStage: {
-//           select: { code: true, label: true, canonicalStage: true },
-//         },
-//         recruiter: { select: { firstName: true, lastName: true } },
-//         snapshot: {
-//           select: {
-//             fullName: true,
-//             email: true,
-//             phone: true,
-//             currentTitle: true,
-//             currentCompany: true,
-//             totalExpYears: true,
-//             topSkills: true,
-//           },
-//         },
-//         stageHistory: {
-//           select: { timeInPrevStageMins: true },
-//         },
-//       },
-//       orderBy: { createdAt: "asc" },
-//     });
-
-//     // Build a lookup for requirement basic info
-//     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
-
-//     // ─────────────────────────────────────────────────────────────────────────
-//     // Build workbook
-//     // ─────────────────────────────────────────────────────────────────────────
-
-//     const workbook = new ExcelJS.Workbook();
-//     workbook.creator = "TalentOS";
-//     workbook.created = new Date();
-
-//     // ── Header style helpers
-//     const headerFill: ExcelJS.Fill = {
-//       type: "pattern",
-//       pattern: "solid",
-//       fgColor: { argb: "FF1E3A5F" },
-//     };
-//     const headerFont: Partial<ExcelJS.Font> = {
-//       color: { argb: "FFFFFFFF" },
-//       bold: true,
-//       size: 11,
-//     };
-//     const subHeaderFill: ExcelJS.Fill = {
-//       type: "pattern",
-//       pattern: "solid",
-//       fgColor: { argb: "FF2D5986" },
-//     };
-
-//     const applyHeaderRow = (
-//       row: ExcelJS.Row,
-//       fill: ExcelJS.Fill = headerFill
-//     ) => {
-//       row.eachCell((cell) => {
-//         cell.fill = fill;
-//         cell.font = headerFont;
-//         cell.alignment = {
-//           vertical: "middle",
-//           horizontal: "center",
-//           wrapText: true,
-//         };
-//         cell.border = {
-//           bottom: { style: "thin", color: { argb: "FF4A90D9" } },
-//         };
-//       });
-//       row.height = 28;
-//     };
-
-//     // ── Sheet 1: Requirements summary ──────────────────────────────────────
-
-//     const sheet1 = workbook.addWorksheet("Requirements", {
-//       views: [{ state: "frozen", ySplit: 2 }],
-//     });
-
-//     // Fixed columns — date columns get numFmt at column level so Excel shows them correctly
-//     const fixedCols = [
-//       { header: "Req Code", key: "reqCode", width: 14 },
-//       { header: "Title", key: "title", width: 40 },
-//       { header: "Status", key: "status", width: 16 },
-//       { header: "Priority", key: "priority", width: 12 },
-//       { header: "Client", key: "client", width: 24 },
-//       { header: "Business Unit", key: "bu", width: 22 },
-//       { header: "Service Line", key: "sl", width: 20 },
-//       { header: "City", key: "city", width: 16 },
-//       { header: "Country", key: "country", width: 14 },
-//       { header: "Job Type", key: "jobType", width: 16 },
-//       { header: "Remote", key: "remote", width: 12 },
-//       { header: "Total Openings", key: "openings", width: 14 },
-//       { header: "Created By", key: "createdBy", width: 22 },
-//       {
-//         header: "Created Date",
-//         key: "createdAt",
-//         width: 18,
-//         numFmt: "dd-mmm-yyyy",
-//       },
-//       { header: "Days Open", key: "daysOpen", width: 12 },
-//       {
-//         header: "Respond By",
-//         key: "respondBy",
-//         width: 18,
-//         numFmt: "dd-mmm-yyyy",
-//       },
-//       { header: "SLA Breached?", key: "breached", width: 14 },
-//       { header: "Total Candidates", key: "total", width: 16 },
-//     ];
-
-//     // Dynamic canonical stage columns — come from DB, never hardcoded.
-//     // Header uses title-case label (e.g. "Offer In Progress") not raw enum key.
-//     const canonicalCols = canonicalStageKeys.map((key) => ({
-//       header: key
-//         .split("_")
-//         .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-//         .join(" "),
-//       key: `cs_${key}`,
-//       width: 14,
-//     }));
-
-//     sheet1.columns = [...fixedCols, ...canonicalCols];
-
-//     // Group header row (row 1): "Basic Info" spans fixed cols, "Pipeline Stages" spans dynamic cols
-//     const basicSpan = fixedCols.length;
-//     const stageSpan = canonicalCols.length;
-
-//     const groupRow = sheet1.getRow(1);
-//     groupRow.getCell(1).value = "Requirement Details";
-//     groupRow.getCell(basicSpan + 1).value =
-//       stageSpan > 0 ? "Pipeline Stages (from DB)" : "";
-//     sheet1.mergeCells(1, 1, 1, basicSpan);
-//     if (stageSpan > 0) {
-//       sheet1.mergeCells(1, basicSpan + 1, 1, basicSpan + stageSpan);
-//     }
-//     applyHeaderRow(groupRow);
-//     groupRow.getCell(basicSpan + 1).fill = subHeaderFill;
-
-//     // Column header row (row 2)
-//     const colHeaderRow = sheet1.getRow(2);
-//     [...fixedCols, ...canonicalCols].forEach((col, i) => {
-//       colHeaderRow.getCell(i + 1).value = col.header;
-//     });
-//     applyHeaderRow(colHeaderRow, subHeaderFill);
-
-//     // Data rows (start at row 3)
-//     const now = Date.now();
-//     for (const req of requirements) {
-//       const totalCandidates = Object.values(
-//         canonicalByReq[req.id] ?? {}
-//       ).reduce((s, n) => s + n, 0);
-//       const daysOpen = Math.floor(
-//         (now - new Date(req.createdAt).getTime()) / 86400000
-//       );
-
-//       const rowData: Record<string, any> = {
-//         reqCode: req.reqCode,
-//         title: req.title,
-//         status: req.status,
-//         priority: req.priority,
-//         client: req.client?.name ?? "",
-//         bu: req.businessUnit?.name ?? "",
-//         sl: req.serviceLine?.name ?? "",
-//         city: req.city ?? "",
-//         country: req.country ?? "",
-//         jobType: req.jobType,
-//         remote: req.remoteType,
-//         openings: req.totalOpenings,
-//         createdBy: `${req.createdBy.firstName} ${req.createdBy.lastName}`,
-//         createdAt: new Date(req.createdAt),
-//         daysOpen,
-//         respondBy: req.respondBy ? new Date(req.respondBy) : "",
-//         breached:
-//           req.isRespondByBreached || req.isTurnaroundBreached ? "Yes" : "No",
-//         total: totalCandidates,
-//       };
-
-//       // Add canonical stage counts
-//       for (const key of canonicalStageKeys) {
-//         rowData[`cs_${key}`] = canonicalByReq[req.id]?.[key] ?? 0;
-//       }
-
-//       const dataRow = sheet1.addRow(rowData);
-//       dataRow.height = 20;
-
-//       // Colour code status cell
-//       const statusCell = dataRow.getCell("status");
-//       const statusColors: Record<string, string> = {
-//         ACTIVE: "FF00875A",
-//         CLOSED: "FFDE350B",
-//         ON_HOLD: "FFFF991F",
-//         PENDING_APPROVAL: "FF0052CC",
-//         DRAFT: "FF6B778C",
-//         CANCELLED: "FF5E6C84",
-//       };
-//       const statusColor = statusColors[req.status];
-//       if (statusColor) {
-//         statusCell.fill = {
-//           type: "pattern",
-//           pattern: "solid",
-//           fgColor: { argb: statusColor },
-//         };
-//         statusCell.font = { color: { argb: "FFFFFFFF" }, bold: true };
-//       }
-
-//       // Colour breach cell
-//       if (req.isRespondByBreached || req.isTurnaroundBreached) {
-//         dataRow.getCell("breached").fill = {
-//           type: "pattern",
-//           pattern: "solid",
-//           fgColor: { argb: "FFDE350B" },
-//         };
-//         dataRow.getCell("breached").font = {
-//           color: { argb: "FFFFFFFF" },
-//           bold: true,
-//         };
-//       }
-
-//       // Format date cells — apply at cell level too for robustness
-//       const createdAtCell = dataRow.getCell("createdAt");
-//       createdAtCell.value = new Date(req.createdAt);
-//       createdAtCell.numFmt = "dd-mmm-yyyy";
-//       if (req.respondBy) {
-//         const respondByCell = dataRow.getCell("respondBy");
-//         respondByCell.value = new Date(req.respondBy);
-//         respondByCell.numFmt = "dd-mmm-yyyy";
-//       }
-//     }
-
-//     // Auto-filter on row 2
-//     sheet1.autoFilter = {
-//       from: { row: 2, column: 1 },
-//       to: { row: 2, column: fixedCols.length + canonicalCols.length },
-//     };
-
-//     // ── Sheet 2: Candidates ────────────────────────────────────────────────
-
-//     const sheet2 = workbook.addWorksheet("Candidates", {
-//       views: [{ state: "frozen", ySplit: 1 }],
-//     });
-
-//     sheet2.columns = [
-//       { header: "Req Code", key: "reqCode", width: 14 },
-//       { header: "Requirement Title", key: "reqTitle", width: 36 },
-//       { header: "Candidate Name", key: "name", width: 26 },
-//       { header: "Email", key: "email", width: 30 },
-//       { header: "Phone", key: "phone", width: 16 },
-//       { header: "Current Title", key: "title", width: 26 },
-//       { header: "Current Company", key: "company", width: 24 },
-//       { header: "Exp (yrs)", key: "exp", width: 10 },
-//       { header: "Top Skills", key: "skills", width: 40 },
-//       { header: "Current Stage", key: "stage", width: 20 },
-//       { header: "Canonical Stage", key: "canonical", width: 20 },
-//       { header: "Recruiter", key: "recruiter", width: 22 },
-//       { header: "Added On", key: "addedOn", width: 16, numFmt: "dd-mmm-yyyy" },
-//       { header: "Days in Current Stage", key: "stageAge", width: 20 },
-//       { header: "Current Stage Aging", key: "stageAgingLabel", width: 18 },
-//       { header: "Total Pipeline Days", key: "totalDays", width: 18 },
-//       { header: "Total Pipeline Aging", key: "totalAgingLabel", width: 18 },
-//       { header: "Rejected?", key: "rejected", width: 12 },
-//       { header: "Withdrawn?", key: "withdrawn", width: 12 },
-//       { header: "On Hold?", key: "onHold", width: 12 },
-//       {
-//         header: "Submitted At",
-//         key: "submittedAt",
-//         width: 18,
-//         numFmt: "dd-mmm-yyyy hh:mm",
-//       },
-//       { header: "Offer Status", key: "offerStatus", width: 14 },
-//       {
-//         header: "Joining Date",
-//         key: "joiningDate",
-//         width: 16,
-//         numFmt: "dd-mmm-yyyy",
-//       },
-//     ];
-
-//     const s2Header = sheet2.getRow(1);
-//     applyHeaderRow(s2Header);
-
-//     for (const p of pipelines) {
-//       const req = reqLookup[p.requirementId];
-//       if (!req) continue;
-
-//       const stageAgeMins = Math.floor(
-//         (now - new Date(p.stageUpdatedAt).getTime()) / 60000
-//       );
-//       const totalPipelineMins =
-//         (p.stageHistory ?? []).reduce(
-//           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-//           0
-//         ) + stageAgeMins;
-
-//       const dataRow = sheet2.addRow({
-//         reqCode: req.reqCode,
-//         reqTitle: req.title,
-//         name: p.snapshot?.fullName ?? "",
-//         email: p.snapshot?.email ?? "",
-//         phone: p.snapshot?.phone ?? "",
-//         title: p.snapshot?.currentTitle ?? "",
-//         company: p.snapshot?.currentCompany ?? "",
-//         exp: p.snapshot?.totalExpYears ?? "",
-//         skills: (p.snapshot?.topSkills ?? []).join(", "),
-//         stage: p.currentStage?.label ?? "",
-//         canonical: p.currentStage?.canonicalStage ?? "",
-//         recruiter: p.recruiter
-//           ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
-//           : "",
-//         addedOn: new Date(p.createdAt),
-//         stageAge: Math.floor(stageAgeMins / 1440), // days
-//         stageAgingLabel: formatAging(stageAgeMins),
-//         totalDays: Math.floor(totalPipelineMins / 1440),
-//         totalAgingLabel: formatAging(totalPipelineMins),
-//         rejected: p.isRejected ? "Yes" : "No",
-//         withdrawn: p.isWithdrawn ? "Yes" : "No",
-//         onHold: p.isOnHold ? "Yes" : "No",
-//         submittedAt: p.submittedAt ? new Date(p.submittedAt) : "",
-//         offerStatus: p.offerStatus ?? "",
-//         joiningDate: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
-//       });
-
-//       dataRow.height = 18;
-//       dataRow.getCell("addedOn").numFmt = "dd-mmm-yyyy";
-//       if (p.submittedAt) dataRow.getCell("submittedAt").numFmt = "dd-mmm-yyyy";
-//       if (p.actualJoiningDate)
-//         dataRow.getCell("joiningDate").numFmt = "dd-mmm-yyyy";
-
-//       // Flag rejected/withdrawn rows
-//       if (p.isRejected || p.isWithdrawn) {
-//         dataRow.eachCell((cell) => {
-//           cell.font = { ...cell.font, color: { argb: "FF7A869A" } };
-//         });
-//       }
-//     }
-
-//     sheet2.autoFilter = {
-//       from: { row: 1, column: 1 },
-//       to: { row: 1, column: sheet2.columnCount },
-//     };
-
-//     // ── Stream to response
-//     const dateStr = new Date().toISOString().split("T")[0];
-//     const filename = `requirements-export-${dateStr}.xlsx`;
-
-//     res.setHeader(
-//       "Content-Type",
-//       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-//     );
-//     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-
-//     await workbook.xlsx.write(res);
-//     res.end();
-//   } catch (err) {
-//     console.error("exportRequirements:", err);
-//     return res
-//       .status(500)
-//       .json({ success: false, message: "Failed to export requirements" });
-//   }
-// };

@@ -1,5 +1,6 @@
 // validators/requirement.validators.ts
 import { CandidateDisposition } from "@prisma/client";
+// import { z } from "zod";
 import { z } from "zod";
 
 export const addNoteSchema = z.object({
@@ -21,67 +22,181 @@ export const updatePipelineDetailsSchema = z.object({
 export type UpdatePipelineDetailsInput = z.infer<
   typeof updatePipelineDetailsSchema
 >;
+// File: requirement.schema.ts
+// Path: src/validators/requirement.schema.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const optionalString = z.string().max(300).optional().nullable();
+const optionalNumber = z.coerce.number().min(0).optional().nullable();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CREATE SCHEMA — all required fields enforced
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const createRequirementSchema = z.object({
   title: z.string().min(1).max(300).trim(),
-  description: z.string().max(5000).optional().nullable(),
+  description: z.string().max(15000).optional().nullable(),
+
   clientSpocId: z.string().min(1, "SPOC is required"),
+
   jobType: z.enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"]),
   remoteType: z.enum(["ONSITE", "REMOTE", "HYBRID"]),
   priority: z.enum(["LOW", "MEDIUM", "HIGH"]).default("MEDIUM"),
   jobOpenFor: z.enum(["EXTERNAL", "INTERNAL", "BOTH"]).default("EXTERNAL"),
   totalOpenings: z.number().min(1).default(1),
 
-  // location — split
+  // ── Location ────────────────────────────────────────────────────────────
   city: z.string().max(100).optional().nullable(),
   state: z.string().max(100).optional().nullable(),
   country: z.string().max(100).optional().nullable(),
 
-  experienceMin: z.coerce.number().min(0).optional().nullable(),
-  experienceMax: z.coerce.number().min(0).optional().nullable(),
+  // ── Experience ──────────────────────────────────────────────────────────
+  experienceMin: optionalNumber,
+  experienceMax: optionalNumber,
 
-  salaryMin: z.coerce.number().min(0).optional().nullable(),
-  salaryMax: z.coerce.number().min(0).optional().nullable(),
+  // ── Compensation ────────────────────────────────────────────────────────
+  salaryMin: optionalNumber,
+  salaryMax: optionalNumber,
   salaryType: z
     .enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"])
     .optional()
     .nullable(),
   salaryCurrency: z.string().max(10).default("INR"),
-  bonusAmount: z.number().min(0).optional().nullable(),
+  bonusAmount: z.coerce.number().min(0).optional().nullable(),
   hideSalaryFromCandidate: z.boolean().default(false),
   showMedianSalary: z.boolean().default(false),
 
-  // skills — split
+  // ── Skills ──────────────────────────────────────────────────────────────
   primarySkills: z.array(z.string().trim()).default([]),
   keySkills: z.array(z.string().trim()).default([]),
 
+  // ── Employment details ──────────────────────────────────────────────────
   education: z.string().max(300).optional().nullable(),
   functionalArea: z.string().max(200).optional().nullable(),
   shift: z.string().max(100).optional().nullable(),
 
+  // ── Sourcing strategy ───────────────────────────────────────────────────
   targetCompanies: z.array(z.string().trim()).default([]),
   noPoachCompanies: z.array(z.string().trim()).default([]),
 
+  // ── Timeline ────────────────────────────────────────────────────────────
   startDate: z.string().datetime().optional().nullable(),
-  targetDate: z.string().datetime().optional().nullable(), // renamed from endDate
+  targetDate: z.string().datetime().optional().nullable(),
   respondBy: z.string().datetime().optional().nullable(),
   turnaroundDays: z.number().min(1).optional().nullable(),
 
+  // ── JD file ─────────────────────────────────────────────────────────────
   jdFileKey: z.string().optional().nullable(),
   jdFileName: z.string().optional().nullable(),
   jdFileType: z.string().optional().nullable(),
 
-  // JD parse metadata — set by parser, passed through from frontend
+  // ── JD parse metadata ───────────────────────────────────────────────────
   jdParsedAt: z.string().datetime().optional().nullable(),
   jdParseStatus: z
     .enum(["PARSED", "FAILED", "MANUALLY_OVERRIDDEN"])
     .optional()
     .nullable(),
   jdParsedFields: z.array(z.string()).default([]),
+
+  // ── Band & Sale Value ────────────────────────────────────────────────────
+  // bandId is validated against the client at controller level
+  bandId: z.string().optional().nullable(),
+  saleValue: z.coerce.number().min(0).optional().nullable(),
 });
 
-export const updateRequirementSchema = createRequirementSchema
-  .omit({ clientSpocId: true })
-  .partial();
+// ─────────────────────────────────────────────────────────────────────────────
+// UPDATE SCHEMA
+//
+// Identical shape to createRequirementSchema but:
+//   • Every field is optional (PATCH semantics — only send what changed)
+//   • clientSpocId is INCLUDED (not omitted) so the SPOC/client can be
+//     changed from the edit form. The controller derives clientId,
+//     serviceLineId, and businessUnitId from the new SPOC automatically.
+//   • bandId / saleValue included so compensation context is editable.
+//
+// The controller guards against null clientSpocId — the field must either
+// be omitted (no change) or a valid non-empty string.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const updateRequirementSchema = z.object({
+  title: z.string().min(1).max(300).trim().optional(),
+  description: z.string().max(5000).optional().nullable(),
+
+  // Optional SPOC change — when present it must be a non-empty UUID.
+  // The controller will re-derive clientId / serviceLineId / businessUnitId.
+  clientSpocId: z.string().min(1, "SPOC must be a valid ID").optional(),
+
+  jobType: z
+    .enum(["CONTRACT", "PERMANENT", "CONTRACT_TO_HIRE", "FREELANCE"])
+    .optional(),
+  remoteType: z.enum(["ONSITE", "REMOTE", "HYBRID"]).optional(),
+  priority: z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
+  jobOpenFor: z.enum(["EXTERNAL", "INTERNAL", "BOTH"]).optional(),
+  totalOpenings: z.number().min(1).optional(),
+
+  // ── Location ────────────────────────────────────────────────────────────
+  city: z.string().max(100).optional().nullable(),
+  state: z.string().max(100).optional().nullable(),
+  country: z.string().max(100).optional().nullable(),
+
+  // ── Experience ──────────────────────────────────────────────────────────
+  experienceMin: optionalNumber,
+  experienceMax: optionalNumber,
+
+  // ── Compensation ────────────────────────────────────────────────────────
+  salaryMin: optionalNumber,
+  salaryMax: optionalNumber,
+  salaryType: z
+    .enum(["MONTHLY", "ANNUAL", "HOURLY", "DAILY"])
+    .optional()
+    .nullable(),
+  salaryCurrency: z.string().max(10).optional(),
+  bonusAmount: z.coerce.number().min(0).optional().nullable(),
+  hideSalaryFromCandidate: z.boolean().optional(),
+  showMedianSalary: z.boolean().optional(),
+
+  // ── Skills ──────────────────────────────────────────────────────────────
+  primarySkills: z.array(z.string().trim()).optional(),
+  keySkills: z.array(z.string().trim()).optional(),
+
+  // ── Employment details ──────────────────────────────────────────────────
+  education: z.string().max(300).optional().nullable(),
+  functionalArea: z.string().max(200).optional().nullable(),
+  shift: z.string().max(100).optional().nullable(),
+
+  // ── Sourcing strategy ───────────────────────────────────────────────────
+  targetCompanies: z.array(z.string().trim()).optional(),
+  noPoachCompanies: z.array(z.string().trim()).optional(),
+
+  // ── Timeline ────────────────────────────────────────────────────────────
+  startDate: z.string().datetime().optional().nullable(),
+  targetDate: z.string().datetime().optional().nullable(),
+  respondBy: z.string().datetime().optional().nullable(),
+  turnaroundDays: z.number().min(1).optional().nullable(),
+
+  // ── JD file ─────────────────────────────────────────────────────────────
+  jdFileKey: z.string().optional().nullable(),
+  jdFileName: z.string().optional().nullable(),
+  jdFileType: z.string().optional().nullable(),
+  jdParsedAt: z.string().datetime().optional().nullable(),
+  jdParseStatus: z
+    .enum(["PARSED", "FAILED", "MANUALLY_OVERRIDDEN"])
+    .optional()
+    .nullable(),
+  jdParsedFields: z.array(z.string()).optional(),
+
+  // ── Band & Sale Value ────────────────────────────────────────────────────
+  // Pass null explicitly to clear. Pass a UUID to set.
+  bandId: z.string().optional().nullable(),
+  saleValue: z.coerce.number().min(0).optional().nullable(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPE EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const updateRequirementStatusSchema = z.object({
   status: z.enum([

@@ -65,10 +65,11 @@ export const updateSpocSchema = z.object({
   designation: z.string().max(100).optional().nullable(),
   department: z.string().max(100).optional().nullable(),
   handlerId: z.string().optional(),
+  serviceLineId: z.string().optional(), // ← added
+  businessUnitId: z.string().optional(), // ← added
   isPrimary: z.boolean().optional(),
   notes: z.string().max(500).optional().nullable(),
 });
-
 export type CreateClientInput = z.infer<typeof createClientSchema>;
 export type UpdateClientInput = z.infer<typeof updateClientSchema>;
 export type AddSpocInput = z.infer<typeof addSpocSchema>;

@@ -63,7 +63,7 @@ import {
   addNoteSchema,
 } from "@/validators/requirement.validators";
 import {
-  getRequirements,
+  // getRequirements,
   getRequirementById,
   getRequirementTree,
   getRequirementDetail,
@@ -79,10 +79,11 @@ import {
   getRequirementStats,
   getRequirementCandidates,
   getRequirementCandidateById,
-  exportRequirements,
+  // exportRequirements,
   bulkUploadRequirementsController,
-  getRequirementsFilters,
-  getSaleValueStats,
+  // getRequirementsFilters,
+  // getSaleValueStats,
+  // getRequirementsPipelineSummary,
 } from "@/controller/requirement.controller";
 import {
   pushCandidate,
@@ -105,6 +106,13 @@ import {
 } from "@/controller/requirementExtras.controller";
 import { upload } from "@/services/s3.service";
 import { bulkUploadMulter } from "@/middleware/bulkUploadMulter";
+import {
+  exportRequirements,
+  getRequirements,
+  getRequirementsFilters,
+  getRequirementsPipelineSummary,
+  getSaleValueStats,
+} from "@/controller/requirementsController";
 
 const router = Router();
 const scope = scopeFilter("requirements");
@@ -115,6 +123,13 @@ router.get("/stats", authenticateUser, scope, getRequirementStats);
 // ── EXPORT (must be before /:id — literal paths take priority)
 // GET /requirements/export?createdByScope=OWN&status=ACTIVE
 router.get("/export", authenticateUser, scope, exportRequirements);
+
+router.get(
+  "/pipeline-summary",
+  authenticateUser,
+  scope,
+  getRequirementsPipelineSummary
+);
 
 // ── collection
 // GET /requirements?createdByScope=OWN|TEAM|REPORTING|ALL

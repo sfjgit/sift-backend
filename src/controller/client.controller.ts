@@ -1214,6 +1214,8 @@ export const updateSpoc = async (req: Request, res: Response) => {
       designation,
       department,
       handlerId,
+      serviceLineId, // ← added
+      businessUnitId, // ← added
       isPrimary,
       notes,
     } = req.body;
@@ -1237,6 +1239,8 @@ export const updateSpoc = async (req: Request, res: Response) => {
         ...(designation !== undefined && { designation }),
         ...(department !== undefined && { department }),
         ...(handlerId !== undefined && { handlerId }),
+        ...(serviceLineId !== undefined && { serviceLineId }), // ← added
+        ...(businessUnitId !== undefined && { businessUnitId }), // ← added
         ...(isPrimary !== undefined && { isPrimary }),
         ...(notes !== undefined && { notes }),
       },
@@ -1250,8 +1254,8 @@ export const updateSpoc = async (req: Request, res: Response) => {
         isPrimary: true,
         isActive: true,
         handler: { select: { id: true, firstName: true, lastName: true } },
-        serviceLine: { select: { id: true, name: true } },
-        businessUnit: { select: { id: true, name: true } },
+        serviceLine: { select: { id: true, name: true } }, // already there, will reflect new value
+        businessUnit: { select: { id: true, name: true } }, // already there, will reflect new value
       },
     });
 
