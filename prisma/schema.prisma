@@ -443,6 +443,7 @@ model RolePermission {
 enum AgreementType {
   BAND
   FIXED
+  SALARY
 }
 
 model Client {
