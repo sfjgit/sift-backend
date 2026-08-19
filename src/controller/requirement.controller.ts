@@ -18,6 +18,7 @@ import ExcelJS from "exceljs";
 import { parseUploadedFile } from "@/utils/bulkRequirementParser";
 import { validateRequirementRow } from "@/utils/bulkRequirements";
 import { updateRequirementSchema } from "@/validators/requirement.validators";
+import { getSignedDownloadUrl } from "@/services/s3.service";
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — compute aging string from a date to now
 // "2h 15m", "3d 4h", "1m 2d"
@@ -252,7 +253,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
       orderBy: { order: "asc" },
     });
     const relevantStages = allStages.filter(
-      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId
+      (s) => s.serviceLineId === null || s.serviceLineId === serviceLineId,
     );
 
     // ── Scoped stage counts + summary counts — all in one Promise.all
@@ -322,7 +323,7 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
     ]);
 
     const stageCountMap = Object.fromEntries(
-      stageCounts.map((s) => [s.currentStageId, s._count.id])
+      stageCounts.map((s) => [s.currentStageId, s._count.id]),
     );
 
     const pipelineStageSummary = relevantStages.map((stage) => ({
@@ -1147,10 +1148,10 @@ export const getRequirementStats = async (req: Request, res: Response) => {
       ]);
 
     const byStatus = Object.fromEntries(
-      byStatusRaw.map((r) => [r.status, r._count._all])
+      byStatusRaw.map((r) => [r.status, r._count._all]),
     );
     const byPriority = Object.fromEntries(
-      byPriorityRaw.map((r) => [r.priority, r._count._all])
+      byPriorityRaw.map((r) => [r.priority, r._count._all]),
     );
 
     res.json({
@@ -1621,6 +1622,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
         priority: true,
         jobType: true,
         remoteType: true,
+        jobOpenFor: true,
         // location: true,
         country: true,
         // skills: true,
@@ -1645,6 +1647,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
         jdFileName: true,
         jdFileType: true,
         jdUploadedAt: true,
+        parsedJDId: true,
         createdAt: true,
         updatedAt: true,
         approvedAt: true,
@@ -1914,13 +1917,61 @@ export const createRequirement = async (req: Request, res: Response) => {
     // auto-compute — never trust client value
     const turnaroundDays = targetDate
       ? Math.ceil(
-          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
         )
       : null;
 
     const clientName = spoc.client?.name ?? "CLNT";
     const serviceLineName = spoc.serviceLine?.name ?? "SRVC";
     const reqCode = await generateReqCode(clientName, serviceLineName);
+
+    //get parsed JD
+    // let parsedJD = null;
+    // if (body.parsedJDId) {
+    //   parsedJD = await prisma.parsedJDLibrary.findUnique({
+    //     where: {
+    //       id: body.parsedJDId,
+    //     },
+    //   });
+
+    //   if (!parsedJD || !parsedJD.isActive) {
+    //     return res.status(400).json({
+    //       success: false,
+    //       message: "Invalid or inactive parsed JD",
+    //     });
+    //   }
+    // }
+
+    // ── Fix #2: Resolve JD file from ParsedJDLibrary — never trust body.jdFileKey ──
+    let resolvedJdFileKey: string | null = null;
+    let resolvedJdFileName: string | null = null;
+    let resolvedJdFileType: string | null = null;
+    let resolvedParsedJDId: string | null = null;
+
+    if (body.parsedJDId) {
+      const parsedJD = await prisma.parsedJDLibrary.findUnique({
+        where: { id: body.parsedJDId },
+        select: {
+          id: true,
+          isActive: true,
+          jdFileKey: true,
+          jdFileName: true,
+          jdFileType: true,
+        },
+      });
+
+      if (!parsedJD || !parsedJD.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or inactive parsed JD",
+        });
+      }
+
+      resolvedJdFileKey = parsedJD.jdFileKey;
+      resolvedJdFileName = parsedJD.jdFileName;
+      resolvedJdFileType = parsedJD.jdFileType;
+      resolvedParsedJDId = parsedJD.id;
+    }
 
     const requirement = await prisma.requirement.create({
       data: {
@@ -1962,13 +2013,19 @@ export const createRequirement = async (req: Request, res: Response) => {
         respondBy: null,
         turnaroundDays,
 
-        jdFileKey: body.jdFileKey ?? null,
-        jdFileName: body.jdFileName ?? null,
-        jdFileType: body.jdFileType ?? null,
-        jdUploadedAt: body.jdFileKey ? new Date() : null,
+        // jdFileKey: body.jdFileKey ?? null,
+        // jdFileName: body.jdFileName ?? null,
+        // jdFileType: body.jdFileType ?? null,
+        // jdUploadedAt: body.jdFileKey ? new Date() : null,
+        jdFileKey: resolvedJdFileKey,
+        jdFileName: resolvedJdFileName,
+        jdFileType: resolvedJdFileType,
+        jdUploadedAt: resolvedJdFileKey ? new Date() : null,
         jdParsedAt: body.jdParsedAt ? new Date(body.jdParsedAt) : null,
         jdParseStatus: body.jdParseStatus ?? null,
         jdParsedFields: body.jdParsedFields ?? [],
+
+        parsedJDId: resolvedParsedJDId,
 
         clientSpocId: body.clientSpocId,
         clientId: spoc.clientId,
@@ -2031,6 +2088,7 @@ export const createRequirement = async (req: Request, res: Response) => {
         where: {
           title: { equals: body.title, mode: "insensitive" },
           isActive: true,
+          requirements: { some: { clientId: spoc.clientId } },
         },
         select: { id: true },
       });
@@ -2059,7 +2117,7 @@ export const createRequirement = async (req: Request, res: Response) => {
     } catch (libErr) {
       console.warn(
         "createRequirement: failed to push to JD library (non-fatal)",
-        libErr
+        libErr,
       );
     }
 
@@ -2081,7 +2139,7 @@ const MIN_ROWS = 1;
 
 export const bulkUploadRequirementsController = async (
   req: Request,
-  res: Response
+  res: Response,
 ): Promise<void> => {
   try {
     // ─── 1. Validate file presence ──────────────────────────────────────────
@@ -2148,7 +2206,7 @@ export const bulkUploadRequirementsController = async (
       rawRows = parseUploadedFile(
         file.buffer,
         file.mimetype,
-        file.originalname
+        file.originalname,
       );
     } catch (parseError: unknown) {
       const message =
@@ -2203,7 +2261,7 @@ export const bulkUploadRequirementsController = async (
 
     const failedRowNumbers = new Set(allErrors.map((e) => e.row));
     const createableRows = validRows.filter(
-      ({ rowNumber }) => !failedRowNumbers.has(rowNumber)
+      ({ rowNumber }) => !failedRowNumbers.has(rowNumber),
     );
 
     // ─── 8. Insert rows sequentially — NO $transaction ────────────────────
@@ -2242,7 +2300,7 @@ export const bulkUploadRequirementsController = async (
         const turnaroundDays = targetDate
           ? Math.ceil(
               (targetDate.getTime() - startDate.getTime()) /
-                (1000 * 60 * 60 * 24)
+                (1000 * 60 * 60 * 24),
             )
           : null;
 
@@ -2316,7 +2374,7 @@ export const bulkUploadRequirementsController = async (
       } catch (activityErr) {
         console.warn(
           "[bulkUpload] Activity log failed (non-fatal):",
-          activityErr
+          activityErr,
         );
       }
     }
@@ -2341,7 +2399,7 @@ export const bulkUploadRequirementsController = async (
   } catch (error) {
     console.error(
       "[bulkUploadRequirementsController] Unexpected error:",
-      error
+      error,
     );
     res.status(500).json({
       success: false,
@@ -2376,6 +2434,9 @@ export const updateRequirement = async (req: Request, res: Response) => {
         startDate: true,
         targetDate: true,
         reqCode: true,
+        jdFileKey: true,
+        jdFileName: true,
+        jdFileType: true,
       },
     });
 
@@ -2450,7 +2511,48 @@ export const updateRequirement = async (req: Request, res: Response) => {
         });
       }
     }
+    // ── Fix #2: Resolve JD file from parsedJDId if a new one was uploaded ──
+    // The edit form sends parsedJDId when the user uploads a new JD.
+    // We never read jdFileKey directly from the body.
+    let jdFileUpdates: Record<string, unknown> = {};
 
+    if (body.parsedJDId !== undefined && body.parsedJDId !== null) {
+      const parsedJD = await prisma.parsedJDLibrary.findUnique({
+        where: { id: body.parsedJDId },
+        select: {
+          id: true,
+          isActive: true,
+          jdFileKey: true,
+          jdFileName: true,
+          jdFileType: true,
+        },
+      });
+
+      if (!parsedJD || !parsedJD.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or inactive parsed JD",
+        });
+      }
+
+      jdFileUpdates = {
+        parsedJDId: parsedJD.id,
+        jdFileKey: parsedJD.jdFileKey,
+        jdFileName: parsedJD.jdFileName,
+        jdFileType: parsedJD.jdFileType,
+        jdUploadedAt: parsedJD.jdFileKey ? new Date() : null,
+      };
+    } else if (body.parsedJDId === null) {
+      // Explicit null = clear the JD
+      jdFileUpdates = {
+        parsedJDId: null,
+        jdFileKey: null,
+        jdFileName: null,
+        jdFileType: null,
+        jdUploadedAt: null,
+      };
+    }
+    // If parsedJDId is not in body at all — preserve existing file, no changes
     // ── Auto-compute turnaroundDays ───────────────────────────────────────────
     //
     // If either date is being changed and the caller didn't send turnaroundDays
@@ -2480,7 +2582,7 @@ export const updateRequirement = async (req: Request, res: Response) => {
       if (resolvedStart && resolvedTarget) {
         const days = Math.ceil(
           (resolvedTarget.getTime() - resolvedStart.getTime()) /
-            (1000 * 60 * 60 * 24)
+            (1000 * 60 * 60 * 24),
         );
         computedTurnaround = days > 0 ? days : null;
       } else {
@@ -2549,12 +2651,14 @@ export const updateRequirement = async (req: Request, res: Response) => {
     if (computedTurnaround !== undefined)
       data.turnaroundDays = computedTurnaround;
 
-    if (body.jdFileKey !== undefined) {
-      data.jdFileKey = body.jdFileKey;
-      if (body.jdFileKey) data.jdUploadedAt = new Date();
-    }
-    if (body.jdFileName !== undefined) data.jdFileName = body.jdFileName;
-    if (body.jdFileType !== undefined) data.jdFileType = body.jdFileType;
+    // if (body.jdFileKey !== undefined) {
+    //   data.jdFileKey = body.jdFileKey;
+    //   if (body.jdFileKey) data.jdUploadedAt = new Date();
+    // }
+    // if (body.jdFileName !== undefined) data.jdFileName = body.jdFileName;
+    // if (body.jdFileType !== undefined) data.jdFileType = body.jdFileType;
+    Object.assign(data, jdFileUpdates);
+
     if (body.jdParsedAt !== undefined)
       data.jdParsedAt = body.jdParsedAt ? new Date(body.jdParsedAt) : null;
     if (body.jdParseStatus !== undefined)
@@ -2842,6 +2946,97 @@ export const updateRequirement = async (req: Request, res: Response) => {
 //   }
 // };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/jd
+//
+// Fix #1: Never store signed URLs. Generate on demand here, gated by auth.
+// Returns a short-lived URL (1 hour) for the frontend to open in a new tab.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRequirementJDSignedUrl = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { id } = req.params;
+
+    // 1. First check if this is an existing Requirement
+    const requirement = await prisma.requirement.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+      },
+      select: {
+        jdFileKey: true,
+        jdFileName: true,
+        jdFileType: true,
+      },
+    });
+
+    if (requirement) {
+      if (!requirement.jdFileKey) {
+        return res.status(404).json({
+          success: false,
+          message: "No JD file attached to this requirement",
+        });
+      }
+
+      const url = await getSignedDownloadUrl(requirement.jdFileKey);
+
+      return res.json({
+        success: true,
+        url,
+        fileName: requirement.jdFileName,
+        fileType: requirement.jdFileType,
+      });
+    }
+
+    // 2. If not a Requirement, check ParsedJDLibrary
+    const parsedJD = await prisma.parsedJDLibrary.findFirst({
+      where: {
+        id,
+        isActive: true,
+      },
+      select: {
+        jdFileKey: true,
+        jdFileName: true,
+        jdFileType: true,
+      },
+    });
+
+    if (parsedJD) {
+      if (!parsedJD.jdFileKey) {
+        return res.status(404).json({
+          success: false,
+          message: "No JD file attached",
+        });
+      }
+
+      const url = await getSignedDownloadUrl(parsedJD.jdFileKey);
+
+      return res.json({
+        success: true,
+        url,
+        fileName: parsedJD.jdFileName,
+        fileType: parsedJD.jdFileType,
+      });
+    }
+
+    // 3. Neither exists
+    return res.status(404).json({
+      success: false,
+      message: "JD not found",
+    });
+  } catch (err) {
+    console.error("getRequirementJDSignedUrl:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate JD download URL",
+    });
+  }
+};
+
 export const updateRequirementStatus = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -3121,8 +3316,8 @@ export const createAssignment = async (req: Request, res: Response) => {
           reason === "Already actively assigned"
             ? 409
             : reason === "User not found"
-            ? 404
-            : 400;
+              ? 404
+              : 400;
         return res.status(statusCode).json({ success: false, message: reason });
       }
     }
@@ -3388,7 +3583,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
     const now = Date.now();
     const enriched = pipelines.map((p) => {
       const agingMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       return {
         ...p,
@@ -3427,7 +3622,7 @@ export const getRequirementCandidates = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getRequirementCandidateById = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { id: requirementId, pipelineId } = req.params;
@@ -3555,13 +3750,13 @@ export const getRequirementCandidateById = async (
     }
 
     const agingMins = Math.floor(
-      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000
+      (Date.now() - new Date(pipeline.stageUpdatedAt).getTime()) / 60000,
     );
 
     const totalPipelineMins =
       pipeline.stageHistory.reduce(
         (sum, log) => sum + (log.timeInPrevStageMins ?? 0),
-        0
+        0,
       ) + agingMins;
 
     res.json({
@@ -3958,7 +4153,7 @@ export const getCandidateDetail = async (req: Request, res: Response) => {
 async function getVisibleRecruiterIds(
   userId: string,
   isSuperAdmin: boolean,
-  canViewScope: PermissionScope
+  canViewScope: PermissionScope,
 ): Promise<string[] | null> {
   if (isSuperAdmin || canViewScope === PermissionScope.ALL) return null;
   if (canViewScope === PermissionScope.OWN) return [userId];
@@ -4000,7 +4195,7 @@ async function getVisibleRecruiterIds(
 async function getCreatorScopeUserIds(
   userId: string,
   isSuperAdmin: boolean,
-  createdByScope: string
+  createdByScope: string,
 ): Promise<string[] | null> {
   // Only ALL scope (explicit opt-in) removes the creator filter entirely.
   // isSuperAdmin does NOT auto-bypass — even a superAdmin clicking "Mine"
@@ -4118,7 +4313,7 @@ export async function buildRequirementsWhere(
     dateTo?: string;
   },
   userId: string,
-  isSuperAdmin: boolean
+  isSuperAdmin: boolean,
 ): Promise<any> {
   const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
   const where: any = { ...scopeWhere, deletedAt: null };
@@ -4158,7 +4353,7 @@ export async function buildRequirementsWhere(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function resolveManagerSets(
-  creatorIds: string[]
+  creatorIds: string[],
 ): Promise<Record<string, Set<string>>> {
   const result: Record<string, Set<string>> = {};
   for (const creatorId of creatorIds) {
@@ -4235,7 +4430,7 @@ export const getRequirements = async (req: Request, res: Response) => {
         dateTo,
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     const SORTABLE = [
@@ -4461,7 +4656,7 @@ export const getRequirements = async (req: Request, res: Response) => {
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10,
             )
           : 0;
 
@@ -4596,7 +4791,7 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
         dateTo,
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     // Minimal select — no page/limit
@@ -4809,7 +5004,7 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
           name: `${r.createdBy.firstName} ${r.createdBy.lastName}`.trim(),
         })),
         statusCounts: Object.fromEntries(
-          statusCounts.map((s) => [s.status, s._count.id])
+          statusCounts.map((s) => [s.status, s._count.id]),
         ),
         priorities: ["HIGH", "MEDIUM", "LOW"],
       },
@@ -4858,7 +5053,7 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
 
 export const getRequirementsPipelineSummary = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const {
@@ -4891,7 +5086,7 @@ export const getRequirementsPipelineSummary = async (
         dateTo,
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     // Minimal fields — only what's needed for computation
@@ -5003,7 +5198,7 @@ export const getRequirementsPipelineSummary = async (
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10,
             )
           : 0;
 
@@ -5099,7 +5294,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         dateTo,
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     // ── Fetch requirements (cap 1000) ─────────────────────────────────────────
@@ -5411,7 +5606,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     for (const r of requirements) {
       const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86400000,
       );
 
       // RBAC check for this row
@@ -5451,7 +5646,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       // Total funnel across all stages
       const totalFunnel = Object.values(reqStageCounts).reduce(
         (s, n) => s + n,
-        0
+        0,
       );
 
       // Terminal counts per stage — filter to stages relevant to this req's service line
@@ -5507,28 +5702,28 @@ export const exportRequirements = async (req: Request, res: Response) => {
         totalFunnel,
 
         // Sale value — gated
-        bandCode: canSeeSale ? r.band?.code ?? "" : "—",
-        bandName: canSeeSale ? r.band?.name ?? "" : "—",
+        bandCode: canSeeSale ? (r.band?.code ?? "") : "—",
+        bandName: canSeeSale ? (r.band?.name ?? "") : "—",
         bandRange:
           canSeeSale && band?.rangeFrom != null && band?.rangeTo != null
             ? `${band.rangeFrom} – ${band.rangeTo}`
             : canSeeSale
-            ? ""
-            : "—",
-        bandValue: canSeeSale ? band?.value ?? "" : "—",
-        clientPct: canSeeSale ? clientPct ?? "" : "—",
-        salaryMin: canSeeSale ? r.salaryMin ?? "" : "—",
-        salaryMax: canSeeSale ? r.salaryMax ?? "" : "—", // NEW
-        reqSaleValue: canSeeSale ? r.saleValue ?? "" : "—",
+              ? ""
+              : "—",
+        bandValue: canSeeSale ? (band?.value ?? "") : "—",
+        clientPct: canSeeSale ? (clientPct ?? "") : "—",
+        salaryMin: canSeeSale ? (r.salaryMin ?? "") : "—",
+        salaryMax: canSeeSale ? (r.salaryMax ?? "") : "—", // NEW
+        reqSaleValue: canSeeSale ? (r.saleValue ?? "") : "—",
         computedSaleValue: computedSaleValue ?? "", // EVERYONE sees this
-        saleValueBasis: canSeeSale ? saleValueBasis ?? "N/A" : "—",
+        saleValueBasis: canSeeSale ? (saleValueBasis ?? "N/A") : "—",
 
         // Achieved — everyone
         ...Object.fromEntries(
           terminalStages.map((ts) => [
             `term_${ts.id}`,
             termCountPerStage[ts.id] ?? 0,
-          ])
+          ]),
         ),
         terminalCount: terminalTotal,
         achievedPct: Math.round(achievedPct * 10) / 10,
@@ -5617,7 +5812,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
     summaryRow.height = 24;
     const svColIdx =
       [...fixedCols, ...saleValueCols].findIndex(
-        (c) => c.key === "computedSaleValue"
+        (c) => c.key === "computedSaleValue",
       ) + 1;
     const achValColIdx = nFixed + nSale + terminalStages.length + 3; // after terminal stage cols + count + pct
 
@@ -5702,12 +5897,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (!r) continue;
 
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       const totalPipelineMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
@@ -5772,7 +5967,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
     const filename = `requirements-export-${dateStr}.xlsx`;
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     await workbook.xlsx.write(res);

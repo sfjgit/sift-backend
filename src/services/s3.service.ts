@@ -76,7 +76,7 @@ export const upload = multer({
 
 export async function uploadToS3(
   file: Express.Multer.File,
-  folder: string
+  folder: string,
 ): Promise<{ key: string; url: string }> {
   const ext = file.originalname.split(".").pop();
   const key = `${folder}/${uuid()}.${ext}`;
@@ -87,14 +87,14 @@ export async function uploadToS3(
       Key: key,
       Body: file.buffer,
       ContentType: file.mimetype,
-    })
+    }),
   );
 
   // signed URL valid for 7 days
   const url = await getSignedUrl(
     s3,
     new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    { expiresIn: 60 * 60 * 24 * 7 }
+    { expiresIn: 60 * 60 * 24 * 7 },
   );
 
   return { key, url };
@@ -105,7 +105,7 @@ export async function deleteFromS3(key: string): Promise<void> {
     new DeleteObjectCommand({
       Bucket: BUCKET,
       Key: key,
-    })
+    }),
   );
 }
 
@@ -113,6 +113,6 @@ export async function getSignedDownloadUrl(key: string): Promise<string> {
   return getSignedUrl(
     s3,
     new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    { expiresIn: 60 * 60 } // 1 hour
+    { expiresIn: 60 * 60 }, // 1 hour
   );
 }
