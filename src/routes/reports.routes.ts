@@ -4,39 +4,47 @@
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import { scopeFilter } from "@/middleware/scopeFilter.middleware";
+
 import {
   getReportsOverview,
+  getOverviewFilters,
+} from "@/controller/reports/reports.overview.controller";
+import { getOverviewDrill } from "@/controller/reports/reports.overview.drill.controller";
+import { getMyRequirements } from "@/controller/reports/reports.my.requirements.controller";
+import {
+  getSalesReport,
+  getSalesDrillByReq,
+} from "@/controller/reports/reports.sales.controller";
+import {
   getRecruiterReport,
   exportRecruiterReport,
   getRequirementReport,
   exportRequirementReport,
   getCandidateReport,
   exportCandidateReport,
-} from "@/controller/reports.controller";
+} from "@/controller/reports/reports.controller";
 
 const router = Router();
 const auth = authenticateUser;
 const scope = scopeFilter("reports");
 
-// ── Overview / monitoring dashboard ───────────────────────────────────────────
-// GET  /reports/overview → KPIs, funnel, time-series, disposition split, leaderboard
 router.get("/overview", auth, scope, getReportsOverview);
+router.get("/overview/filters", auth, getOverviewFilters);
+router.get("/overview/drill", auth, scope, getOverviewDrill);
 
-// ── Recruiter reports ─────────────────────────────────────────────────────────
-// GET  /reports/recruiters          → per-recruiter stats with requirement breakdown
-// GET  /reports/recruiters/export   → XLSX (?ids=, ?requirementId=, ?standardOnly=)
+router.get("/my-requirements", auth, getMyRequirements);
+
+// Sales tab — drill returns requirement-level stats, not candidate list
+router.get("/sales", auth, scope, getSalesReport);
+router.get("/sales/drill", auth, scope, getSalesDrillByReq);
+
 router.get("/recruiters", auth, scope, getRecruiterReport);
 router.get("/recruiters/export", auth, scope, exportRecruiterReport);
 
-// ── Requirement reports ───────────────────────────────────────────────────────
-// GET  /reports/requirements            → requirement list with per-row candidate stats
-// GET  /reports/requirements/export     → XLSX (?ids= for selected, else all + candidates)
-// GET  /reports/requirements/:id/export → single requirement XLSX
 router.get("/requirements", auth, scope, getRequirementReport);
 router.get("/requirements/export", auth, scope, exportRequirementReport);
 router.get("/requirements/:id/export", auth, scope, exportRequirementReport);
 
-// ── Candidate funnel report ───────────────────────────────────────────────────
 router.get("/candidates", auth, scope, getCandidateReport);
 router.get("/candidates/export", auth, scope, exportCandidateReport);
 

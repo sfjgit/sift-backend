@@ -1028,6 +1028,8 @@ enum CandidateSnapshotType {
 model CandidateSnapshot {
   id                 String @id @default(uuid())
   candidateServiceId String // Candidate Service UUID — no cross-service FK
+
+  candidateCode String?  @unique
  
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id])
@@ -1335,7 +1337,7 @@ model CandidateInterviewSchedule {
   @@index([scheduledAt])
 }
 
-model PipelineStage {
+model PipelineStage { 
   id             String          @id @default(uuid())
   code           String
   label          String
@@ -1345,9 +1347,17 @@ model PipelineStage {
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
 
+
   pipeline       Boolean         @default(true)
 
   isStandard Boolean @default(false)
+
+
+   // NEW
+  // candidate fell out — rejected, withdrawn, no show, etc.
+  // mutually exclusive with isTerminal
+  isSourced Boolean @default(false)
+  isNearTerminal Boolean @default(false)  
 
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
