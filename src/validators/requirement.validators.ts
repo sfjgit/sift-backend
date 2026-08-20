@@ -89,9 +89,11 @@ export const createRequirementSchema = z.object({
   turnaroundDays: z.number().min(1).optional().nullable(),
 
   // ── JD file ─────────────────────────────────────────────────────────────
-  jdFileKey: z.string().optional().nullable(),
-  jdFileName: z.string().optional().nullable(),
-  jdFileType: z.string().optional().nullable(),
+  // jdFileKey: z.string().optional().nullable(),
+  // jdFileName: z.string().optional().nullable(),
+  // jdFileType: z.string().optional().nullable(),
+
+  parsedJDId: z.string().optional().nullable(),
 
   // ── JD parse metadata ───────────────────────────────────────────────────
   jdParsedAt: z.string().datetime().optional().nullable(),
@@ -178,9 +180,11 @@ export const updateRequirementSchema = z.object({
   turnaroundDays: z.number().min(1).optional().nullable(),
 
   // ── JD file ─────────────────────────────────────────────────────────────
-  jdFileKey: z.string().optional().nullable(),
-  jdFileName: z.string().optional().nullable(),
-  jdFileType: z.string().optional().nullable(),
+  // jdFileKey: z.string().optional().nullable(),
+  // jdFileName: z.string().optional().nullable(),
+  // jdFileType: z.string().optional().nullable(),
+  parsedJDId: z.string().optional().nullable(),
+
   jdParsedAt: z.string().datetime().optional().nullable(),
   jdParseStatus: z
     .enum(["PARSED", "FAILED", "MANUALLY_OVERRIDDEN"])
@@ -223,7 +227,7 @@ export const createAssignmentSchema = z
       (data.assignedToIds && data.assignedToIds.length > 0),
     {
       message: "assignedToId or assignedToIds is required",
-    }
+    },
   );
 
 // export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;

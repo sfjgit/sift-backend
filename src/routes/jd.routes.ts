@@ -15,6 +15,10 @@ import {
   searchLibrary,
   useFromLibrary,
 } from "@/controller/parsedJD.controller";
+import { uploadToS3 } from "@/services/s3.service";
+
+import { parsedJDSchema } from "@/validators/parsedJd.validator";
+
 // import { getRedisClient } from "@/utils/redis";
 
 const log = createLogger("jd-routes");
@@ -57,7 +61,7 @@ const PROMPT_TTL_MS = 60 * 60 * 1000; // 1 hour
 async function promptRateLimit(
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) {
   const userId = req.user!.id;
   const now = Date.now();
@@ -142,7 +146,7 @@ Return exactly this shape (all fields optional except title and description):
 }`;
 
 async function parsePromptWithGPT(
-  prompt: string
+  prompt: string,
 ): Promise<Record<string, any>> {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -167,6 +171,7 @@ async function parsePromptWithGPT(
 router.post(
   "/parse",
   authenticateUser,
+  // validate.body(parsedJDSchema),
   upload.single("jd"),
   async (req, res, next) => {
     try {
@@ -200,9 +205,20 @@ router.post(
         throw err;
       }
 
-      let parsed;
+      // let parsed;
+      // try {
+      //   parsed = await parseJDWithGPT(extractedText);
+      // } catch (err: any) {
+      //   return res.status(502).json({
+      //     success: false,
+      //     code: "GPT_PARSE_FAILED",
+      //     message: err.message,
+      //   });
+      // }
+
+      let rawParsed: Record<string, any>;
       try {
-        parsed = await parseJDWithGPT(extractedText);
+        rawParsed = await parseJDWithGPT(extractedText);
       } catch (err: any) {
         return res.status(502).json({
           success: false,
@@ -211,9 +227,37 @@ router.post(
         });
       }
 
+      const validation = parsedJDSchema.safeParse(rawParsed);
+      if (!validation.success) {
+        log("warn", "GPT output failed validation", {
+          errors: validation.error.flatten(),
+        });
+        return res.status(422).json({
+          success: false,
+          code: "PARSE_VALIDATION_FAILED",
+          message:
+            "AI returned invalid data. Please try again or upload a different file.",
+        });
+      }
+      const parsed = validation.data;
+
+      // ── Upload file to S3 — always, for both create and edit flows ───────
+      let s3Result: { key: string; url: string } | null = null;
+      try {
+        s3Result = await uploadToS3(file, "jd-files");
+      } catch (err: any) {
+        // Non-fatal — parsed fields are still useful even if S3 fails.
+        // Frontend will receive jdFileKey: null and can proceed without the file.
+        log("warn", "JD parse: S3 upload failed (non-fatal)", { err });
+      }
+
       return res.status(200).json({
         success: true,
         data: parsed,
+        // S3 metadata — frontend must include these in the create/update body
+        jdFileKey: s3Result?.key ?? null,
+        jdFileName: file.originalname,
+        jdFileType: file.mimetype,
         meta: {
           fileName: file.originalname,
           fileSizeBytes: file.size,
@@ -223,7 +267,7 @@ router.post(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
 // ── POST /jd/prompt-parse — plain text prompt → GPT → save to library
@@ -329,7 +373,7 @@ router.post(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
 // ── POST /jd/library — save parsed JD to library

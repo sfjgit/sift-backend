@@ -12,7 +12,8 @@ import { Request, Response } from "express";
 export const saveToLibrary = async (req: Request, res: Response) => {
   try {
     const actorId = req.user!.id;
-    const { title, parsedData, jdFileKey, jdFileName, jdFileType } = req.body;
+    const { title, parsedData, jdFileKey, jdFileName, jdFileType, clientId } =
+      req.body;
 
     if (!title || !parsedData) {
       return res
@@ -23,7 +24,12 @@ export const saveToLibrary = async (req: Request, res: Response) => {
     // check if identical title already exists — if so, just bump usageCount
     // (same role parsed twice — don't duplicate)
     const existing = await prisma.parsedJDLibrary.findFirst({
-      where: { title: { equals: title, mode: "insensitive" }, isActive: true },
+      where: {
+        title: { equals: title, mode: "insensitive" },
+        isActive: true,
+        // only deduplicate within the same client context
+        ...(clientId ? { requirements: { some: { clientId } } } : {}),
+      },
       select: { id: true },
     });
 
@@ -33,9 +39,16 @@ export const saveToLibrary = async (req: Request, res: Response) => {
         where: { id: existing.id },
         data: {
           parsedData,
-          jdFileKey: jdFileKey ?? undefined,
-          jdFileName: jdFileName ?? undefined,
-          jdFileType: jdFileType ?? undefined,
+          // jdFileKey: jdFileKey ?? undefined,
+          // jdFileName: jdFileName ?? undefined,
+          // jdFileType: jdFileType ?? undefined,
+          // parsedById: actorId,
+          // parsedAt: new Date(),
+
+          // only overwrite file fields if new ones are provided
+          ...(jdFileKey ? { jdFileKey } : {}),
+          ...(jdFileName ? { jdFileName } : {}),
+          ...(jdFileType ? { jdFileType } : {}),
           parsedById: actorId,
           parsedAt: new Date(),
         },
