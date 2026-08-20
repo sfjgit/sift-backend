@@ -2985,7 +2985,7 @@ export const getRequirementJDSignedUrl = async (
 
       return res.json({
         success: true,
-        url,
+        // url,
         fileName: requirement.jdFileName,
         fileType: requirement.jdFileType,
       });
