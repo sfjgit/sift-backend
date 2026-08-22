@@ -4,6 +4,7 @@
 import { Request, Response } from "express";
 import ExcelJS from "exceljs";
 import prisma from "@/utils/prisma/client";
+import { computeSaleValue } from "../requirementsController";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE / TIME WINDOW RESOLVER
@@ -135,7 +136,7 @@ function resolveScopedUserIds(req: Request): string[] | null {
  *
  * Returns null for super admin (no filter).
  */
-async function resolveOrgTreeDown(
+export async function resolveOrgTreeDown(
   userId: string,
   isSuperAdmin: boolean
 ): Promise<string[] | null> {
@@ -2036,7 +2037,919 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to export requirement report" });
   }
 };
+// File: exportRequirements (function only)
+// Path: src/controllers/requirementsController.ts
+// Drop this entire function in place of the existing exportRequirements.
+// It replaces ONLY the exportRequirements function — nothing else in the file changes.
 
+// export const exportRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       status,
+//       buId,
+//       serviceLineId,
+//       clientId,
+//       clientSpocId,
+//       priority,
+//       createdById,
+//       dateFrom,
+//       dateTo,
+//     } = req.query as Record<string, string>;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+
+//     const where = await buildRequirementsWhere(
+//       {
+//         search,
+//         status,
+//         buId,
+//         serviceLineId,
+//         clientId,
+//         clientSpocId,
+//         priority,
+//         createdById,
+//         dateFrom,
+//         dateTo,
+//       },
+//       userId,
+//       isSuperAdmin
+//     );
+
+//     const requirements = await prisma.requirement.findMany({
+//       where,
+//       select: {
+//         id: true,
+//         reqCode: true,
+//         title: true,
+//         status: true,
+//         priority: true,
+//         jobType: true,
+//         remoteType: true,
+//         totalOpenings: true,
+//         city: true,
+//         state: true,
+//         country: true,
+//         respondBy: true,
+//         isRespondByBreached: true,
+//         isTurnaroundBreached: true,
+//         createdAt: true,
+//         serviceLineId: true,
+//         saleValue: true,
+//         salaryMin: true,
+//         salaryMax: true,
+//         salaryType: true,
+//         salaryCurrency: true,
+//         band: {
+//           select: {
+//             id: true,
+//             code: true,
+//             name: true,
+//             rangeFrom: true,
+//             rangeTo: true,
+//             value: true,
+//           },
+//         },
+//         client: {
+//           select: { name: true, agreementType: true, percentageValue: true },
+//         },
+//         clientSpoc: { select: { id: true, firstName: true, lastName: true } },
+//         businessUnit: { select: { name: true } },
+//         serviceLine: { select: { id: true, name: true } },
+//         createdBy: { select: { id: true, firstName: true, lastName: true } },
+//       },
+//       orderBy: { createdAt: "desc" },
+//       take: 1000,
+//     });
+
+//     if (!requirements.length) {
+//       return res
+//         .status(404)
+//         .json({ success: false, message: "No requirements found to export" });
+//     }
+
+//     const reqIds = requirements.map((r) => r.id);
+
+//     // ── RBAC: resolve manager sets ─────────────────────────────────────────
+//     const uniqueCreatorIds = [
+//       ...new Set(requirements.map((r) => r.createdBy.id)),
+//     ];
+//     const managerSetByCreator = await resolveManagerSets(uniqueCreatorIds);
+
+//     // ── Terminal stages ────────────────────────────────────────────────────
+//     const terminalStages = await prisma.pipelineStage.findMany({
+//       where: {
+//         isActive: true,
+//         isTerminal: true,
+//         ...(serviceLineId
+//           ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
+//           : {}),
+//       },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+
+//     // ── All active stages for pipeline counts ──────────────────────────────
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: {
+//         id: true,
+//         code: true,
+//         label: true,
+//         order: true,
+//         serviceLineId: true,
+//         isTerminal: true,
+//       },
+//       orderBy: { order: "asc" },
+//     });
+
+//     // ── Pipeline counts per requirement ────────────────────────────────────
+//     const pipelineCounts = await prisma.requirementCandidatePipeline.groupBy({
+//       by: ["requirementId", "currentStageId"],
+//       where: { requirementId: { in: reqIds } },
+//       _count: { id: true },
+//     });
+
+//     const countsByReq: Record<string, Record<string, number>> = {};
+//     for (const pc of pipelineCounts) {
+//       if (!countsByReq[pc.requirementId]) countsByReq[pc.requirementId] = {};
+//       countsByReq[pc.requirementId][(pc as any).currentStageId] =
+//         (pc as any)._count?.id ?? 0;
+//     }
+
+//     // ── Pipeline candidate rows ────────────────────────────────────────────
+//     // FULL select — all CTC, all joining date fields, notice period, LWD
+//     const pipelines = await prisma.requirementCandidatePipeline.findMany({
+//       where: { requirementId: { in: reqIds } },
+//       select: {
+//         id: true,
+//         requirementId: true,
+//         stageUpdatedAt: true,
+//         isRejected: true,
+//         isWithdrawn: true,
+//         isOnHold: true,
+//         submittedAt: true,
+//         offerStatus: true,
+//         // ── CTC fields ──────────────────────────────────────────────────
+//         offeredCtc: true,
+//         currentCtc: true,
+//         expectedCtc: true,
+//         negotiatedCtc: true,
+//         // ── Joining / notice fields ──────────────────────────────────────
+//         actualJoiningDate: true,
+//         expectedJoiningDate: true,
+//         lastWorkingDate: true,
+//         noticePeriod: true,
+//         createdAt: true,
+//         currentStage: {
+//           select: {
+//             code: true,
+//             label: true,
+//             isTerminal: true,
+//             isNearTerminal: true,
+//           },
+//         },
+//         recruiter: { select: { firstName: true, lastName: true } },
+//         snapshot: {
+//           select: {
+//             fullName: true,
+//             email: true,
+//             phone: true,
+//             currentTitle: true,
+//             currentCompany: true,
+//             totalExpYears: true,
+//             topSkills: true,
+//           },
+//         },
+//         stageHistory: { select: { timeInPrevStageMins: true } },
+//       },
+//       orderBy: { createdAt: "asc" },
+//     });
+
+//     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
+
+//     // ─────────────────────────────────────────────────────────────────────
+//     // HELPERS
+//     // ─────────────────────────────────────────────────────────────────────
+
+//     const mkFill = (argb: string): ExcelJS.Fill => ({
+//       type: "pattern",
+//       pattern: "solid",
+//       fgColor: { argb },
+//     });
+//     const WHITE_FONT: Partial<ExcelJS.Font> = {
+//       color: { argb: "FFFFFFFF" },
+//       bold: true,
+//       size: 11,
+//     };
+//     const FILLS = {
+//       darkBlue: mkFill("FF1E3A5F"),
+//       midBlue: mkFill("FF2D5986"),
+//       darkGreen: mkFill("FF1A5C2A"),
+//       purple: mkFill("FF4A148C"),
+//       lightGreen: mkFill("FFE2EFDA"),
+//       lightRed: mkFill("FFFCE4D6"),
+//       lightPurple: mkFill("FFEDE7F6"),
+//       lightAmber: mkFill("FFFFF3CD"),
+//     };
+//     const STATUS_COLORS: Record<string, string> = {
+//       ACTIVE: "FF00875A",
+//       CLOSED: "FFDE350B",
+//       ON_HOLD: "FFFF991F",
+//       PENDING_APPROVAL: "FF0052CC",
+//       DRAFT: "FF6B778C",
+//       CANCELLED: "FF5E6C84",
+//     };
+
+//     const applyHeader = (row: ExcelJS.Row, fill = FILLS.darkBlue) => {
+//       row.eachCell((cell) => {
+//         cell.fill = fill;
+//         cell.font = WHITE_FONT;
+//         cell.alignment = {
+//           vertical: "middle",
+//           horizontal: "center",
+//           wrapText: true,
+//         };
+//         cell.border = {
+//           bottom: { style: "thin", color: { argb: "FF4A90D9" } },
+//         };
+//       });
+//       row.height = 28;
+//     };
+
+//     /** Safely convert Prisma value to Date — returns null if invalid */
+//     const safeDate = (val: any): Date | null => {
+//       if (!val) return null;
+//       const d = val instanceof Date ? val : new Date(val);
+//       return isNaN(d.getTime()) ? null : d;
+//     };
+
+//     /** Safely format a date — returns "" on any failure */
+//     const safeFormat = (val: any, fmt: string): string => {
+//       const d = safeDate(val);
+//       if (!d) return "";
+//       try {
+//         // Manual format to avoid date-fns issues in some Node environments
+//         const pad = (n: number) => String(n).padStart(2, "0");
+//         const MONTHS = [
+//           "Jan",
+//           "Feb",
+//           "Mar",
+//           "Apr",
+//           "May",
+//           "Jun",
+//           "Jul",
+//           "Aug",
+//           "Sep",
+//           "Oct",
+//           "Nov",
+//           "Dec",
+//         ];
+//         const MONTHS_FULL = [
+//           "January",
+//           "February",
+//           "March",
+//           "April",
+//           "May",
+//           "June",
+//           "July",
+//           "August",
+//           "September",
+//           "October",
+//           "November",
+//           "December",
+//         ];
+//         if (fmt === "dd-mmm-yyyy" || fmt === "dd-MMM-yyyy") {
+//           return `${pad(d.getDate())}-${
+//             MONTHS[d.getMonth()]
+//           }-${d.getFullYear()}`;
+//         }
+//         if (fmt === "MMMM yyyy") {
+//           return `${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`;
+//         }
+//         if (fmt === "yyyy-MM-dd") {
+//           return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+//             d.getDate()
+//           )}`;
+//         }
+//         return d.toLocaleDateString("en-IN");
+//       } catch {
+//         return "";
+//       }
+//     };
+
+//     /** Derive joining date: actual → expected → lastWorkingDate → notice period from today */
+//     const deriveJoiningDate = (
+//       actualJoiningDate: any,
+//       expectedJoiningDate: any,
+//       lastWorkingDate: any,
+//       noticePeriod: string | null
+//     ): Date | null => {
+//       const actual = safeDate(actualJoiningDate);
+//       if (actual) return actual;
+//       const expected = safeDate(expectedJoiningDate);
+//       if (expected) return expected;
+//       const lwd = safeDate(lastWorkingDate);
+//       if (lwd) return lwd;
+//       if (noticePeriod) {
+//         const lower = noticePeriod.toLowerCase().trim();
+//         const numMatch = lower.match(/^(\d+)/);
+//         const num = numMatch ? parseInt(numMatch[1], 10) : null;
+//         if (num != null) {
+//           const base = new Date();
+//           if (lower.includes("month")) {
+//             base.setMonth(base.getMonth() + num);
+//             return base;
+//           }
+//           base.setDate(base.getDate() + num);
+//           return base;
+//         }
+//       }
+//       return null;
+//     };
+
+//     const formatAging = (mins: number): string => {
+//       if (mins < 60) return `${mins}m`;
+//       if (mins < 1440) return `${Math.floor(mins / 60)}h`;
+//       if (mins < 10080) return `${Math.floor(mins / 1440)}d`;
+//       if (mins < 43800) return `${Math.floor(mins / 10080)}wk`;
+//       return `${Math.floor(mins / 43800)}mo`;
+//     };
+
+//     // ─────────────────────────────────────────────────────────────────────
+//     // WORKBOOK
+//     // ─────────────────────────────────────────────────────────────────────
+
+//     const workbook = new ExcelJS.Workbook();
+//     workbook.creator = "TalentOS";
+//     workbook.created = new Date();
+
+//     // ═════════════════════════════════════════════════════════════════════
+//     // SHEET 1 — Requirements
+//     // ═════════════════════════════════════════════════════════════════════
+//     const sheet1 = workbook.addWorksheet("Requirements", {
+//       views: [{ state: "frozen", ySplit: 2 }],
+//     });
+
+//     const fixedCols = [
+//       { header: "Req Code", key: "reqCode", width: 14 },
+//       { header: "Title", key: "title", width: 38 },
+//       { header: "Status", key: "status", width: 16 },
+//       { header: "Priority", key: "priority", width: 12 },
+//       { header: "Client", key: "client", width: 24 },
+//       { header: "Client SPOC", key: "spoc", width: 22 },
+//       { header: "Agreement", key: "agreementType", width: 14 },
+//       { header: "Business Unit", key: "bu", width: 22 },
+//       { header: "Service Line", key: "sl", width: 20 },
+//       { header: "City", key: "city", width: 16 },
+//       { header: "Country", key: "country", width: 14 },
+//       { header: "Job Type", key: "jobType", width: 16 },
+//       { header: "Remote", key: "remote", width: 12 },
+//       { header: "Total Openings", key: "openings", width: 14 },
+//       { header: "Created By", key: "createdBy", width: 22 },
+//       { header: "Created Date", key: "createdAt", width: 18 },
+//       { header: "Days Open", key: "daysOpen", width: 12 },
+//       { header: "Respond By", key: "respondBy", width: 18 },
+//       { header: "SLA Breached?", key: "breached", width: 14 },
+//       { header: "Total Funnel", key: "totalFunnel", width: 14 },
+//     ];
+
+//     const saleValueCols = [
+//       { header: "Band Code", key: "bandCode", width: 12 },
+//       { header: "Band Name", key: "bandName", width: 18 },
+//       { header: "Band Range", key: "bandRange", width: 20 },
+//       { header: "Band Value", key: "bandValue", width: 14 },
+//       { header: "Client %", key: "clientPct", width: 12 },
+//       { header: "Salary Min", key: "salaryMin", width: 14 },
+//       { header: "Salary Max", key: "salaryMax", width: 14 },
+//       { header: "Req. Sale Value", key: "reqSaleValue", width: 16 },
+//       { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+//       { header: "Sale Basis", key: "saleValueBasis", width: 18 },
+//     ];
+
+//     const achievedCols = [
+//       ...terminalStages.map((s) => ({
+//         header: `Achieved: ${s.label}`,
+//         key: `term_${s.id}`,
+//         width: 18,
+//       })),
+//       { header: "Achieved (Headcount)", key: "terminalCount", width: 22 },
+//       { header: "Achieved %", key: "achievedPct", width: 14 },
+//       { header: "Achieved Value", key: "achievedValue", width: 20 },
+//     ];
+
+//     sheet1.columns = [...fixedCols, ...saleValueCols, ...achievedCols];
+
+//     const nFixed = fixedCols.length;
+//     const nSale = saleValueCols.length;
+//     const nAchieved = achievedCols.length;
+
+//     const groupRow = sheet1.getRow(1);
+//     groupRow.getCell(1).value = "Requirement Details";
+//     groupRow.getCell(nFixed + 1).value = "Sale Value (Creator / Manager Only)";
+//     groupRow.getCell(nFixed + nSale + 1).value = "Achieved (Terminal Stages)";
+//     sheet1.mergeCells(1, 1, 1, nFixed);
+//     sheet1.mergeCells(1, nFixed + 1, 1, nFixed + nSale);
+//     if (nAchieved > 0)
+//       sheet1.mergeCells(1, nFixed + nSale + 1, 1, nFixed + nSale + nAchieved);
+//     applyHeader(groupRow);
+//     groupRow.getCell(nFixed + 1).fill = FILLS.darkGreen;
+//     groupRow.getCell(nFixed + nSale + 1).fill = FILLS.purple;
+
+//     const colHeaderRow = sheet1.getRow(2);
+//     [...fixedCols, ...saleValueCols, ...achievedCols].forEach((col, i) => {
+//       colHeaderRow.getCell(i + 1).value = col.header;
+//     });
+//     applyHeader(colHeaderRow, FILLS.midBlue);
+
+//     const now = Date.now();
+//     let exportTotalSaleValue = 0;
+//     let exportTotalAchieved = 0;
+//     let exportOmittedCount = 0;
+
+//     for (const r of requirements) {
+//       const daysOpen = Math.floor(
+//         (now - new Date(r.createdAt).getTime()) / 86400000
+//       );
+
+//       const canSeeSale =
+//         isSuperAdmin ||
+//         userId === r.createdBy.id ||
+//         (managerSetByCreator[r.createdBy.id]?.has(userId) ?? false);
+
+//       const band = r.band
+//         ? {
+//             value: r.band.value != null ? Number(r.band.value) : null,
+//             rangeFrom:
+//               r.band.rangeFrom != null ? Number(r.band.rangeFrom) : null,
+//             rangeTo: r.band.rangeTo != null ? Number(r.band.rangeTo) : null,
+//           }
+//         : null;
+//       const clientPct =
+//         r.client?.percentageValue != null
+//           ? Number(r.client.percentageValue)
+//           : null;
+
+//       const { computedSaleValue, saleValueBasis } = computeSaleValue({
+//         saleValue: r.saleValue,
+//         totalOpenings: r.totalOpenings,
+//         salaryMin: r.salaryMin,
+//         band: band ? { value: band.value } : null,
+//         client: { percentageValue: clientPct },
+//       });
+
+//       if (computedSaleValue != null) exportTotalSaleValue += computedSaleValue;
+//       else exportOmittedCount++;
+
+//       const reqStageCounts = countsByReq[r.id] ?? {};
+//       const totalFunnel = Object.values(reqStageCounts).reduce(
+//         (s, n) => s + n,
+//         0
+//       );
+
+//       const termCountPerStage: Record<string, number> = {};
+//       let terminalTotal = 0;
+//       for (const ts of terminalStages) {
+//         if (ts.serviceLineId && ts.serviceLineId !== r.serviceLineId) {
+//           termCountPerStage[ts.id] = 0;
+//           continue;
+//         }
+//         const cnt = reqStageCounts[ts.id] ?? 0;
+//         termCountPerStage[ts.id] = cnt;
+//         terminalTotal += cnt;
+//       }
+
+//       const achievedPct =
+//         r.totalOpenings > 0
+//           ? Math.min(100, (terminalTotal / r.totalOpenings) * 100)
+//           : 0;
+//       const achievedValue =
+//         computedSaleValue != null && r.totalOpenings > 0
+//           ? (terminalTotal / r.totalOpenings) * computedSaleValue
+//           : null;
+//       if (achievedValue != null) exportTotalAchieved += achievedValue;
+
+//       const rowData: Record<string, any> = {
+//         reqCode: r.reqCode,
+//         title: r.title,
+//         status: r.status,
+//         priority: r.priority,
+//         client: r.client?.name ?? "",
+//         spoc: r.clientSpoc
+//           ? `${r.clientSpoc.firstName} ${r.clientSpoc.lastName}`
+//           : "",
+//         agreementType: r.client?.agreementType ?? "",
+//         bu: r.businessUnit?.name ?? "",
+//         sl: r.serviceLine?.name ?? "",
+//         city: r.city ?? "",
+//         country: r.country ?? "",
+//         jobType: r.jobType,
+//         remote: r.remoteType,
+//         openings: r.totalOpenings,
+//         createdBy: `${r.createdBy.firstName} ${r.createdBy.lastName}`,
+//         createdAt: new Date(r.createdAt),
+//         daysOpen,
+//         respondBy: r.respondBy ? new Date(r.respondBy) : "",
+//         breached:
+//           r.isRespondByBreached || r.isTurnaroundBreached ? "Yes" : "No",
+//         totalFunnel,
+//         // Sale value — RBAC gated
+//         bandCode: canSeeSale ? r.band?.code ?? "" : "—",
+//         bandName: canSeeSale ? r.band?.name ?? "" : "—",
+//         bandRange:
+//           canSeeSale && band?.rangeFrom != null && band?.rangeTo != null
+//             ? `${band.rangeFrom} – ${band.rangeTo}`
+//             : canSeeSale
+//             ? ""
+//             : "—",
+//         bandValue: canSeeSale ? band?.value ?? "" : "—",
+//         clientPct: canSeeSale ? clientPct ?? "" : "—",
+//         salaryMin: canSeeSale
+//           ? r.salaryMin != null
+//             ? Number(r.salaryMin)
+//             : ""
+//           : "—",
+//         salaryMax: canSeeSale
+//           ? r.salaryMax != null
+//             ? Number(r.salaryMax)
+//             : ""
+//           : "—",
+//         reqSaleValue: canSeeSale
+//           ? r.saleValue != null
+//             ? Number(r.saleValue)
+//             : ""
+//           : "—",
+//         computedSaleValue: computedSaleValue ?? "",
+//         saleValueBasis: canSeeSale ? saleValueBasis ?? "N/A" : "—",
+//         // Achieved — everyone sees
+//         ...Object.fromEntries(
+//           terminalStages.map((ts) => [
+//             `term_${ts.id}`,
+//             termCountPerStage[ts.id] ?? 0,
+//           ])
+//         ),
+//         terminalCount: terminalTotal,
+//         achievedPct: Math.round(achievedPct * 10) / 10,
+//         achievedValue: achievedValue ?? "",
+//       };
+
+//       const dataRow = sheet1.addRow(rowData);
+//       dataRow.height = 20;
+//       dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy";
+//       if (r.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
+
+//       const sCls = STATUS_COLORS[r.status];
+//       if (sCls) {
+//         dataRow.getCell("status").fill = mkFill(sCls);
+//         dataRow.getCell("status").font = {
+//           color: { argb: "FFFFFFFF" },
+//           bold: true,
+//         };
+//       }
+//       if (r.isRespondByBreached || r.isTurnaroundBreached) {
+//         dataRow.getCell("breached").fill = mkFill("FFDE350B");
+//         dataRow.getCell("breached").font = {
+//           color: { argb: "FFFFFFFF" },
+//           bold: true,
+//         };
+//       }
+//       if (computedSaleValue != null) {
+//         dataRow.getCell("computedSaleValue").fill = FILLS.lightGreen;
+//         dataRow.getCell("computedSaleValue").font = { bold: true };
+//         dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+//       } else {
+//         dataRow.getCell("computedSaleValue").fill = FILLS.lightRed;
+//         dataRow.getCell("computedSaleValue").font = {
+//           color: { argb: "FFDE350B" },
+//         };
+//       }
+//       if (achievedValue != null && achievedValue > 0) {
+//         dataRow.getCell("achievedValue").fill = FILLS.lightPurple;
+//         dataRow.getCell("achievedValue").font = { bold: true };
+//         dataRow.getCell("achievedValue").numFmt = "#,##0.00";
+//       }
+//       if (achievedPct >= 100) {
+//         dataRow.getCell("achievedPct").fill = mkFill("FF00875A");
+//         dataRow.getCell("achievedPct").font = {
+//           color: { argb: "FFFFFFFF" },
+//           bold: true,
+//         };
+//       } else if (achievedPct >= 50) {
+//         dataRow.getCell("achievedPct").fill = mkFill("FFFFE082");
+//       }
+//       if (!canSeeSale) {
+//         [
+//           "bandCode",
+//           "bandName",
+//           "bandRange",
+//           "bandValue",
+//           "clientPct",
+//           "salaryMin",
+//           "salaryMax",
+//           "reqSaleValue",
+//           "saleValueBasis",
+//         ].forEach((k) => {
+//           dataRow.getCell(k).font = {
+//             color: { argb: "FFBDBDBD" },
+//             italic: true,
+//           };
+//         });
+//       }
+//     }
+
+//     // Summary row
+//     const summaryRow = sheet1.addRow({});
+//     summaryRow.height = 24;
+//     const svColIdx =
+//       [...fixedCols, ...saleValueCols].findIndex(
+//         (c) => c.key === "computedSaleValue"
+//       ) + 1;
+//     const achValColIdx = nFixed + nSale + terminalStages.length + 3;
+//     summaryRow.getCell(svColIdx - 1).value = `Total (${
+//       requirements.length - exportOmittedCount
+//     } computed, ${exportOmittedCount} no data)`;
+//     summaryRow.getCell(svColIdx - 1).font = {
+//       bold: true,
+//       italic: true,
+//       size: 10,
+//       color: { argb: "FF1E3A5F" },
+//     };
+//     summaryRow.getCell(svColIdx).value = exportTotalSaleValue;
+//     summaryRow.getCell(svColIdx).numFmt = "#,##0.00";
+//     summaryRow.getCell(svColIdx).font = {
+//       bold: true,
+//       color: { argb: "FF1A5C2A" },
+//     };
+//     summaryRow.getCell(svColIdx).fill = FILLS.lightGreen;
+//     summaryRow.getCell(achValColIdx).value = exportTotalAchieved;
+//     summaryRow.getCell(achValColIdx).numFmt = "#,##0.00";
+//     summaryRow.getCell(achValColIdx).font = {
+//       bold: true,
+//       color: { argb: "FF4A148C" },
+//     };
+//     summaryRow.getCell(achValColIdx).fill = FILLS.lightPurple;
+
+//     sheet1.autoFilter = {
+//       from: { row: 2, column: 1 },
+//       to: { row: 2, column: nFixed + nSale + nAchieved },
+//     };
+
+//     // ═════════════════════════════════════════════════════════════════════
+//     // SHEET 2 — Candidates (one row per pipeline entry)
+//     // All CTC fields, all joining date fields, Month of Joining, Days to Join
+//     // Sale value context from the requirement
+//     // ═════════════════════════════════════════════════════════════════════
+//     const sheet2 = workbook.addWorksheet("Candidates", {
+//       views: [{ state: "frozen", ySplit: 1 }],
+//     });
+
+//     sheet2.columns = [
+//       // Requirement context
+//       { header: "Req Code", key: "reqCode", width: 14 },
+//       { header: "Requirement Title", key: "reqTitle", width: 36 },
+//       { header: "Service Line", key: "reqSL", width: 18 },
+//       { header: "Client", key: "reqClient", width: 22 },
+//       // Candidate
+//       { header: "Candidate Name", key: "name", width: 26 },
+//       { header: "Email", key: "email", width: 30 },
+//       { header: "Phone", key: "phone", width: 16 },
+//       { header: "Current Title", key: "title", width: 26 },
+//       { header: "Current Company", key: "company", width: 24 },
+//       { header: "Exp (yrs)", key: "exp", width: 10 },
+//       { header: "Top Skills", key: "skills", width: 40 },
+//       // Pipeline
+//       { header: "Current Stage", key: "stage", width: 22 },
+//       { header: "Is Terminal?", key: "isTerminal", width: 12 },
+//       { header: "Is Near Terminal?", key: "isNearTerminal", width: 14 },
+//       { header: "Status", key: "status", width: 12 },
+//       { header: "Recruiter", key: "recruiter", width: 22 },
+//       { header: "Added On", key: "addedOn", width: 16 },
+//       { header: "Days in Pipeline", key: "pipelineDays", width: 16 },
+//       { header: "Stage Aging", key: "stageAging", width: 14 },
+//       { header: "Rejected?", key: "rejected", width: 10 },
+//       { header: "Withdrawn?", key: "withdrawn", width: 10 },
+//       { header: "On Hold?", key: "onHold", width: 10 },
+//       // Offer / submission
+//       { header: "Submitted At", key: "submittedAt", width: 18 },
+//       { header: "Offer Status", key: "offerStatus", width: 14 },
+//       // CTC — all four
+//       { header: "Current CTC", key: "currentCtc", width: 14 },
+//       { header: "Expected CTC", key: "expectedCtc", width: 14 },
+//       { header: "Negotiated CTC", key: "negotiatedCtc", width: 14 },
+//       { header: "Offered CTC", key: "offeredCtc", width: 14 },
+//       // Joining timeline
+//       { header: "Notice Period", key: "noticePeriod", width: 14 },
+//       { header: "Last Working Day", key: "lastWorkingDay", width: 16 },
+//       { header: "Expected Joining", key: "expectedJoining", width: 16 },
+//       { header: "Actual Joining", key: "actualJoining", width: 16 },
+//       { header: "Derived Joining", key: "derivedJoining", width: 16 },
+//       { header: "Month of Joining", key: "monthOfJoining", width: 16 },
+//       { header: "Days to Join", key: "daysToJoin", width: 12 },
+//       // Req sale value context (everyone sees computed; others RBAC-gated)
+//       { header: "Req Salary Min", key: "reqSalaryMin", width: 14 },
+//       { header: "Req Salary Max", key: "reqSalaryMax", width: 14 },
+//       { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+//       { header: "Sale Basis", key: "saleValueBasis", width: 16 },
+//     ];
+
+//     applyHeader(sheet2.getRow(1));
+
+//     for (const p of pipelines as any[]) {
+//       const r = reqLookup[p.requirementId];
+//       if (!r) continue;
+
+//       const stageAgeMins = Math.floor(
+//         (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+//       );
+//       const totalPipelineMins =
+//         (p.stageHistory ?? []).reduce(
+//           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
+//           0
+//         ) + stageAgeMins;
+
+//       // ── Derive joining date using all available fields ─────────────────
+//       const derivedJoining = deriveJoiningDate(
+//         p.actualJoiningDate,
+//         p.expectedJoiningDate,
+//         p.lastWorkingDate,
+//         p.noticePeriod
+//       );
+//       const monthOfJoining = safeFormat(derivedJoining, "MMMM yyyy");
+//       const daysToJoin = derivedJoining
+//         ? Math.max(0, Math.floor((derivedJoining.getTime() - now) / 86400000))
+//         : "";
+
+//       // ── Sale value for this requirement ────────────────────────────────
+//       const canSeeSale =
+//         isSuperAdmin ||
+//         userId === r.createdBy.id ||
+//         (managerSetByCreator[r.createdBy.id]?.has(userId) ?? false);
+
+//       const { computedSaleValue, saleValueBasis } = computeSaleValue({
+//         saleValue: r.saleValue,
+//         totalOpenings: r.totalOpenings,
+//         salaryMin: r.salaryMin,
+//         band: r.band
+//           ? { value: r.band.value != null ? Number(r.band.value) : null }
+//           : null,
+//         client: r.client
+//           ? {
+//               percentageValue:
+//                 r.client.percentageValue != null
+//                   ? Number(r.client.percentageValue)
+//                   : null,
+//             }
+//           : null,
+//       });
+
+//       const candidateStatus = p.currentStage?.isTerminal
+//         ? "Placed"
+//         : p.currentStage?.isNearTerminal
+//         ? "Near Terminal"
+//         : p.isRejected
+//         ? "Rejected"
+//         : p.isWithdrawn
+//         ? "Withdrawn"
+//         : p.isOnHold
+//         ? "On Hold"
+//         : "Active";
+
+//       const dataRow = sheet2.addRow({
+//         reqCode: r.reqCode,
+//         reqTitle: r.title,
+//         reqSL: r.serviceLine?.name ?? "",
+//         reqClient: r.client?.name ?? "",
+//         name: p.snapshot?.fullName ?? "",
+//         email: p.snapshot?.email ?? "",
+//         phone: p.snapshot?.phone ?? "",
+//         title: p.snapshot?.currentTitle ?? "",
+//         company: p.snapshot?.currentCompany ?? "",
+//         exp: p.snapshot?.totalExpYears ?? "",
+//         skills: Array.isArray(p.snapshot?.topSkills)
+//           ? p.snapshot.topSkills.join(", ")
+//           : p.snapshot?.topSkills ?? "",
+//         stage: p.currentStage?.label ?? "",
+//         isTerminal: p.currentStage?.isTerminal ? "Yes" : "No",
+//         isNearTerminal: p.currentStage?.isNearTerminal ? "Yes" : "No",
+//         status: candidateStatus,
+//         recruiter: p.recruiter
+//           ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
+//           : "",
+//         addedOn: new Date(p.createdAt),
+//         pipelineDays: Math.floor(totalPipelineMins / 1440),
+//         stageAging: formatAging(stageAgeMins),
+//         rejected: p.isRejected ? "Yes" : "No",
+//         withdrawn: p.isWithdrawn ? "Yes" : "No",
+//         onHold: p.isOnHold ? "Yes" : "No",
+//         submittedAt: safeDate(p.submittedAt) ?? "",
+//         offerStatus: p.offerStatus ?? "",
+//         // CTC — all four fields
+//         currentCtc: p.currentCtc != null ? Number(p.currentCtc) : "",
+//         expectedCtc: p.expectedCtc != null ? Number(p.expectedCtc) : "",
+//         negotiatedCtc: p.negotiatedCtc != null ? Number(p.negotiatedCtc) : "",
+//         offeredCtc: p.offeredCtc != null ? Number(p.offeredCtc) : "",
+//         // Joining timeline — all four sources + derived
+//         noticePeriod: p.noticePeriod ?? "",
+//         lastWorkingDay: safeDate(p.lastWorkingDate) ?? "",
+//         expectedJoining: safeDate(p.expectedJoiningDate) ?? "",
+//         actualJoining: safeDate(p.actualJoiningDate) ?? "",
+//         derivedJoining: derivedJoining ?? "",
+//         monthOfJoining,
+//         daysToJoin,
+//         // Sale value context
+//         reqSalaryMin:
+//           canSeeSale && r.salaryMin != null ? Number(r.salaryMin) : "",
+//         reqSalaryMax:
+//           canSeeSale && r.salaryMax != null ? Number(r.salaryMax) : "",
+//         computedSaleValue: computedSaleValue ?? "",
+//         saleValueBasis:
+//           computedSaleValue != null ? saleValueBasis : "NOT_FOUND",
+//       });
+
+//       dataRow.height = 18;
+
+//       // Date formatting
+//       dataRow.getCell("addedOn").numFmt = "dd-mmm-yyyy";
+//       if (safeDate(p.submittedAt))
+//         dataRow.getCell("submittedAt").numFmt = "dd-mmm-yyyy hh:mm";
+//       if (safeDate(p.lastWorkingDate))
+//         dataRow.getCell("lastWorkingDay").numFmt = "dd-mmm-yyyy";
+//       if (safeDate(p.expectedJoiningDate))
+//         dataRow.getCell("expectedJoining").numFmt = "dd-mmm-yyyy";
+//       if (safeDate(p.actualJoiningDate))
+//         dataRow.getCell("actualJoining").numFmt = "dd-mmm-yyyy";
+//       if (derivedJoining)
+//         dataRow.getCell("derivedJoining").numFmt = "dd-mmm-yyyy";
+
+//       // Terminal rows — green
+//       if (p.currentStage?.isTerminal) {
+//         ["stage", "isTerminal", "status"].forEach((k) => {
+//           dataRow.getCell(k).fill = FILLS.lightGreen;
+//           dataRow.getCell(k).font = { bold: true, color: { argb: "FF1A5C2A" } };
+//         });
+//         if (monthOfJoining) {
+//           dataRow.getCell("monthOfJoining").fill = FILLS.lightGreen;
+//           dataRow.getCell("monthOfJoining").font = {
+//             bold: true,
+//             color: { argb: "FF1A5C2A" },
+//           };
+//         }
+//       }
+
+//       // Near terminal — amber
+//       if (p.currentStage?.isNearTerminal && !p.currentStage?.isTerminal) {
+//         ["stage", "isNearTerminal", "status"].forEach((k) => {
+//           dataRow.getCell(k).fill = FILLS.lightAmber;
+//           dataRow.getCell(k).font = { bold: true };
+//         });
+//       }
+
+//       // Rejected/withdrawn — grey out
+//       if (p.isRejected || p.isWithdrawn) {
+//         dataRow.eachCell((cell) => {
+//           cell.font = { ...cell.font, color: { argb: "FF9E9E9E" } };
+//         });
+//       }
+
+//       // Sale value cell styling
+//       if (computedSaleValue != null) {
+//         dataRow.getCell("computedSaleValue").fill = FILLS.lightGreen;
+//         dataRow.getCell("computedSaleValue").font = { bold: true };
+//         dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+//       }
+//     }
+
+//     sheet2.autoFilter = {
+//       from: { row: 1, column: 1 },
+//       to: { row: 1, column: sheet2.columnCount },
+//     };
+
+//     // ─────────────────────────────────────────────────────────────────────
+//     // Stream
+//     // ─────────────────────────────────────────────────────────────────────
+//     const dateStr = new Date().toISOString().split("T")[0];
+//     const filename = `requirements-export-${dateStr}.xlsx`;
+//     res.setHeader(
+//       "Content-Type",
+//       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+//     );
+//     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+//     await workbook.xlsx.write(res);
+//     res.end();
+//   } catch (err) {
+//     console.error("exportRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to export requirements" });
+//   }
+// };
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. CANDIDATE FUNNEL REPORT
 // GET /reports/candidates

@@ -1,124 +1,39 @@
 // File: reports.overview.drill.controller.ts
-// Path: src/controller/reports/reports.overview.drill.controller.ts
+// Path: src/controllers/reports.overview.drill.controller.ts
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
+import { format, addDays, addMonths } from "date-fns";
+import { resolveOrgTreeDown } from "./reports.controller";
+// import { resolveOrgTreeDown } from "@/services/orgTreeService";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DATE WINDOW (same as overview controller)
+// TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-function startOfDay(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-function addDays(d: Date, n: number): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-function startOfMonth(d: Date): Date {
-  const x = new Date(d);
-  x.setDate(1);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function isDateOnly(s: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
-}
-
-interface DateWindow {
-  gte?: Date;
-  lte?: Date;
-}
-
-function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
-  const now = new Date();
-  if (q.hours) {
-    const h = parseInt(q.hours, 10);
-    if (!Number.isNaN(h) && h > 0)
-      return { gte: new Date(now.getTime() - h * 60 * 60 * 1000), lte: now };
-  }
-  switch (q.range) {
-    case "today":
-      return { gte: startOfDay(now), lte: now };
-    case "yesterday": {
-      const y = addDays(now, -1);
-      return { gte: startOfDay(y), lte: endOfDay(y) };
-    }
-    case "last7":
-      return { gte: startOfDay(addDays(now, -6)), lte: now };
-    case "last30":
-      return { gte: startOfDay(addDays(now, -29)), lte: now };
-    case "thisMonth":
-      return { gte: startOfMonth(now), lte: now };
-    default:
-      break;
-  }
-  const w: DateWindow = {};
-  if (q.fromDate)
-    w.gte = isDateOnly(q.fromDate)
-      ? startOfDay(new Date(q.fromDate))
-      : new Date(q.fromDate);
-  if (q.toDate)
-    w.lte = isDateOnly(q.toDate)
-      ? endOfDay(new Date(q.toDate))
-      : new Date(q.toDate);
-  return w;
-}
-
-function resolveScopedUserIds(req: Request): string[] | null {
-  const scope = req.scopeFilter;
-  if (!scope || scope.type === "ALL") return null;
-  switch (scope.type) {
-    case "OWN":
-      return [scope.userId!];
-    case "TEAM":
-      return scope.teamMemberIds ?? [scope.userId!];
-    case "REPORTING":
-      return scope.subordinateIds ?? [scope.userId!];
-    case "REPORTING_LINE":
-      return scope.reportingLineIds ?? [scope.userId!];
-    case "BU":
-      return scope.subordinateIds ?? [scope.userId!];
-    default:
-      return [scope.userId!];
-  }
-}
-
-function resolveEffectiveUserIds(
-  req: Request,
-  q: Record<string, string | undefined>
-): string[] | null {
-  const scopedUserIds = resolveScopedUserIds(req);
-  if (!q.userIds) return scopedUserIds;
-  const teamIds = q.userIds
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  if (!teamIds.length) return scopedUserIds;
-  if (scopedUserIds === null) return teamIds;
-  const allowed = new Set(scopedUserIds);
-  const intersected = teamIds.filter((id) => allowed.has(id));
-  if (!intersected.length) return [req.user!.id];
-  return intersected;
-}
+type DrillType =
+  | "stage"
+  | "sourced"
+  | "active_pipeline"
+  | "placed"
+  | "near_terminal"
+  | "dropped"
+  | "on_hold"
+  | "rejected"
+  | "withdrawn"
+  | "recruiter"
+  | "service_line"
+  | "department"
+  | "business_unit";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE SELECT — full candidate detail for drill view
+// SHARED SELECT — used by both drill endpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DRILL_PIPELINE_SELECT = {
+export const DRILL_PIPELINE_SELECT = {
   id: true,
   requirementId: true,
-  recruiterId: true,
-  currentStageId: true,
+  stageUpdatedAt: true,
   isRejected: true,
   isWithdrawn: true,
   isOnHold: true,
@@ -128,31 +43,24 @@ const DRILL_PIPELINE_SELECT = {
   currentCtc: true,
   expectedCtc: true,
   negotiatedCtc: true,
-  actualJoiningDate: true,
   expectedJoiningDate: true,
+  actualJoiningDate: true,
   lastWorkingDate: true,
   noticePeriod: true,
-  stageUpdatedAt: true,
   createdAt: true,
   currentStage: {
     select: {
       id: true,
       code: true,
       label: true,
-      order: true,
       isTerminal: true,
+      isNearTerminal: true,
       isSourced: true,
-      pipeline: true,
+      order: true,
     },
   },
-  stageHistory: { select: { timeInPrevStageMins: true } },
   recruiter: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-    },
+    select: { id: true, firstName: true, lastName: true, email: true },
   },
   snapshot: {
     select: {
@@ -173,142 +81,203 @@ const DRILL_PIPELINE_SELECT = {
       title: true,
       status: true,
       totalOpenings: true,
-      client: { select: { id: true, name: true } },
+      salaryMin: true,
+      salaryMax: true,
+      saleValue: true,
+      client: { select: { id: true, name: true, percentageValue: true } },
       clientSpoc: { select: { id: true, firstName: true, lastName: true } },
-      serviceLine: { select: { id: true, name: true } },
       businessUnit: { select: { id: true, name: true } },
+      serviceLine: { select: { id: true, name: true } },
+      band: { select: { id: true, code: true, name: true, value: true } },
     },
   },
+  stageHistory: { select: { timeInPrevStageMins: true } },
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHAPE the pipeline row into a clean drill row the frontend can use directly
-// and SheetJS can iterate without any further transformation
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-function formatAging(mins: number): string {
+function formatAgingLabel(mins: number): string {
   if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d`;
-  return `${Math.floor(d / 30)}mo`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h`;
+  if (mins < 10080) return `${Math.floor(mins / 1440)}d`;
+  if (mins < 43800) return `${Math.floor(mins / 10080)}wk`;
+  return `${Math.floor(mins / 43800)}mo`;
 }
 
-function shapePipeline(p: any) {
-  const now = Date.now();
+/**
+ * Derive "expected joining date" from available fields.
+ * Priority: actualJoiningDate → expectedJoiningDate → lastWorkingDate + noticePeriod
+ */
+function deriveJoiningDate(
+  actualJoiningDate: Date | null,
+  expectedJoiningDate: Date | null,
+  lastWorkingDate: Date | null,
+  noticePeriod: string | null
+): Date | null {
+  if (actualJoiningDate) return actualJoiningDate;
+  if (expectedJoiningDate) return expectedJoiningDate;
+  if (lastWorkingDate) return lastWorkingDate; // LWD itself is effectively joining day
+
+  // Try to parse noticePeriod string like "30 days", "2 months", "1 month", "60"
+  if (noticePeriod) {
+    const lower = noticePeriod.toLowerCase().trim();
+    const numMatch = lower.match(/^(\d+)/);
+    const num = numMatch ? parseInt(numMatch[1], 10) : null;
+    if (num != null) {
+      const base = new Date();
+      if (lower.includes("month")) return addMonths(base, num);
+      return addDays(base, num); // default to days
+    }
+  }
+  return null;
+}
+
+/**
+ * Shape a pipeline row into the canonical DrillRow format
+ */
+export function shapeDrillRow(p: any, now: number) {
   const stageAgeMins = Math.floor(
     (now - new Date(p.stageUpdatedAt).getTime()) / 60000
   );
-  const totalMins =
+  const totalPipelineMins =
     (p.stageHistory ?? []).reduce(
-      (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
+      (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
       0
     ) + stageAgeMins;
 
-  const rq = p.requirement;
+  const derivedJoining = deriveJoiningDate(
+    p.actualJoiningDate,
+    p.expectedJoiningDate,
+    p.lastWorkingDate,
+    p.noticePeriod
+  );
+
+  const req = p.requirement ?? {};
+  const band = req.band ?? null;
+  const client = req.client ?? null;
+
+  // Compute sale value inline (same priority chain as requirementsController)
+  let computedSaleValue: number | null = null;
+  let saleValueBasis: string = "NOT_FOUND";
+
+  const openings = req.totalOpenings ?? 1;
+  if (req.saleValue != null && Number(req.saleValue) > 0) {
+    computedSaleValue = Number(req.saleValue) * openings;
+    saleValueBasis = "SALE_VALUE";
+  } else if (band?.value != null && Number(band.value) > 0) {
+    computedSaleValue = Number(band.value) * openings;
+    saleValueBasis = "BAND";
+  } else {
+    const pct =
+      client?.percentageValue != null ? Number(client.percentageValue) : null;
+    const salMin = req.salaryMin != null ? Number(req.salaryMin) : null;
+    if (pct != null && pct > 0 && salMin != null && salMin > 0) {
+      computedSaleValue = salMin * (pct / 100) * openings;
+      saleValueBasis = "FIXED_PCT";
+    }
+  }
 
   return {
-    // Pipeline identity
     pipelineId: p.id,
-    addedOn: p.createdAt,
-    pipelineDays: Math.floor(totalMins / 1440),
-    stageAging: formatAging(stageAgeMins),
+    addedOn: p.createdAt?.toISOString() ?? null,
+    pipelineDays: Math.floor(totalPipelineMins / 1440),
+    stageAging: formatAgingLabel(stageAgeMins),
     stageAgeMins,
-
-    // Stage
-    stageId: p.currentStageId,
+    stageLabel: p.currentStage?.label ?? "—",
     stageCode: p.currentStage?.code ?? "",
-    stageLabel: p.currentStage?.label ?? "",
+    stageOrder: p.currentStage?.order ?? 0,
     isTerminal: p.currentStage?.isTerminal ?? false,
+    isNearTerminal: p.currentStage?.isNearTerminal ?? false,
     isSourced: p.currentStage?.isSourced ?? false,
-
-    // Status flags
-    isRejected: p.isRejected,
-    isWithdrawn: p.isWithdrawn,
-    isOnHold: p.isOnHold,
-
-    // Submission / offer
-    submittedAt: p.submittedAt ?? null,
+    isRejected: p.isRejected ?? false,
+    isWithdrawn: p.isWithdrawn ?? false,
+    isOnHold: p.isOnHold ?? false,
+    submittedAt: p.submittedAt?.toISOString() ?? null,
     offerStatus: p.offerStatus ?? null,
-    offeredCtc: p.offeredCtc ?? null,
-    currentCtc: p.currentCtc ?? null,
-    expectedCtc: p.expectedCtc ?? null,
-    negotiatedCtc: p.negotiatedCtc ?? null,
-
-    // Joining
-    expectedJoiningDate: p.expectedJoiningDate ?? null,
-    actualJoiningDate: p.actualJoiningDate ?? null,
-    lastWorkingDate: p.lastWorkingDate ?? null,
+    offeredCtc: p.offeredCtc != null ? Number(p.offeredCtc) : null,
+    currentCtc: p.currentCtc != null ? Number(p.currentCtc) : null,
+    expectedCtc: p.expectedCtc != null ? Number(p.expectedCtc) : null,
+    negotiatedCtc: p.negotiatedCtc != null ? Number(p.negotiatedCtc) : null,
+    lastWorkingDate: p.lastWorkingDate?.toISOString() ?? null,
+    expectedJoiningDate: p.expectedJoiningDate?.toISOString() ?? null,
+    actualJoiningDate: p.actualJoiningDate?.toISOString() ?? null,
+    derivedJoiningDate: derivedJoining?.toISOString() ?? null,
+    monthOfJoining: derivedJoining ? format(derivedJoining, "MMMM yyyy") : null,
+    daysToJoin: derivedJoining
+      ? Math.max(0, Math.floor((derivedJoining.getTime() - now) / 86400000))
+      : null,
     noticePeriod: p.noticePeriod ?? null,
-
-    // Candidate snapshot
     candidateName: p.snapshot?.fullName ?? "—",
     candidateEmail: p.snapshot?.email ?? "",
     candidatePhone: p.snapshot?.phone ?? "",
     currentTitle: p.snapshot?.currentTitle ?? "",
     currentCompany: p.snapshot?.currentCompany ?? "",
     expYears: p.snapshot?.totalExpYears ?? null,
-    topSkills: (p.snapshot?.topSkills ?? []).join(", "),
+    topSkills: Array.isArray(p.snapshot?.topSkills)
+      ? p.snapshot.topSkills.join(", ")
+      : p.snapshot?.topSkills ?? "",
     resumeUrl: p.snapshot?.resumeUrl ?? null,
-
-    // Recruiter
-    recruiterId: p.recruiterId,
-    recruiterName: `${p.recruiter?.firstName ?? ""} ${
-      p.recruiter?.lastName ?? ""
-    }`.trim(),
+    recruiterId: p.recruiter?.id ?? "",
+    recruiterName:
+      [p.recruiter?.firstName, p.recruiter?.lastName]
+        .filter(Boolean)
+        .join(" ") || "—",
     recruiterEmail: p.recruiter?.email ?? "",
-
-    // Requirement
-    requirementId: rq?.id ?? "",
-    reqCode: rq?.reqCode ?? "",
-    reqTitle: rq?.title ?? "",
-    reqStatus: rq?.status ?? "",
-    totalOpenings: rq?.totalOpenings ?? 0,
-    clientName: rq?.client?.name ?? "",
-    clientSpoc: rq?.clientSpoc
-      ? `${rq.clientSpoc.firstName} ${rq.clientSpoc.lastName}`.trim()
+    requirementId: req.id ?? p.requirementId ?? "",
+    reqCode: req.reqCode ?? "",
+    reqTitle: req.title ?? "",
+    reqStatus: req.status ?? "",
+    totalOpenings: req.totalOpenings ?? 0,
+    salaryMin: req.salaryMin != null ? Number(req.salaryMin) : null,
+    salaryMax: req.salaryMax != null ? Number(req.salaryMax) : null,
+    computedSaleValue,
+    saleValueBasis,
+    bandCode: band?.code ?? null,
+    bandName: band?.name ?? null,
+    bandValue: band?.value != null ? Number(band.value) : null,
+    clientPct:
+      client?.percentageValue != null ? Number(client.percentageValue) : null,
+    clientName: client?.name ?? "",
+    clientSpoc: req.clientSpoc
+      ? [req.clientSpoc.firstName, req.clientSpoc.lastName]
+          .filter(Boolean)
+          .join(" ")
       : "",
-    serviceLineName: rq?.serviceLine?.name ?? "",
-    businessUnitName: rq?.businessUnit?.name ?? "",
+    serviceLineName: req.serviceLine?.name ?? "",
+    businessUnitName: req.businessUnit?.name ?? "",
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DRILL TYPES
+// resolveEffectiveUserIds — shared scope helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function resolveEffectiveUserIds(
+  req: Request,
+  q: Record<string, string | undefined>
+): Promise<string[] | null> {
+  if (req.user!.isSuperAdmin) return null;
+
+  // If frontend passes explicit userIds (from TeamTreePicker), respect them
+  if (q.userIds) {
+    return q.userIds
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  // Otherwise BFS down the org tree from this user
+  return resolveOrgTreeDown(req.user!.id, false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getOverviewDrill
+// GET /reports/overview/drill?type=...&requirementId=...
 //
-// type=stage          → stageId required — candidates in that stage
-// type=sourced        → candidates in isSourced=true stages
-// type=active_pipeline→ pipeline=true, isTerminal=false, isSourced=false
-// type=placed         → isTerminal=true
-// type=near_terminal  → isNearTerminal=true
-// type=dropped        → pipeline=false, isTerminal=false
-// type=on_hold        → isOnHold=true
-// type=rejected       → isRejected=true
-// type=withdrawn      → isWithdrawn=true
-// type=recruiter      → recruiterId required — all candidates for that recruiter
-// type=service_line   → serviceLineId required — all candidates for that SL
-// type=department     → departmentId required — resolve to recruiter ids first
-// type=business_unit  → businessUnitId required
-// ─────────────────────────────────────────────────────────────────────────────
-
-type DrillType =
-  | "stage"
-  | "sourced"
-  | "active_pipeline"
-  | "placed"
-  | "near_terminal"
-  | "dropped"
-  | "on_hold"
-  | "rejected"
-  | "withdrawn"
-  | "recruiter"
-  | "service_line"
-  | "department"
-  | "business_unit";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /reports/overview/drill
+// EXTENDED: now accepts optional `requirementId` to scope to a single requirement.
+// All existing drill types still work as before — requirementId is additive filter only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getOverviewDrill = async (req: Request, res: Response) => {
@@ -323,7 +292,7 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
     }
 
     const win = resolveDateWindow(q);
-    const scopedUserIds = resolveEffectiveUserIds(req, q);
+    const scopedUserIds = await resolveEffectiveUserIds(req, q);
 
     // ── Base requirement filter ────────────────────────────────────────────
     const reqWhere: Record<string, any> = { deletedAt: null };
@@ -337,13 +306,15 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
         ...(win.lte ? { lte: win.lte } : {}),
       };
     }
+    // NEW: scope to a single requirement if provided
+    if (q.requirementId) reqWhere.id = q.requirementId;
 
     // ── Base pipeline filter ───────────────────────────────────────────────
     const pipelineWhere: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null)
       pipelineWhere.recruiterId = { in: scopedUserIds };
 
-    // ── Stage definitions (needed for type-based filters) ─────────────────
+    // ── Stage definitions ──────────────────────────────────────────────────
     const slFilter = q.serviceLineId
       ? { OR: [{ serviceLineId: null }, { serviceLineId: q.serviceLineId }] }
       : {};
@@ -352,31 +323,25 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
     switch (drillType) {
       case "stage": {
         if (!q.stageId) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "stageId required for type=stage",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "stageId required for type=stage",
+          });
         }
         pipelineWhere.currentStageId = q.stageId;
         break;
       }
 
       case "sourced": {
-        // candidates in isSourced=true stages
         const sourcedStages = await prisma.pipelineStage.findMany({
           where: { isSourced: true, isActive: true },
           select: { id: true },
         });
-        pipelineWhere.currentStageId = {
-          in: sourcedStages.map((s) => s.id),
-        };
+        pipelineWhere.currentStageId = { in: sourcedStages.map((s) => s.id) };
         break;
       }
 
       case "active_pipeline": {
-        // pipeline=true, isTerminal=false, isSourced=false
         const activeStages = await prisma.pipelineStage.findMany({
           where: {
             pipeline: true,
@@ -416,7 +381,6 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
       }
 
       case "dropped": {
-        // pipeline=false, isTerminal=false — fell out
         const exitStages = await prisma.pipelineStage.findMany({
           where: { pipeline: false, isTerminal: false, isActive: true },
           select: { id: true },
@@ -444,14 +408,11 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "recruiter": {
         if (!q.recruiterId) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "recruiterId required for type=recruiter",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "recruiterId required for type=recruiter",
+          });
         }
-        // Respect scope — don't allow drilling into out-of-scope recruiters
         if (scopedUserIds !== null && !scopedUserIds.includes(q.recruiterId)) {
           return res
             .status(403)
@@ -463,12 +424,10 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "service_line": {
         if (!q.drillServiceLineId) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "drillServiceLineId required for type=service_line",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "drillServiceLineId required for type=service_line",
+          });
         }
         pipelineWhere.requirement = {
           ...reqWhere,
@@ -479,12 +438,10 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "department": {
         if (!q.departmentId) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "departmentId required for type=department",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "departmentId required for type=department",
+          });
         }
         const deptUsers = await prisma.user.findMany({
           where: { departmentId: q.departmentId, isActive: true },
@@ -501,12 +458,10 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "business_unit": {
         if (!q.drillBusinessUnitId) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "drillBusinessUnitId required for type=business_unit",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "drillBusinessUnitId required for type=business_unit",
+          });
         }
         pipelineWhere.requirement = {
           ...reqWhere,
@@ -516,15 +471,13 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
       }
 
       default:
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: `Unknown drill type: ${drillType}`,
-          });
+        return res.status(400).json({
+          success: false,
+          message: `Unknown drill type: ${drillType}`,
+        });
     }
 
-    // ── Fetch — cap at 500 rows for performance, frontend exports this ─────
+    // ── Fetch — cap at 500 rows ────────────────────────────────────────────
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: pipelineWhere,
       select: DRILL_PIPELINE_SELECT as any,
@@ -532,9 +485,10 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
       take: 500,
     });
 
-    const rows = pipelines.map(shapePipeline);
+    const now = Date.now();
+    const rows = pipelines.map((p: any) => shapeDrillRow(p, now));
 
-    // ── Label for drawer title ─────────────────────────────────────────────
+    // ── Label ──────────────────────────────────────────────────────────────
     let label = drillType.replace(/_/g, " ");
     if (drillType === "stage" && q.stageLabel) label = q.stageLabel;
     if (drillType === "recruiter" && q.recruiterName) label = q.recruiterName;
@@ -560,3 +514,151 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch drill data" });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirementCandidateDrill
+// GET /reports/requirements/:requirementId/candidates?stageId=&
+//
+// NEW — scoped candidate list for a single requirement.
+// Used by RequirementTable when a stage count number is clicked.
+// No type-based filtering — just requirement + optional stageId.
+// Respects user scope (recruiterId).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRequirementCandidateDrill = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { requirementId } = req.params;
+    const q = req.query as Record<string, string | undefined>;
+    const scopedUserIds = await resolveEffectiveUserIds(req, q);
+
+    if (!requirementId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "requirementId is required" });
+    }
+
+    const pipelineWhere: Record<string, any> = {
+      requirementId,
+    };
+
+    // Optional stage filter — if stageId provided, only show candidates in that stage
+    if (q.stageId) {
+      pipelineWhere.currentStageId = q.stageId;
+    }
+
+    // Scope — recruiters only see their own candidates unless elevated
+    if (scopedUserIds !== null) {
+      pipelineWhere.recruiterId = { in: scopedUserIds };
+    }
+
+    const pipelines = await prisma.requirementCandidatePipeline.findMany({
+      where: pipelineWhere,
+      select: DRILL_PIPELINE_SELECT as any,
+      orderBy: [{ currentStage: { order: "asc" } }, { createdAt: "desc" }],
+      take: 500,
+    });
+
+    const now = Date.now();
+    const rows = pipelines.map((p: any) => shapeDrillRow(p, now));
+
+    // ── Stage label for title ──────────────────────────────────────────────
+    let stageLabel = q.stageLabel ?? null;
+    if (!stageLabel && q.stageId) {
+      const stage = await prisma.pipelineStage.findUnique({
+        where: { id: q.stageId },
+        select: { label: true },
+      });
+      stageLabel = stage?.label ?? null;
+    }
+
+    // ── Quick aggregate stats ──────────────────────────────────────────────
+    const stats = {
+      total: rows.length,
+      terminal: rows.filter((r) => r.isTerminal).length,
+      nearTerminal: rows.filter((r) => r.isNearTerminal && !r.isTerminal)
+        .length,
+      active: rows.filter(
+        (r) =>
+          !r.isTerminal &&
+          !r.isNearTerminal &&
+          !r.isRejected &&
+          !r.isWithdrawn &&
+          !r.isOnHold
+      ).length,
+      onHold: rows.filter((r) => r.isOnHold).length,
+      rejected: rows.filter((r) => r.isRejected).length,
+      withdrawn: rows.filter((r) => r.isWithdrawn).length,
+    };
+
+    return res.json({
+      success: true,
+      data: rows,
+      meta: {
+        total: rows.length,
+        stageLabel,
+        requirementId,
+        capped: rows.length === 500,
+        stats,
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidateDrill:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch requirement candidates",
+    });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers — date window resolver (keep in sync with your existing one)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function resolveDateWindow(q: Record<string, string | undefined>): {
+  gte?: Date;
+  lte?: Date;
+} {
+  const now = new Date();
+  if (q.hours) {
+    const h = parseInt(q.hours, 10);
+    return { gte: new Date(now.getTime() - h * 3600000) };
+  }
+  if (q.fromDate || q.toDate) {
+    return {
+      ...(q.fromDate ? { gte: new Date(q.fromDate) } : {}),
+      ...(q.toDate
+        ? { lte: new Date(new Date(q.toDate).setHours(23, 59, 59, 999)) }
+        : {}),
+    };
+  }
+  if (q.range) {
+    const start = new Date(now);
+    switch (q.range) {
+      case "today":
+        start.setHours(0, 0, 0, 0);
+        return { gte: start };
+      case "yesterday": {
+        const s = new Date(now);
+        s.setDate(s.getDate() - 1);
+        s.setHours(0, 0, 0, 0);
+        const e = new Date(s);
+        e.setHours(23, 59, 59, 999);
+        return { gte: s, lte: e };
+      }
+      case "last7":
+        start.setDate(start.getDate() - 7);
+        return { gte: start };
+      case "last30":
+        start.setDate(start.getDate() - 30);
+        return { gte: start };
+      case "thisMonth":
+        start.setDate(1);
+        start.setHours(0, 0, 0, 0);
+        return { gte: start };
+    }
+  }
+  return {};
+}
