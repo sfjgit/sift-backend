@@ -75,3 +75,40 @@ export async function fetchLiveActivity(
   if (!res.ok) return null; // non-fatal — /naukri/me falls back to whatever it already had
   return res.json();
 }
+
+// NEW — sends a recruiter's reason over to candidate-service, so it lands on
+// the NaukriReconciliationDaily row the admin's naukri-logs page actually
+// reads (and, from there, into the Excel export). Called right after
+// saveReason writes the reason into core's own NaukriRecruiterDaily — this
+// is just the mirror-over step, not the source of truth for the reason.
+export async function postReasonToCandidateService(
+  recruiterId: string,
+  reportDate: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${process.env.CANDIDATE_SERVICE}/api/internal/naukri/reason`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-token": process.env.INTERNAL_SERVICE_TOKEN ?? "",
+        },
+        body: JSON.stringify({ recruiterId, reportDate, reason }),
+      },
+    );
+    if (!res.ok) {
+      console.error(
+        `Failed to mirror reason to candidate-service: ${res.status} ${await res.text()}`,
+      );
+    }
+  } catch (err: any) {
+    // non-fatal — the reason is already safely saved in core's own
+    // NaukriRecruiterDaily either way; don't let this break the recruiter's
+    // submission if candidate-service is briefly unreachable
+    console.error(
+      `Error mirroring reason to candidate-service: ${err.message}`,
+    );
+  }
+}

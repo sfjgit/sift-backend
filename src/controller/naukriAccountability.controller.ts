@@ -11,6 +11,7 @@ import type { Request, Response } from "express";
 import {
   fetchReconciliation,
   fetchLiveActivity,
+  postReasonToCandidateService,
 } from "@/lib/naukriData.client";
 import {
   resolveViewerScope,
@@ -227,6 +228,14 @@ export async function saveReason(req: Request, res: Response) {
       body: reason,
     },
   });
+
+  // ✅ NEW — mirror the reason over to candidate-service so the admin's
+  // naukri-logs page (which reads NaukriReconciliationDaily, not this table)
+  // can see it too, and it flows into the Excel export. Non-fatal on its own
+  // (see postReasonToCandidateService) — the recruiter's submission has
+  // already succeeded above regardless of whether this mirror step works.
+  await postReasonToCandidateService(userId, reportDate, reason);
+
   res.json({ ok: true });
 }
 
