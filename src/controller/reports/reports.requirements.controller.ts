@@ -95,6 +95,7 @@ function buildReqWhere(q: Record<string, string>): Record<string, any> {
   if (q.clientId) where.clientId = q.clientId;
   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
+  if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← add this
   return where;
 }
 
@@ -188,10 +189,37 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           : []
         : creatorIds;
 
-    const createdByWhere =
-      effectiveCreatorIds === null
-        ? {}
-        : { createdById: { in: effectiveCreatorIds } };
+    // const createdByWhere =
+    //   effectiveCreatorIds === null
+    //     ? {}
+    //     : { createdById: { in: effectiveCreatorIds } };
+
+    // WITH this — also pull in requirements assigned to anyone in the org tree:
+    let createdByWhere: Record<string, any> = {};
+
+    if (effectiveCreatorIds !== null) {
+      // Requirements assigned to anyone in the org tree
+      const assignedReqRows = await prisma.requirementAssignment.findMany({
+        where: {
+          assignedToId: { in: effectiveCreatorIds },
+          status: "ACTIVE",
+        },
+        select: { requirementId: true },
+      });
+      const assignedReqIds = [
+        ...new Set(assignedReqRows.map((a) => a.requirementId)),
+      ];
+
+      // Union: created by org tree OR assigned to org tree
+      createdByWhere = {
+        OR: [
+          { createdById: { in: effectiveCreatorIds } },
+          ...(assignedReqIds.length > 0
+            ? [{ id: { in: assignedReqIds } }]
+            : []),
+        ],
+      };
+    }
 
     // ── Date window — activity-based filter ──────────────────────────────────
     const win = resolveDateWindow(q);

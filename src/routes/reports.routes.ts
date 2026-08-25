@@ -26,10 +26,23 @@ import {
   exportCandidateReport,
 } from "@/controller/reports/reports.controller";
 
+import {
+  getRecruiterActivity,
+  getRecruiterActivityDrill,
+  exportRecruiterActivity,
+  getActivityExportColumns,
+} from "@/controller/reports/reports.recruiter.activity.controller";
+
 // getRequirementReport now lives in its own controller —
 // it returns saleValueSummary and enriched rows with computedSaleValue etc.
 import { getRequirementReport } from "@/controller/reports/reports.requirements.controller";
 import { exportRequirementReport } from "@/controller/reports/reports.requirements.export.controller";
+
+import { getRecruiterStats } from "@/controller/reports/reports.recruiter.stats.controller";
+import {
+  getRecruiterDrill,
+  getRecruiterDrillMojOptions,
+} from "@/controller/reports/reports.recruiter.drill.controller";
 
 const router = Router();
 const auth = authenticateUser;
@@ -47,9 +60,36 @@ router.get("/my-requirements", auth, getMyRequirements);
 router.get("/sales", auth, scope, getSalesReport);
 router.get("/sales/drill", auth, scope, getSalesDrillByReq);
 
-// ── Recruiters ───────────────────────────────────────────────────────────────
-router.get("/recruiters", auth, scope, getRecruiterReport);
+// ── Recruiters — ORDER MATTERS: specific routes before param routes ──────────
+router.get(
+  "/recruiters/activity/drill",
+  auth,
+  scope,
+  getRecruiterActivityDrill
+);
+
+router.get(
+  "/recruiters/drill/moj-options",
+  auth,
+  scope,
+  getRecruiterDrillMojOptions
+);
+router.get("/recruiters/drill", auth, scope, getRecruiterDrill);
+router.get(
+  "/recruiters/activity/export/columns",
+  auth,
+  scope,
+  getActivityExportColumns
+);
+router.get("/recruiters/stats", auth, scope, getRecruiterStats);
+router.get("/recruiters/activity/export", auth, scope, exportRecruiterActivity);
+router.get("/recruiters/activity", auth, scope, getRecruiterActivity);
 router.get("/recruiters/export", auth, scope, exportRecruiterReport);
+router.get("/recruiters", auth, scope, getRecruiterReport);
+
+// ── Recruiters ───────────────────────────────────────────────────────────────
+// router.get("/recruiters", auth, scope, getRecruiterReport);
+// router.get("/recruiters/export", auth, scope, exportRecruiterReport);
 
 // ── Requirements — ORDER MATTERS ─────────────────────────────────────────────
 // Specific string routes MUST come before param routes.

@@ -347,6 +347,9 @@ const PIPELINE_DETAIL_SELECT = {
       label: true,
       order: true,
       canonicalStage: true,
+      isTerminal: true, // ← ADD
+      isNearTerminal: true, // ← ADD
+      pipeline: true, // ← ADD
     },
   },
   stageHistory: { select: { timeInPrevStageMins: true } },
@@ -913,7 +916,188 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 // GET /reports/recruiters
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildRecruiterRows(pipes: any[]) {
+// function buildRecruiterRows(pipes: any[]) {
+//   type ReqStats = {
+//     requirementId: string;
+//     reqCode: string;
+//     title: string;
+//     status: string;
+//     totalOpenings: number;
+//     client: any;
+//     serviceLine: any;
+//     businessUnit: any;
+//     sourced: number;
+//     submitted: number;
+//     offered: number;
+//     joined: number;
+//     dropped: number;
+//     active: number;
+//     stageCounts: Record<string, number>;
+//   };
+//   type RecAgg = {
+//     id: string;
+//     name: string;
+//     email: string;
+//     sourced: number;
+//     submitted: number;
+//     offered: number;
+//     joined: number;
+//     dropped: number;
+//     active: number;
+//     submitTimeMins: number[];
+//     stageCounts: Record<string, number>;
+//     reqMap: Record<string, ReqStats>;
+//   };
+
+//   const map: Record<string, RecAgg> = {};
+
+//   for (const p of pipes) {
+//     const rid = p.recruiterId;
+//     if (!map[rid]) {
+//       map[rid] = {
+//         id: rid,
+//         name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
+//         email: p.recruiter.email,
+//         sourced: 0,
+//         submitted: 0,
+//         offered: 0,
+//         joined: 0,
+//         dropped: 0,
+//         active: 0,
+//         submitTimeMins: [],
+//         stageCounts: {},
+//         reqMap: {},
+//       };
+//     }
+//     const r = map[rid];
+//     r.sourced++;
+//     r.stageCounts[p.currentStageId] =
+//       (r.stageCounts[p.currentStageId] ?? 0) + 1;
+//     if (p.submittedAt) r.submitted++;
+//     if (p.offerStatus) r.offered++;
+//     if (isJoined(p)) r.joined++;
+//     if (isDropped(p)) r.dropped++;
+//     if (isActive(p)) r.active++;
+//     if (p.submittedAt)
+//       r.submitTimeMins.push(
+//         (p.stageHistory ?? []).reduce(
+//           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
+//           0
+//         )
+//       );
+
+//     const rq = p.requirement;
+//     const reqId = p.requirementId;
+//     if (!r.reqMap[reqId])
+//       r.reqMap[reqId] = {
+//         requirementId: reqId,
+//         reqCode: rq?.reqCode ?? "",
+//         title: rq?.title ?? "",
+//         status: rq?.status ?? "",
+//         totalOpenings: rq?.totalOpenings ?? 0,
+//         client: rq?.client ?? null,
+//         serviceLine: rq?.serviceLine ?? null,
+//         businessUnit: rq?.businessUnit ?? null,
+//         sourced: 0,
+//         submitted: 0,
+//         offered: 0,
+//         joined: 0,
+//         dropped: 0,
+//         active: 0,
+//         stageCounts: {},
+//       };
+//     const rqs = r.reqMap[reqId];
+//     rqs.sourced++;
+//     rqs.stageCounts[p.currentStageId] =
+//       (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
+//     if (p.submittedAt) rqs.submitted++;
+//     if (p.offerStatus) rqs.offered++;
+//     if (isJoined(p)) rqs.joined++;
+//     if (isDropped(p)) rqs.dropped++;
+//     if (isActive(p)) rqs.active++;
+//   }
+
+//   return Object.values(map)
+//     .map((r) => ({
+//       id: r.id,
+//       name: r.name,
+//       email: r.email,
+//       sourced: r.sourced,
+//       submitted: r.submitted,
+//       offered: r.offered,
+//       joined: r.joined,
+//       dropped: r.dropped,
+//       active: r.active,
+//       submissionRate:
+//         r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
+//       offerRate:
+//         r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
+//       joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
+//       avgTimeToSubmitDays:
+//         r.submitTimeMins.length > 0
+//           ? +(
+//               r.submitTimeMins.reduce((a, b) => a + b, 0) /
+//               r.submitTimeMins.length /
+//               1440
+//             ).toFixed(1)
+//           : null,
+//       stageCounts: r.stageCounts,
+//       requirementBreakdown: Object.values(r.reqMap)
+//         .sort((a, b) => b.sourced - a.sourced)
+//         .map((rq) => ({ ...rq })),
+//     }))
+//     .sort((a, b) => b.sourced - a.sourced);
+// }
+
+// File: reports.controller.recruiter.stats.patch.ts
+// Path: DROP INTO src/controller/reports/reports.controller.ts
+//
+// INSTRUCTIONS:
+// 1. Replace the existing `buildRecruiterRows` function wholesale.
+// 2. In `getRecruiterReport`, replace the `pipelines` select to include
+//    the new stage flags (isNearTerminal, isSourced, pipeline).
+// 3. In `exportRecruiterReport`, update the summary sheet columns to add
+//    the new stat columns.
+//
+// WHAT CHANGED vs old version:
+//   OLD: isJoined(p) checked disposition=PLACED || actualJoiningDate → "joined"
+//        isDropped(p) checked disposition=DROPPED || isRejected || isWithdrawn → "dropped"
+//        isActive(p) checked disposition=ACTIVE → "active"
+//
+//   NEW: reads currentStage flags instead:
+//        isTerminal  → placed (achieved)
+//        isNearTerminal && !isTerminal → nearTerminal
+//        pipeline=false → offPipeline (dropped, rejected, duplicate, withdrawn — all "out")
+//        pipeline=true && !isTerminal && !isNearTerminal → inPipeline
+//
+//   "sourced" = total candidates in the recruiter's pipeline — unchanged.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPELINE SELECT — add to your existing PIPELINE_DETAIL_SELECT:
+// currentStage now includes the flags we need.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// In PIPELINE_DETAIL_SELECT, ensure currentStage select has these fields:
+//
+// currentStage: {
+//   select: {
+//     id: true,
+//     code: true,
+//     label: true,
+//     order: true,
+//     canonicalStage: true,
+//     isTerminal: true,      // ← NEW (may already be there)
+//     isNearTerminal: true,  // ← NEW
+//     isSourced: true,       // ← NEW
+//     pipeline: true,        // ← NEW (Boolean — false = off pipeline)
+//   },
+// },
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REPLACEMENT FUNCTION — drop in place of existing buildRecruiterRows
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function buildRecruiterRows(pipes: any[]) {
   type ReqStats = {
     requirementId: string;
     reqCode: string;
@@ -926,11 +1110,13 @@ function buildRecruiterRows(pipes: any[]) {
     sourced: number;
     submitted: number;
     offered: number;
-    joined: number;
-    dropped: number;
-    active: number;
+    placed: number; // isTerminal
+    nearTerminal: number; // isNearTerminal && !isTerminal
+    offPipeline: number; // pipeline=false (rejected, dropped, dup, withdrawn)
+    inPipeline: number; // pipeline=true && !isTerminal && !isNearTerminal
     stageCounts: Record<string, number>;
   };
+
   type RecAgg = {
     id: string;
     name: string;
@@ -938,9 +1124,10 @@ function buildRecruiterRows(pipes: any[]) {
     sourced: number;
     submitted: number;
     offered: number;
-    joined: number;
-    dropped: number;
-    active: number;
+    placed: number; // isTerminal
+    nearTerminal: number; // isNearTerminal && !isTerminal
+    offPipeline: number; // pipeline=false
+    inPipeline: number; // active in pipeline
     submitTimeMins: number[];
     stageCounts: Record<string, number>;
     reqMap: Record<string, ReqStats>;
@@ -958,9 +1145,10 @@ function buildRecruiterRows(pipes: any[]) {
         sourced: 0,
         submitted: 0,
         offered: 0,
-        joined: 0,
-        dropped: 0,
-        active: 0,
+        placed: 0,
+        nearTerminal: 0,
+        offPipeline: 0,
+        inPipeline: 0,
         submitTimeMins: [],
         stageCounts: {},
         reqMap: {},
@@ -972,9 +1160,22 @@ function buildRecruiterRows(pipes: any[]) {
       (r.stageCounts[p.currentStageId] ?? 0) + 1;
     if (p.submittedAt) r.submitted++;
     if (p.offerStatus) r.offered++;
-    if (isJoined(p)) r.joined++;
-    if (isDropped(p)) r.dropped++;
-    if (isActive(p)) r.active++;
+
+    // ── Stage flag classification ─────────────────────────────────────────
+    const stage = p.currentStage;
+    if (stage?.isTerminal) {
+      r.placed++;
+    } else if (stage?.isNearTerminal) {
+      r.nearTerminal++;
+    } else if (stage?.pipeline === false) {
+      // pipeline=false covers: rejected, withdrawn, duplicate, dropped —
+      // anything that is permanently out of the active funnel
+      r.offPipeline++;
+    } else {
+      // pipeline=true, not terminal, not near-terminal → actively in pipeline
+      r.inPipeline++;
+    }
+
     if (p.submittedAt)
       r.submitTimeMins.push(
         (p.stageHistory ?? []).reduce(
@@ -998,9 +1199,10 @@ function buildRecruiterRows(pipes: any[]) {
         sourced: 0,
         submitted: 0,
         offered: 0,
-        joined: 0,
-        dropped: 0,
-        active: 0,
+        placed: 0,
+        nearTerminal: 0,
+        offPipeline: 0,
+        inPipeline: 0,
         stageCounts: {},
       };
     const rqs = r.reqMap[reqId];
@@ -1009,9 +1211,10 @@ function buildRecruiterRows(pipes: any[]) {
       (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
     if (p.submittedAt) rqs.submitted++;
     if (p.offerStatus) rqs.offered++;
-    if (isJoined(p)) rqs.joined++;
-    if (isDropped(p)) rqs.dropped++;
-    if (isActive(p)) rqs.active++;
+    if (stage?.isTerminal) rqs.placed++;
+    else if (stage?.isNearTerminal) rqs.nearTerminal++;
+    else if (stage?.pipeline === false) rqs.offPipeline++;
+    else rqs.inPipeline++;
   }
 
   return Object.values(map)
@@ -1022,14 +1225,16 @@ function buildRecruiterRows(pipes: any[]) {
       sourced: r.sourced,
       submitted: r.submitted,
       offered: r.offered,
-      joined: r.joined,
-      dropped: r.dropped,
-      active: r.active,
+      placed: r.placed,
+      nearTerminal: r.nearTerminal,
+      offPipeline: r.offPipeline,
+      inPipeline: r.inPipeline,
       submissionRate:
         r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
       offerRate:
         r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
-      joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
+      placementRate:
+        r.sourced > 0 ? +((r.placed / r.sourced) * 100).toFixed(1) : 0,
       avgTimeToSubmitDays:
         r.submitTimeMins.length > 0
           ? +(
@@ -1045,6 +1250,45 @@ function buildRecruiterRows(pipes: any[]) {
     }))
     .sort((a, b) => b.sourced - a.sourced);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORT SHEET COLUMNS PATCH
+// In exportRecruiterReport, replace the fixedRight array with this:
+// ─────────────────────────────────────────────────────────────────────────────
+
+// export const RECRUITER_EXPORT_FIXED_RIGHT = [
+//   { header: "Offered", key: "offered", width: 12 },
+//   { header: "Placed", key: "placed", width: 12 }, // was "Joined"
+//   { header: "Near Close", key: "nearTerminal", width: 14 }, // NEW
+//   { header: "In Pipeline", key: "inPipeline", width: 14 }, // was "Active"
+//   { header: "Off Pipeline", key: "offPipeline", width: 14 }, // was "Dropped"
+//   { header: "Avg Days to Submit", key: "avgDays", width: 18 },
+// ];
+
+export const RECRUITER_EXPORT_FIXED_RIGHT = [
+  { header: "Offered", key: "offered", width: 12 },
+  { header: "Placed", key: "placed", width: 12 }, // was "Joined"
+  { header: "Near Close", key: "nearTerminal", width: 14 }, // NEW
+  { header: "In Pipeline", key: "inPipeline", width: 14 }, // was "Active"
+  { header: "Off Pipeline", key: "offPipeline", width: 14 }, // was "Dropped"
+  { header: "Avg Days to Submit", key: "avgDays", width: 18 },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORT ROW PATCH
+// In exportRecruiterReport data loop, replace old joined/dropped/active with:
+//
+//   placed:       r.placed,
+//   nearTerminal: r.nearTerminal,
+//   inPipeline:   r.inPipeline,
+//   offPipeline:  r.offPipeline,
+//
+// And in totals row:
+//   placed:       totalPlaced,
+//   nearTerminal: totalNearTerminal,
+//   inPipeline:   totalInPipeline,
+//   offPipeline:  totalOffPipeline,
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
