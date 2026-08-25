@@ -64,6 +64,9 @@ export const getRequirementDetail = async (req: Request, res: Response) => {
         reqCode: true,
         title: true,
         description: true,
+        requirementCategory: {
+          select: { id: true, name: true, slug: true, description: true },
+        },
         status: true,
         priority: true,
         jobType: true,
@@ -1973,11 +1976,25 @@ export const createRequirement = async (req: Request, res: Response) => {
       resolvedParsedJDId = parsedJD.id;
     }
 
+    if (body.requirementCategoryId) {
+      const category = await prisma.requirementCategory.findUnique({
+        where: { id: body.requirementCategoryId },
+        select: { id: true, isActive: true },
+      });
+      if (!category || !category.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or inactive requirement category",
+        });
+      }
+    }
+
     const requirement = await prisma.requirement.create({
       data: {
         reqCode,
         title: body.title,
         description: body.description ?? null,
+        requirementCategoryId: body.requirementCategoryId ?? null,
         jobType: body.jobType,
         remoteType: body.remoteType,
         priority: body.priority ?? "MEDIUM",

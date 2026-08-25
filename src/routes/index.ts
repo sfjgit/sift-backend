@@ -24,6 +24,7 @@ import { authenticateUser } from "@/middleware/auth";
 import naukriAccountabilityRoutes from "./naukriAccountability.routes";
 import ticketRoutes from "./ticket.routes";
 import publicRoutes from "./public.routes";
+import requirementCategoryRoutes from "./requirementCategory.routes";
 
 const router = Router();
 
@@ -46,6 +47,7 @@ router.use("/business-units", businessUnitRoutes);
 router.use("/departments", departmentRoutes);
 router.use("/service-lines", serviceLineRoutes);
 router.use("/requirements", requirementRoutes);
+router.use("/requirementCategories", requirementCategoryRoutes);
 router.use("/pipeline", pipelineRoutes);
 router.use("/pipeline-stages", pipelineStageRoutes);
 router.use("/assignments", assignmentRoutes);
