@@ -170,7 +170,6 @@ export async function resolveOrgTreeDown(
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENT WHERE builder
 // ─────────────────────────────────────────────────────────────────────────────
-
 function buildReqWhere(
   q: Record<string, string | undefined>,
   opts: { withDateWindow?: boolean } = {}
@@ -178,6 +177,7 @@ function buildReqWhere(
   const { withDateWindow = true } = opts;
   const where: Record<string, any> = { deletedAt: null };
   if (q.clientId) where.clientId = q.clientId;
+  if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← ADD
   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
   if (q.status) where.status = q.status;
@@ -192,6 +192,27 @@ function buildReqWhere(
   }
   return where;
 }
+// function buildReqWhere(
+//   q: Record<string, string | undefined>,
+//   opts: { withDateWindow?: boolean } = {}
+// ): Record<string, any> {
+//   const { withDateWindow = true } = opts;
+//   const where: Record<string, any> = { deletedAt: null };
+//   if (q.clientId) where.clientId = q.clientId;
+//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
+//   if (q.status) where.status = q.status;
+//   if (q.priority) where.priority = q.priority;
+//   if (withDateWindow) {
+//     const win = resolveDateWindow(q);
+//     if (win.gte || win.lte) {
+//       where.createdAt = {};
+//       if (win.gte) where.createdAt.gte = win.gte;
+//       if (win.lte) where.createdAt.lte = win.lte;
+//     }
+//   }
+//   return where;
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGES

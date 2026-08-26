@@ -237,6 +237,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     // ── Build requirement filter ──────────────────────────────────────────────
     const reqWhere: Record<string, any> = { deletedAt: null };
     if (q.clientId) reqWhere.clientId = q.clientId;
+    if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId; // ← ADD
     if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
     if (q.status) reqWhere.status = q.status;
@@ -941,10 +942,12 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 // GET /reports/overview/filters
 // Returns available filter options scoped to the current user
 // ─────────────────────────────────────────────────────────────────────────────
+// File: reportsController.ts
+// Path: src/controllers/reports/reportsController.ts
 
 export const getOverviewFilters = async (req: Request, res: Response) => {
   try {
-    const [serviceLines, businessUnits, departments, clients] =
+    const [serviceLines, businessUnits, departments, clients, clientSpocs] =
       await Promise.all([
         prisma.serviceLine.findMany({
           where: { isActive: true },
@@ -966,11 +969,33 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
           select: { id: true, name: true },
           orderBy: { name: "asc" },
         }),
+        prisma.clientSpoc.findMany({
+          where: { isActive: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
+            client: {
+              select: { id: true, name: true },
+            },
+          },
+          orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
+        }),
       ]);
+
+    // Normalise spoc shape → { id, name, clientId, clientName, designation }
+    const spocs = clientSpocs.map((s) => ({
+      id: s.id,
+      name: `${s.firstName} ${s.lastName}`.trim(),
+      designation: s.designation ?? null,
+      clientId: s.client.id,
+      clientName: s.client.name,
+    }));
 
     return res.json({
       success: true,
-      data: { serviceLines, businessUnits, departments, clients },
+      data: { serviceLines, businessUnits, departments, clients, spocs },
     });
   } catch (err) {
     console.error("getOverviewFilters:", err);
@@ -979,7 +1004,6 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch filter options" });
   }
 };
-
 // ─────────────────────────────────────────────────────────────────────────────
 // EMPTY OVERVIEW SHAPE  (returned when no data matches filters)
 // ─────────────────────────────────────────────────────────────────────────────

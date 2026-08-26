@@ -297,6 +297,7 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
     // ── Base requirement filter ────────────────────────────────────────────
     const reqWhere: Record<string, any> = { deletedAt: null };
     if (q.clientId) reqWhere.clientId = q.clientId;
+    if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId; // ← ADD
     if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
     if (q.status) reqWhere.status = q.status;

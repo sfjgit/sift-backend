@@ -110,7 +110,7 @@ function formatName(u: { firstName: string; lastName: string }) {
 }
 
 // ─── GET /reports/sales ───────────────────────────────────────────────────────
-export async function getSalesReport(req: AuthRequest, res: Response) {
+export async function getSalesReport(req: Request, res: Response) {
   try {
     const userId = req.user!.id;
     const q = req.query as Record<string, string | undefined>;
@@ -132,6 +132,7 @@ export async function getSalesReport(req: AuthRequest, res: Response) {
     if (q.status && q.status !== "ALL") reqWhere.status = q.status;
     else if (!q.status) reqWhere.status = "ACTIVE";
     if (q.clientId) reqWhere.clientId = q.clientId;
+    if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId; // ← ADD
     if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
     if (win.gte || win.lte) {
       reqWhere.createdAt = {
