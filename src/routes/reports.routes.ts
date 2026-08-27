@@ -44,6 +44,17 @@ import {
   getRecruiterDrillMojOptions,
 } from "@/controller/reports/reports.recruiter.drill.controller";
 
+import {
+  getCandidatesList,
+  getCandidatesStats,
+  getCandidatesFilters,
+  getCandidatesDrill,
+} from "@/controller/reports/reports.candidates.controller";
+import {
+  exportCandidates,
+  getCandidateExportColumns,
+} from "@/controller/reports/reports.candidates.export.controller";
+
 const router = Router();
 const auth = authenticateUser;
 const scope = scopeFilter("reports");
@@ -104,6 +115,17 @@ router.get(
   getRequirementCandidateDrill
 );
 router.get("/requirements/:id/export", auth, scope, exportRequirementReport);
+
+router.get(
+  "/candidates/export/columns",
+  auth,
+  scope,
+  getCandidateExportColumns
+);
+router.get("/candidates/filters", auth, scope, getCandidatesFilters);
+router.get("/candidates/stats", auth, scope, getCandidatesStats);
+router.get("/candidates/drill", auth, scope, getCandidatesDrill);
+router.get("/candidates/list", auth, scope, getCandidatesList);
 
 // ── Candidates ───────────────────────────────────────────────────────────────
 router.get("/candidates", auth, scope, getCandidateReport);
