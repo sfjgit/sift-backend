@@ -173,6 +173,24 @@ function mojParamToLabel(mojMonth?: string): string | null {
   return `${MONTHS_FULL[idx]} ${yr}`;
 }
 
+function joiningInRange(
+  start: Date,
+  end: Date,
+  storedLabel?: string | null,
+  storedYearSubstr?: string | null
+): Record<string, any> {
+  const range = { gte: start, lte: end };
+  const or: any[] = [
+    { actualJoiningDate: range },
+    { expectedJoiningDate: range },
+    { lastWorkingDate: range },
+  ];
+  if (storedLabel) or.push({ monthOfJoining: storedLabel });
+  if (storedYearSubstr)
+    or.push({ monthOfJoining: { contains: storedYearSubstr } });
+  return { OR: or };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -325,31 +343,51 @@ async function buildCandidateWhere(
   // ── Month of joining ─────────────────────────────────────────────────────
   // Matches the stored label OR any row whose derived date lands in that month.
   // The stored-label match is indexed; the date range covers unstored rows.
-  const mojLabel = mojParamToLabel(q.mojMonth);
-  if (mojLabel) {
+  const mojYearNum = q.mojYear ? parseInt(q.mojYear, 10) : null;
+  const mojMonthNum = q.mojMonthNum ? parseInt(q.mojMonthNum, 10) : null;
+
+  if (q.mojMonth && /^\d{4}-\d{2}$/.test(q.mojMonth)) {
     const [yr, mo] = q.mojMonth.split("-").map(Number);
-    const monthStart = new Date(yr, mo - 1, 1, 0, 0, 0, 0);
-    const monthEnd = new Date(yr, mo, 0, 23, 59, 59, 999);
-    and.push({
-      OR: [
-        { monthOfJoining: mojLabel },
-        { actualJoiningDate: { gte: monthStart, lte: monthEnd } },
-        { expectedJoiningDate: { gte: monthStart, lte: monthEnd } },
-        { lastWorkingDate: { gte: monthStart, lte: monthEnd } },
-      ],
-    });
-  } else if (q.mojYear) {
-    const yr = parseInt(q.mojYear, 10);
-    const yStart = new Date(yr, 0, 1, 0, 0, 0, 0);
-    const yEnd = new Date(yr, 11, 31, 23, 59, 59, 999);
-    and.push({
-      OR: [
-        { monthOfJoining: { contains: q.mojYear } },
-        { actualJoiningDate: { gte: yStart, lte: yEnd } },
-        { expectedJoiningDate: { gte: yStart, lte: yEnd } },
-        { lastWorkingDate: { gte: yStart, lte: yEnd } },
-      ],
-    });
+    and.push(
+      joiningInRange(
+        new Date(yr, mo - 1, 1, 0, 0, 0, 0),
+        new Date(yr, mo, 0, 23, 59, 59, 999),
+        mojParamToLabel(q.mojMonth)
+      )
+    );
+  } else if (mojMonthNum && mojMonthNum >= 1 && mojMonthNum <= 12) {
+    if (mojYearNum && !isNaN(mojYearNum)) {
+      and.push(
+        joiningInRange(
+          new Date(mojYearNum, mojMonthNum - 1, 1, 0, 0, 0, 0),
+          new Date(mojYearNum, mojMonthNum, 0, 23, 59, 59, 999),
+          `${MONTHS_FULL[mojMonthNum - 1]} ${mojYearNum}`
+        )
+      );
+    } else {
+      const thisYear = new Date().getFullYear();
+      const ors: any[] = [];
+      for (let y = thisYear - 3; y <= thisYear + 3; y++) {
+        const s = new Date(y, mojMonthNum - 1, 1, 0, 0, 0, 0);
+        const e = new Date(y, mojMonthNum, 0, 23, 59, 59, 999);
+        ors.push(
+          { actualJoiningDate: { gte: s, lte: e } },
+          { expectedJoiningDate: { gte: s, lte: e } },
+          { lastWorkingDate: { gte: s, lte: e } },
+          { monthOfJoining: `${MONTHS_FULL[mojMonthNum - 1]} ${y}` }
+        );
+      }
+      and.push({ OR: ors });
+    }
+  } else if (mojYearNum && !isNaN(mojYearNum)) {
+    and.push(
+      joiningInRange(
+        new Date(mojYearNum, 0, 1, 0, 0, 0, 0),
+        new Date(mojYearNum, 11, 31, 23, 59, 59, 999),
+        null,
+        q.mojYear
+      )
+    );
   }
 
   // ── Exact day of joining ─────────────────────────────────────────────────
@@ -359,7 +397,11 @@ async function buildCandidateWhere(
     const lte = q.joinTo ? endOfDay(new Date(q.joinTo)) : undefined;
     const range = { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) };
     and.push({
-      OR: [{ actualJoiningDate: range }, { expectedJoiningDate: range }],
+      OR: [
+        { actualJoiningDate: range },
+        { expectedJoiningDate: range },
+        { lastWorkingDate: range },
+      ],
     });
   }
 
