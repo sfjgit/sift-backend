@@ -47,6 +47,49 @@ import { getSignedDownloadUrl } from "@/services/s3.service";
 // File: requirement.controller.ts
 // Path: src/controller/requirement.controller.ts
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL: formatAging — minutes → human label
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatAging(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d`;
+  return `${Math.floor(d / 30)}mo`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTIL
+// ─────────────────────────────────────────────────────────────────────────────
+function formatAgingLabel(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  return `${months}mo`;
+}
+
+function computeAging(from: Date): { minutes: number; label: string } {
+  const diffMs = Date.now() - new Date(from).getTime();
+  const totalMins = Math.floor(diffMs / 60000);
+  const mins = totalMins % 60;
+  const hours = Math.floor(totalMins / 60) % 24;
+  const days = Math.floor(totalMins / 1440) % 30;
+  const months = Math.floor(totalMins / 43200);
+
+  let label = "";
+  if (months > 0) label = `${months}mo ${days}d`;
+  else if (days > 0) label = `${days}d ${hours}h`;
+  else if (hours > 0) label = `${hours}h ${mins}m`;
+  else label = `${totalMins}m`;
+
+  return { minutes: totalMins, label };
+}
+
 export const getRequirementDetail = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -3395,43 +3438,6 @@ export const removeAssignment = async (req: Request, res: Response) => {
   }
 };
 
-// File: requirementCandidates.controller.ts
-// Path: src/controllers/requirementCandidates.controller.ts
-
-// import prisma from "@/utils/prisma/client";
-// import { Request, Response } from "express";
-// import { PermissionScope } from "@prisma/client";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTIL
-// ─────────────────────────────────────────────────────────────────────────────
-function formatAgingLabel(mins: number): string {
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  return `${months}mo`;
-}
-
-function computeAging(from: Date): { minutes: number; label: string } {
-  const diffMs = Date.now() - new Date(from).getTime();
-  const totalMins = Math.floor(diffMs / 60000);
-  const mins = totalMins % 60;
-  const hours = Math.floor(totalMins / 60) % 24;
-  const days = Math.floor(totalMins / 1440) % 30;
-  const months = Math.floor(totalMins / 43200);
-
-  let label = "";
-  if (months > 0) label = `${months}mo ${days}d`;
-  else if (days > 0) label = `${days}d ${hours}h`;
-  else if (hours > 0) label = `${hours}h ${mins}m`;
-  else label = `${totalMins}m`;
-
-  return { minutes: totalMins, label };
-}
-
 // async function getVisibleRecruiterIds(
 //   userId: string,
 //   isSuperAdmin: boolean,
@@ -4254,22 +4260,6 @@ async function getCreatorScopeUserIds(
   // Default fallback: OWN
   return [userId];
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTIL: formatAging — minutes → human label
-// ─────────────────────────────────────────────────────────────────────────────
-
-function formatAging(mins: number): string {
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d`;
-  return `${Math.floor(d / 30)}mo`;
-}
-
-// File: requirementsController.ts
-// Path: src/controllers/requirementsController.ts
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SALE VALUE COMPUTATION HELPER
