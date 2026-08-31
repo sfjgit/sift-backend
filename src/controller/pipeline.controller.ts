@@ -684,13 +684,13 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
 
-    if (pipeline.isRejected || pipeline.isWithdrawn) {
-      res.status(400).json({
-        success: false,
-        message: "Cannot move stage on a rejected or withdrawn candidate",
-      });
-      return;
-    }
+    // if (pipeline.isRejected || pipeline.isWithdrawn) {
+    //   res.status(400).json({
+    //     success: false,
+    //     message: "Cannot move stage on a rejected or withdrawn candidate",
+    //   });
+    //   return;
+    // }
 
     if (pipeline.currentStageId === stageId) {
       res.status(400).json({
