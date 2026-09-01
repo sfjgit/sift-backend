@@ -476,8 +476,8 @@ export const createUser = async (req: Request, res: Response) => {
     const body = req.body;
     const actorId = req.user!.id;
 
-    const emailExists = await prisma.user.findUnique({
-      where: { email: body.email },
+    const emailExists = await prisma.user.findFirst({
+      where: { email: body.email, isActive: true },
       select: { id: true },
     });
     if (emailExists) {

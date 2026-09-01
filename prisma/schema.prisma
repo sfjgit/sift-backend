@@ -192,7 +192,7 @@ model Department {
 
 model User {
   id           String @id @default(uuid())
-  email        String @unique
+  email        String // ← drop @unique here
   passwordHash String
 
   resetPasswordToken   String?

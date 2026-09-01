@@ -26,8 +26,8 @@ export const register = async (req: Request, res: Response) => {
       lastName,
       ...rest
     } = req.validatedBody;
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
+    const existingUser = await prisma.user.findFirst({
+      where: { email, isActive: true },
     });
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
@@ -81,8 +81,8 @@ export const login = async (req: Request, res: Response) => {
 
     const { email, password } = req.validatedBody;
 
-    const user = await prisma.user.findUnique({
-      where: { email },
+    const user = await prisma.user.findFirst({
+      where: { email, isActive: true },
       include: { role: { include: { permissions: true } } },
     });
 
@@ -328,10 +328,9 @@ export const forgotPassword = async (req: Request, res: Response) => {
       });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email },
+    const user = await prisma.user.findFirst({
+      where: { email, isActive: true },
     });
-
     // Prevent email enumeration
     if (!user) {
       return res.status(200).json({

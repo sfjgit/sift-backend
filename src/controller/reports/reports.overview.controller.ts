@@ -242,12 +242,12 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
     if (q.status) reqWhere.status = q.status;
 
-    if (win.gte || win.lte) {
-      reqWhere.createdAt = {
-        ...(win.gte ? { gte: win.gte } : {}),
-        ...(win.lte ? { lte: win.lte } : {}),
-      };
-    }
+    // if (win.gte || win.lte) {
+    //   reqWhere.createdAt = {
+    //     ...(win.gte ? { gte: win.gte } : {}),
+    //     ...(win.lte ? { lte: win.lte } : {}),
+    //   };
+    // }
 
     // ── Resolve which users to scope requirements to ──────────────────────────
     // 1. Team picker selected → use those ids (already RBAC-intersected)
@@ -283,9 +283,22 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     }
 
     // ── Build pipeline filter ─────────────────────────────────────────────────
+    // const pipelineWhere: Record<string, any> = { requirement: reqWhere };
+    // if (scopedUserIds !== null)
+    //   pipelineWhere.recruiterId = { in: scopedUserIds };
+    // changed
     const pipelineWhere: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null)
       pipelineWhere.recruiterId = { in: scopedUserIds };
+
+    // Date window filters on when the pipeline row was last stage-updated
+    // (covers "moved to Training Started today" even if req is old)
+    if (win.gte || win.lte) {
+      pipelineWhere.stageUpdatedAt = {
+        ...(win.gte ? { gte: win.gte } : {}),
+        ...(win.lte ? { lte: win.lte } : {}),
+      };
+    }
     if (q.createdById) pipelineWhere.recruiterId = q.createdById;
 
     // Department filter — resolve department members first
@@ -320,6 +333,8 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           label: true,
           order: true,
           isTerminal: true,
+          isNearTerminal: true,
+          isSourced: true,
           pipeline: true,
           isStandard: true,
           serviceLineId: true,
@@ -327,7 +342,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         },
         orderBy: { order: "asc" },
       }),
-
       // Fetch requirements for sale value computation
       prisma.requirement.findMany({
         where: reqWhere,
@@ -515,6 +529,13 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       terminalStages.map((s) => [s.id, 0])
     );
 
+    const nearTerminalStageCounts: Record<string, number> = Object.fromEntries(
+      allStages
+        .filter((s) => s.isNearTerminal && !s.isTerminal)
+        .map((s) => [s.id, 0])
+    );
+    let inProgressCount = 0;
+
     const dispositionCounts: Record<string, number> = {};
 
     // Recruiter leaderboard
@@ -595,8 +616,16 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         placed++;
       } else if (!isTerminal && p.currentStageId in pipelineStageCounts) {
         pipelineStageCounts[p.currentStageId]++;
+        // near-terminal sub-count
+        if (stage?.isNearTerminal) {
+          nearTerminalStageCounts[p.currentStageId] =
+            (nearTerminalStageCounts[p.currentStageId] ?? 0) + 1;
+        }
+        // in-progress = pipeline=true, isTerminal=false, isSourced=false
+        if (stage?.pipeline === true && !stage?.isSourced) {
+          inProgressCount++;
+        }
       }
-
       // Disposition
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
@@ -879,6 +908,45 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     const avgPipelineDays =
       total > 0 ? +(totalPipelineMins / total / 1440).toFixed(1) : 0;
 
+    // ── Near-terminal pipeline value ──────────────────────────────────────────
+    const nearTerminalCount = Object.values(nearTerminalStageCounts).reduce(
+      (a, b) => a + b,
+      0
+    );
+    const reqMap = new Map(requirements.map((r) => [r.id, r]));
+    let nearTerminalPipelineValue = 0;
+    for (const p of pipelines) {
+      const stage = stageById.get(p.currentStageId);
+      if (stage?.isNearTerminal && !stage?.isTerminal) {
+        const reqMatch = reqMap.get(p.requirementId);
+        if (reqMatch) {
+          const sv = computeSaleValue({
+            saleValue: reqMatch.saleValue,
+            totalOpenings: reqMatch.totalOpenings,
+            salaryMin: reqMatch.salaryMin,
+            band: reqMatch.band
+              ? {
+                  value:
+                    reqMatch.band.value != null
+                      ? Number(reqMatch.band.value)
+                      : null,
+                }
+              : null,
+            client: reqMatch.client
+              ? {
+                  percentageValue:
+                    reqMatch.client.percentageValue != null
+                      ? Number(reqMatch.client.percentageValue)
+                      : null,
+                }
+              : null,
+          });
+          if (sv)
+            nearTerminalPipelineValue += sv / (reqMatch.totalOpenings || 1);
+        }
+      }
+    }
+
     // ── Placement / fill rate ─────────────────────────────────────────────────
     const fillRate = total > 0 ? +((placed / total) * 100).toFixed(1) : 0;
 
@@ -890,8 +958,10 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           placed, // in terminal stages
           active, // disposition = ACTIVE
           dropped, // rejected or withdrawn
-          inProgress: total - placed - dropped, // working through pipeline
+          inProgress: inProgressCount, // working through pipeline
           fillRate, // placed / total %
+          nearTerminalCount,
+          nearTerminalPipelineValue: Math.round(nearTerminalPipelineValue),
           avgPipelineDays, // mean days a candidate spends in the system
           // Sale value
           totalSaleValue,
@@ -907,6 +977,31 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         funnelStages,
         // Terminal/placed stage breakdown
         terminalBreakdown,
+        // Real stage name details for UI (non-sourced pipeline + terminal)
+        pipelineStageDetails: pipelineStages
+          .filter((s) => !s.isSourced)
+          .map((s) => ({
+            stageId: s.id,
+            label: s.label,
+            code: s.code,
+            order: s.order,
+            isNearTerminal: s.isNearTerminal,
+            serviceLineId: s.serviceLineId,
+            serviceLineName: s.serviceLine?.name ?? null,
+            count: pipelineStageCounts[s.id] ?? 0,
+          }))
+          .filter((s) => s.count > 0),
+        terminalStageDetails: terminalStages
+          .map((s) => ({
+            stageId: s.id,
+            label: s.label,
+            code: s.code,
+            order: s.order,
+            serviceLineId: s.serviceLineId,
+            serviceLineName: s.serviceLine?.name ?? null,
+            count: terminalStageCounts[s.id] ?? 0,
+          }))
+          .filter((s) => s.count > 0),
         // Breakdowns
         byServiceLine,
         byBusinessUnit,
@@ -928,6 +1023,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         multiLine: byServiceLine.length > 1,
         hasSaleValueData: saleValueIncluded > 0,
         hasTeamTree: teamTree.length > 0,
+        hasNearTerminal: nearTerminalCount > 0,
       },
     });
   } catch (err) {
