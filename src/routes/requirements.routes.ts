@@ -61,6 +61,7 @@ import {
   withdrawCandidateSchema,
   holdCandidateSchema,
   addNoteSchema,
+  duplicateRequirementSchema,
 } from "@/validators/requirement.validators";
 import {
   // getRequirements,
@@ -82,6 +83,8 @@ import {
   // exportRequirements,
   bulkUploadRequirementsController,
   getRequirementJDSignedUrl,
+  duplicateRequirement,
+  getDuplicatePreview,
   // getRequirementsFilters,
   // getSaleValueStats,
   // getRequirementsPipelineSummary,
@@ -149,6 +152,16 @@ router.post(
   validate.body(createRequirementSchema),
   createRequirement,
 );
+router.post(
+  "/:id/duplicate",
+  authenticateUser,
+  scope,
+  checkPermission("canAdd"),
+  validate.body(duplicateRequirementSchema),
+  duplicateRequirement,
+);
+
+router.get("/:id/duplicate-preview", authenticateUser, getDuplicatePreview);
 
 //bulk-requirement upload
 //requirements/bulk-upload

@@ -2194,6 +2194,245 @@ export const createRequirement = async (req: Request, res: Response) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /requirements/:id/duplicate-preview
+// ─────────────────────────────────────────────────────────────────────────────
+export const getDuplicatePreview = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const original = await prisma.requirement.findUnique({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        jobType: true,
+        remoteType: true,
+        priority: true,
+        jobOpenFor: true,
+        totalOpenings: true,
+        primarySkills: true,
+        keySkills: true,
+        targetCompanies: true,
+        noPoachCompanies: true,
+        city: true,
+        state: true,
+        country: true,
+        experienceMin: true,
+        experienceMax: true,
+        salaryMin: true,
+        salaryMax: true,
+        salaryType: true,
+        salaryCurrency: true,
+        bonusAmount: true,
+        hideSalaryFromCandidate: true,
+        showMedianSalary: true,
+        education: true,
+        functionalArea: true,
+        shift: true,
+        bandId: true,
+        saleValue: true,
+        requirementCategoryId: true,
+        clientSpocId: true,
+        clientId: true,
+        businessUnitId: true,
+        serviceLineId: true,
+        startDate: true,
+        targetDate: true,
+        jdFileKey: true,
+        jdFileName: true,
+        jdFileType: true,
+        jdUploadedAt: true,
+        parsedJDId: true,
+        client: { select: { name: true } },
+        serviceLine: { select: { name: true } },
+        clientSpoc: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    if (!original) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...original,
+        suggestedTitle: `${original.title} (Copy)`,
+      },
+    });
+  } catch (err) {
+    console.error("getDuplicatePreview:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch duplicate preview" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /requirements/:id/duplicate
+// Body: { title: string } — ONLY title comes from body.
+// Every other field is read directly from the original requirement in DB.
+// This bypasses all createRequirement validation (clientSpocId, jobType, etc.)
+// because nothing is sourced from req.body except the new title.
+// ─────────────────────────────────────────────────────────────────────────────
+export const duplicateRequirement = async (req: Request, res: Response) => {
+  try {
+    const actorId = req.user!.id;
+    const { id } = req.params;
+    const { title } = req.body;
+
+    if (!title || typeof title !== "string" || title.trim().length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Title must be at least 3 characters",
+      });
+    }
+
+    // ── Fetch the full original from DB — nothing from req.body ──────────────
+    const original = await prisma.requirement.findUnique({
+      where: { id, deletedAt: null },
+      include: {
+        client: { select: { name: true } },
+        serviceLine: { select: { name: true } },
+      },
+    });
+
+    if (!original) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Requirement not found" });
+    }
+
+    // ── Fresh reqCode ─────────────────────────────────────────────────────────
+    const clientName = original.client?.name ?? "CLNT";
+    const serviceLineName = original.serviceLine?.name ?? "SRVC";
+    const reqCode = await generateReqCode(clientName, serviceLineName);
+
+    // ── Recompute turnaroundDays (startDate = now) ────────────────────────────
+    const startDate = new Date();
+    const targetDate = original.targetDate ?? null;
+    const turnaroundDays = targetDate
+      ? Math.ceil(
+          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+        )
+      : null;
+
+    // ── Create duplicate ──────────────────────────────────────────────────────
+    // Every field sourced from `original` — zero dependency on req.body beyond title.
+    const duplicate = await prisma.requirement.create({
+      data: {
+        reqCode,
+
+        // ── Only field from body ──────────────────────────────────────────────
+        title: title.trim(),
+
+        // ── Copied verbatim from original ─────────────────────────────────────
+        description: original.description,
+        jobType: original.jobType,
+        remoteType: original.remoteType,
+        priority: original.priority,
+        jobOpenFor: original.jobOpenFor,
+        totalOpenings: original.totalOpenings,
+
+        primarySkills: original.primarySkills,
+        keySkills: original.keySkills,
+        targetCompanies: original.targetCompanies,
+        noPoachCompanies: original.noPoachCompanies,
+
+        city: original.city,
+        state: original.state,
+        country: original.country,
+
+        experienceMin: original.experienceMin,
+        experienceMax: original.experienceMax,
+
+        salaryMin: original.salaryMin,
+        salaryMax: original.salaryMax,
+        salaryType: original.salaryType,
+        salaryCurrency: original.salaryCurrency ?? "INR",
+        bonusAmount: original.bonusAmount,
+        hideSalaryFromCandidate: original.hideSalaryFromCandidate,
+        showMedianSalary: original.showMedianSalary,
+
+        education: original.education,
+        functionalArea: original.functionalArea,
+        shift: original.shift,
+
+        bandId: original.bandId,
+        saleValue: original.saleValue,
+        requirementCategoryId: original.requirementCategoryId,
+
+        // ── Relations — all from original ─────────────────────────────────────
+        clientSpocId: original.clientSpocId,
+        clientId: original.clientId,
+        businessUnitId: original.businessUnitId,
+        serviceLineId: original.serviceLineId,
+
+        // ── JD — file ref copied, parse metadata reset ────────────────────────
+        jdFileKey: original.jdFileKey,
+        jdFileName: original.jdFileName,
+        jdFileType: original.jdFileType,
+        jdUploadedAt: original.jdUploadedAt,
+        jdParsedAt: null,
+        jdParseStatus: null,
+        jdParsedFields: [],
+        parsedJDId: original.parsedJDId,
+
+        // ── Dates ─────────────────────────────────────────────────────────────
+        startDate,
+        targetDate,
+        respondBy: null,
+        turnaroundDays,
+
+        // ── Status — always fresh ─────────────────────────────────────────────
+        status: "ACTIVE",
+        closureReason: null,
+        closedAt: null,
+        isRespondByBreached: false,
+        isTurnaroundBreached: false,
+
+        // ── Audit — new actor, cleared approvals ──────────────────────────────
+        createdById: actorId,
+        approvedById: null,
+        approvedAt: null,
+        closedById: null,
+      },
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+
+    // ── Activity log ──────────────────────────────────────────────────────────
+    await prisma.requirementActivity.create({
+      data: {
+        requirementId: duplicate.id,
+        actorId,
+        type: "REQUIREMENT_CREATED",
+        summary: `Requirement ${reqCode} created as a duplicate of ${original.reqCode}`,
+      },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Requirement duplicated successfully",
+      data: duplicate,
+    });
+  } catch (err) {
+    console.error("duplicateRequirement:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to duplicate requirement" });
+  }
+};
+
 const MAX_ROWS = 50;
 const MIN_ROWS = 1;
 
