@@ -241,7 +241,12 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
     if (q.status) reqWhere.status = q.status;
-
+    if (win.gte || win.lte) {
+      reqWhere.createdAt = {
+        ...(win.gte ? { gte: win.gte } : {}),
+        ...(win.lte ? { lte: win.lte } : {}),
+      };
+    }
     // if (win.gte || win.lte) {
     //   reqWhere.createdAt = {
     //     ...(win.gte ? { gte: win.gte } : {}),
@@ -267,8 +272,23 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           where: { assignedToId: { in: teamUserIds }, status: "ACTIVE" },
           select: { requirementId: true },
         }),
+        // prisma.requirement.findMany({
+        //   where: { createdById: { in: teamUserIds }, deletedAt: null },
+        //   select: { id: true },
+        // }),
         prisma.requirement.findMany({
-          where: { createdById: { in: teamUserIds }, deletedAt: null },
+          where: {
+            createdById: { in: teamUserIds },
+            deletedAt: null,
+            ...(win.gte || win.lte
+              ? {
+                  createdAt: {
+                    ...(win.gte ? { gte: win.gte } : {}),
+                    ...(win.lte ? { lte: win.lte } : {}),
+                  },
+                }
+              : {}),
+          },
           select: { id: true },
         }),
       ]);
