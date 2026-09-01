@@ -111,7 +111,7 @@ export async function buildRequirementsWhere(
     noData?: boolean; // filter to requirements with no computable sale value
   },
   userId: string,
-  isSuperAdmin: boolean
+  isSuperAdmin: boolean,
 ): Promise<any> {
   const scopeWhere = await getRequirementScopeWhere(userId, isSuperAdmin);
   const where: any = { ...scopeWhere, deletedAt: null };
@@ -145,17 +145,27 @@ export async function buildRequirementsWhere(
   }
   // noData: requirements with no computable sale value
   // = no saleValue AND no band AND no (salaryMin + client.percentageValue)
+  // if (filters.noData) {
+  //   where.AND = [
+  //     ...(where.AND ?? []),
+  //     {
+  //       saleValue: null,
+  //       band: null,
+  //       OR: [
+  //         { salaryMin: null },
+  //         { client: { percentageValue: null } },
+  //         { client: null },
+  //       ],
+  //     },
+  //   ];
+  // }
   if (filters.noData) {
     where.AND = [
       ...(where.AND ?? []),
       {
         saleValue: null,
-        band: null,
-        OR: [
-          { salaryMin: null },
-          { client: { percentageValue: null } },
-          { client: null },
-        ],
+        bandId: null,
+        salaryMin: null,
       },
     ];
   }
@@ -167,7 +177,7 @@ export async function buildRequirementsWhere(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function resolveManagerSets(
-  creatorIds: string[]
+  creatorIds: string[],
 ): Promise<Record<string, Set<string>>> {
   const result: Record<string, Set<string>> = {};
   for (const creatorId of creatorIds) {
@@ -246,7 +256,7 @@ export const getRequirements = async (req: Request, res: Response) => {
         noData: noData === "true",
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     const SORTABLE = [
@@ -472,7 +482,7 @@ export const getRequirements = async (req: Request, res: Response) => {
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10,
             )
           : 0;
 
@@ -588,6 +598,7 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
       createdById,
       dateFrom,
       dateTo,
+      noData,
     } = req.query as Record<string, string>;
 
     const userId = req.user!.id;
@@ -605,9 +616,10 @@ export const getSaleValueStats = async (req: Request, res: Response) => {
         createdById,
         dateFrom,
         dateTo,
+        noData: noData === "true",
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     // Minimal select — no page/limit
@@ -820,7 +832,7 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
           name: `${r.createdBy.firstName} ${r.createdBy.lastName}`.trim(),
         })),
         statusCounts: Object.fromEntries(
-          statusCounts.map((s) => [s.status, s._count.id])
+          statusCounts.map((s) => [s.status, s._count.id]),
         ),
         priorities: ["HIGH", "MEDIUM", "LOW"],
       },
@@ -869,7 +881,7 @@ export const getRequirementsFilters = async (req: Request, res: Response) => {
 
 export const getRequirementsPipelineSummary = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const {
@@ -883,6 +895,7 @@ export const getRequirementsPipelineSummary = async (
       createdById,
       dateFrom,
       dateTo,
+      noData,
     } = req.query as Record<string, string>;
 
     const userId = req.user!.id;
@@ -902,9 +915,10 @@ export const getRequirementsPipelineSummary = async (
         createdById,
         dateFrom,
         dateTo,
+        noData: noData === "true",
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     const requirements = await prisma.requirement.findMany({
@@ -1039,7 +1053,7 @@ export const getRequirementsPipelineSummary = async (
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((totalFunnelCount / r.totalOpenings) * 1000) / 10
+              Math.round((totalFunnelCount / r.totalOpenings) * 1000) / 10,
             )
           : 0;
 
@@ -1125,7 +1139,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
         dateTo,
       },
       userId,
-      isSuperAdmin
+      isSuperAdmin,
     );
 
     // ── Fetch requirements (cap 1000) ─────────────────────────────────────────
@@ -1437,7 +1451,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
 
     for (const r of requirements) {
       const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86400000,
       );
 
       // RBAC check for this row
@@ -1477,7 +1491,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       // Total funnel across all stages
       const totalFunnel = Object.values(reqStageCounts).reduce(
         (s, n) => s + n,
-        0
+        0,
       );
 
       // Terminal counts per stage — filter to stages relevant to this req's service line
@@ -1533,28 +1547,28 @@ export const exportRequirements = async (req: Request, res: Response) => {
         totalFunnel,
 
         // Sale value — gated
-        bandCode: canSeeSale ? r.band?.code ?? "" : "—",
-        bandName: canSeeSale ? r.band?.name ?? "" : "—",
+        bandCode: canSeeSale ? (r.band?.code ?? "") : "—",
+        bandName: canSeeSale ? (r.band?.name ?? "") : "—",
         bandRange:
           canSeeSale && band?.rangeFrom != null && band?.rangeTo != null
             ? `${band.rangeFrom} – ${band.rangeTo}`
             : canSeeSale
-            ? ""
-            : "—",
-        bandValue: canSeeSale ? band?.value ?? "" : "—",
-        clientPct: canSeeSale ? clientPct ?? "" : "—",
-        salaryMin: canSeeSale ? r.salaryMin ?? "" : "—",
-        salaryMax: canSeeSale ? r.salaryMax ?? "" : "—", // NEW
-        reqSaleValue: canSeeSale ? r.saleValue ?? "" : "—",
+              ? ""
+              : "—",
+        bandValue: canSeeSale ? (band?.value ?? "") : "—",
+        clientPct: canSeeSale ? (clientPct ?? "") : "—",
+        salaryMin: canSeeSale ? (r.salaryMin ?? "") : "—",
+        salaryMax: canSeeSale ? (r.salaryMax ?? "") : "—", // NEW
+        reqSaleValue: canSeeSale ? (r.saleValue ?? "") : "—",
         computedSaleValue: computedSaleValue ?? "", // EVERYONE sees this
-        saleValueBasis: canSeeSale ? saleValueBasis ?? "N/A" : "—",
+        saleValueBasis: canSeeSale ? (saleValueBasis ?? "N/A") : "—",
 
         // Achieved — everyone
         ...Object.fromEntries(
           terminalStages.map((ts) => [
             `term_${ts.id}`,
             termCountPerStage[ts.id] ?? 0,
-          ])
+          ]),
         ),
         terminalCount: terminalTotal,
         achievedPct: Math.round(achievedPct * 10) / 10,
@@ -1643,7 +1657,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
     summaryRow.height = 24;
     const svColIdx =
       [...fixedCols, ...saleValueCols].findIndex(
-        (c) => c.key === "computedSaleValue"
+        (c) => c.key === "computedSaleValue",
       ) + 1;
     const achValColIdx = nFixed + nSale + terminalStages.length + 3; // after terminal stage cols + count + pct
 
@@ -1728,12 +1742,12 @@ export const exportRequirements = async (req: Request, res: Response) => {
       if (!r) continue;
 
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       const totalPipelineMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAgeMins;
 
       const dataRow = sheet2.addRow({
@@ -1798,7 +1812,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
     const filename = `requirements-export-${dateStr}.xlsx`;
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     await workbook.xlsx.write(res);

@@ -109,6 +109,21 @@ export const createRequirementSchema = z.object({
   saleValue: z.coerce.number().min(0).optional().nullable(),
 });
 
+export const duplicateRequirementSchema = z.object({
+  title: z.string().min(1).max(300).trim(),
+
+  // Editable in dialog
+  primarySkills: z.array(z.string().trim()).default([]),
+  keySkills: z.array(z.string().trim()).default([]),
+  experienceMin: optionalNumber,
+  experienceMax: optionalNumber,
+  totalOpenings: z.number().min(1).optional(),
+});
+
+export type DuplicateRequirementBody = z.infer<
+  typeof duplicateRequirementSchema
+>;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UPDATE SCHEMA
 //
