@@ -450,6 +450,14 @@ export const getReportsOverview = async (req: Request, res: Response) => {
             where: {
               requirementId: { in: reqIds },
               currentStageId: { in: terminalStageIds },
+              ...(win.gte || win.lte
+                ? {
+                    stageUpdatedAt: {
+                      ...(win.gte ? { gte: win.gte } : {}),
+                      ...(win.lte ? { lte: win.lte } : {}),
+                    },
+                  }
+                : {}),
             },
             _count: { id: true },
           })

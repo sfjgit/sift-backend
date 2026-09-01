@@ -301,19 +301,33 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
     if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
     if (q.status) reqWhere.status = q.status;
-    if (win.gte || win.lte) {
-      reqWhere.createdAt = {
-        ...(win.gte ? { gte: win.gte } : {}),
-        ...(win.lte ? { lte: win.lte } : {}),
-      };
-    }
-    // NEW: scope to a single requirement if provided
+
+    // NOTE: date window on pipeline stageUpdatedAt — not requirement createdAt
     if (q.requirementId) reqWhere.id = q.requirementId;
 
     // ── Base pipeline filter ───────────────────────────────────────────────
     const pipelineWhere: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null)
       pipelineWhere.recruiterId = { in: scopedUserIds };
+    if (win.gte || win.lte) {
+      pipelineWhere.stageUpdatedAt = {
+        ...(win.gte ? { gte: win.gte } : {}),
+        ...(win.lte ? { lte: win.lte } : {}),
+      };
+    }
+    // if (win.gte || win.lte) {
+    //   reqWhere.createdAt = {
+    //     ...(win.gte ? { gte: win.gte } : {}),
+    //     ...(win.lte ? { lte: win.lte } : {}),
+    //   };
+    // }
+    // // NEW: scope to a single requirement if provided
+    // if (q.requirementId) reqWhere.id = q.requirementId;
+
+    // // ── Base pipeline filter ───────────────────────────────────────────────
+    // const pipelineWhere: Record<string, any> = { requirement: reqWhere };
+    // if (scopedUserIds !== null)
+    //   pipelineWhere.recruiterId = { in: scopedUserIds };
 
     // ── Stage definitions ──────────────────────────────────────────────────
     const slFilter = q.serviceLineId
@@ -361,7 +375,7 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "placed": {
         const terminalStages = await prisma.pipelineStage.findMany({
-          where: { isTerminal: true, isActive: true, ...slFilter },
+          where: { isTerminal: true, ...slFilter },
           select: { id: true },
         });
         pipelineWhere.currentStageId = {
@@ -372,7 +386,7 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 
       case "near_terminal": {
         const nearStages = await prisma.pipelineStage.findMany({
-          where: { isNearTerminal: true, isActive: true, ...slFilter },
+          where: { isNearTerminal: true, ...slFilter },
           select: { id: true },
         });
         pipelineWhere.currentStageId = {
@@ -380,7 +394,6 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
         };
         break;
       }
-
       case "dropped": {
         const exitStages = await prisma.pipelineStage.findMany({
           where: { pipeline: false, isTerminal: false, isActive: true },
