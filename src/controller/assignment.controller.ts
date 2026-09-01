@@ -343,13 +343,13 @@ function computePipelineStats(pipelines: any[]) {
   const joined = pipelines.filter((p) => p.actualJoiningDate !== null).length;
 
   const offerAccepted = pipelines.filter(
-    (p) => p.offerStatus === "ACCEPTED"
+    (p) => p.offerStatus === "ACCEPTED",
   ).length;
   const offerPending = pipelines.filter(
-    (p) => p.offerStatus === "PENDING"
+    (p) => p.offerStatus === "PENDING",
   ).length;
   const offerDeclined = pipelines.filter(
-    (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED"
+    (p) => p.offerStatus === "DECLINED" || p.offerStatus === "REVOKED",
   ).length;
 
   // ── byCanonicalStage — read from currentStage.canonicalStage (single source of truth)
@@ -394,7 +394,7 @@ function computePipelineStats(pipelines: any[]) {
     stageMap[id].count++;
   }
   const byPipelineStage = Object.values(stageMap).sort(
-    (a, b) => a.order - b.order
+    (a, b) => a.order - b.order,
   );
 
   // ── activeByPipelineStage — same but active only
@@ -424,7 +424,7 @@ function computePipelineStats(pipelines: any[]) {
     activeStageMap[id].count++;
   }
   const activeByPipelineStage = Object.values(activeStageMap).sort(
-    (a, b) => a.order - b.order
+    (a, b) => a.order - b.order,
   );
 
   // ── Aging buckets for active candidates
@@ -500,7 +500,7 @@ function shapeAssignment(a: any) {
 function computeAging(stageUpdatedAt: string | null) {
   if (!stageUpdatedAt) return { minutes: 0, label: "—" };
   const mins = Math.floor(
-    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000
+    (Date.now() - new Date(stageUpdatedAt).getTime()) / 60000,
   );
   if (mins < 60) return { minutes: mins, label: `${mins}m` };
   const h = Math.floor(mins / 60);
@@ -536,8 +536,9 @@ export const getAssignments = async (req: Request, res: Response) => {
       assignedToId,
       status,
       depth,
+      buId,
       page = "1",
-      limit = "25",
+      limit = "50",
       sortBy = "assignedAt",
       sortDir = "desc",
       search,
@@ -653,7 +654,7 @@ export const getAssignmentById = async (req: Request, res: Response) => {
 
 export const getAssignmentsByRequirement = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { requirementId } = req.params;
@@ -891,7 +892,7 @@ export const getAssignableTargets = async (req: Request, res: Response) => {
     }
 
     merged.sort((a, b) =>
-      (a as any).firstName.localeCompare((b as any).firstName)
+      (a as any).firstName.localeCompare((b as any).firstName),
     );
 
     res.json({ success: true, data: merged });
@@ -1253,9 +1254,9 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
     }
 
     const where: any = { assignmentId: id };
-    if (disposition) where.disposition = disposition;
+    // if (disposition) where.disposition = disposition;
     if (stageId) where.currentStageId = stageId;
-    if (activeOnly === "true") where.disposition = "ACTIVE";
+    // if (activeOnly === "true") where.disposition = "ACTIVE";
 
     if (search?.trim()) {
       where.snapshot = {
