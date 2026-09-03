@@ -25,10 +25,13 @@ import naukriAccountabilityRoutes from "./naukriAccountability.routes";
 import ticketRoutes from "./ticket.routes";
 import publicRoutes from "./public.routes";
 import requirementCategoryRoutes from "./requirementCategory.routes";
+import internalPoolRoutes from "./internalPool.routes";
 
 const router = Router();
 
 // in your core router index, behind auth:
+
+router.use("/internal-pool", internalPoolRoutes);
 router.use("/naukri", authenticateUser, naukriAccountabilityRoutes);
 router.use("/tickets", ticketRoutes);
 router.use("/reports", reportRoutes);

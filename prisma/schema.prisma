@@ -285,7 +285,10 @@ model User {
   serviceline   ServiceLine?  @relation(fields: [servicelineId], references: [id])
   authLogs      AuthLogs[]
 
-  createdInterviews CandidateInterviewSchedule[] @relation("InterviewScheduledBy")
+  createdInterviews    CandidateInterviewSchedule[] @relation("InterviewScheduledBy")
+  savedSearches        SavedSearch[]
+  searchActivityLogs   SearchActivityLog[]
+  sourcingActivityLogs SourcingActivityLog[]
 
   @@index([email])
   @@index([isActive])
@@ -389,7 +392,6 @@ enum RoleCanonical {
   UNMAPPED
 }
 
-
 model Role {
   id          String  @id @default(uuid())
   name        String  @unique
@@ -399,7 +401,7 @@ model Role {
   users       User[]
   permissions RolePermission[]
 
-   canonical   RoleCanonical? @default(UNMAPPED)
+  canonical RoleCanonical? @default(UNMAPPED)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -600,14 +602,13 @@ model Requirement {
   id      String @id @default(uuid())
   reqCode String @unique
 
-
   bandId String?
   band   Band?   @relation(fields: [bandId], references: [id])
 
   // ── Sale value — manually entered float, hidden from RECRUITER role at API ──
   saleValue Float?
 
-// ── Add index inside model Requirement @@index block ─────────────────────────
+  // ── Add index inside model Requirement @@index block ─────────────────────────
 
   // ── Core ──────────────────────────────────────────────────────────────────
   title       String
@@ -707,12 +708,10 @@ model Requirement {
   parsedJDId String?
   parsedJD   ParsedJDLibrary? @relation(fields: [parsedJDId], references: [id])
 
-
   // ── Website integration ──
 
   requirementCategoryId String?
   requirementCategory   RequirementCategory? @relation(fields: [requirementCategoryId], references: [id])
-
 
   // ── Child relations ───────────────────────────────────────────────────────
   assignments        RequirementAssignment[]
@@ -727,8 +726,6 @@ model Requirement {
   updatedAt DateTime @updatedAt
 
   @@index([bandId])
-
-
   @@index([parsedJDId])
   @@index([status])
   @@index([clientId])
@@ -1020,22 +1017,22 @@ model CandidateIndex {
 }
 
 enum CandidateSnapshotType {
-  CANDIDATE  // sourced by a recruiter (authenticated ingest / Chrome extension)
-  APPLICANT  // self-applied via public careers page
+  CANDIDATE // sourced by a recruiter (authenticated ingest / Chrome extension)
+  APPLICANT // self-applied via public careers page
 }
- 
+
 // ── Updated model ─────────────────────────────────────────────────────────────
 model CandidateSnapshot {
   id                 String @id @default(uuid())
   candidateServiceId String // Candidate Service UUID — no cross-service FK
 
-  candidateCode String?  @unique
- 
+  candidateCode String? @unique
+
   requirementId String
   requirement   Requirement @relation(fields: [requirementId], references: [id])
- 
+
   snapshotAt DateTime @default(now())
- 
+
   // display fields — point-in-time copy, never updated
   fullName       String
   email          String
@@ -1045,34 +1042,34 @@ model CandidateSnapshot {
   totalExpYears  Float?
   topSkills      String[]
   resumeUrl      String?
- 
+
   // full response blob from Candidate Service
   rawSnapshot Json
- 
+
   // snapshot source / origin label (e.g. "PUBLIC_WEBSITE", "CHROME_EXTENSION")
   sourced String?
- 
+
   // ── NEW ────────────────────────────────────────────────────────────────────
   // Distinguishes self-applied (APPLICANT) from recruiter-sourced (CANDIDATE).
   // Defaults to CANDIDATE so existing rows and the authenticated ingest path
   // are unaffected — no backfill required.
   type CandidateSnapshotType @default(CANDIDATE)
   // ── END NEW ────────────────────────────────────────────────────────────────
- 
+
   // createdById is nullable for public applies:
   // public applicants have no recruiter — there is no User row to FK against.
   // Authenticated ingest always provides a real user ID.
   createdById String?
   createdBy   User?   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])
- 
+
   pipeline RequirementCandidatePipeline?
- 
+
   createdAt DateTime @default(now())
- 
+
   @@unique([candidateServiceId, requirementId])
   @@index([requirementId])
   @@index([candidateServiceId])
-  @@index([type])                          // filter APPLICANT queue separately
+  @@index([type]) // filter APPLICANT queue separately
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1181,7 +1178,6 @@ model RequirementCandidatePipeline {
 
   //interview
   interviewSchedules CandidateInterviewSchedule[]
-
 
   @@index([requirementId, currentStageId])
   @@index([recruiterId])
@@ -1312,6 +1308,7 @@ enum InterviewMode {
   OFFLINE
   TELEPHONIC
 }
+
 model CandidateInterviewSchedule {
   id String @id @default(uuid())
 
@@ -1321,23 +1318,23 @@ model CandidateInterviewSchedule {
   stageId String
   stage   PipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
 
-  roundNumber Int?
-  scheduledAt DateTime?
+  roundNumber  Int?
+  scheduledAt  DateTime?
   durationMins Int?
   mode         InterviewMode
   // status       CanonicalStage
 
   createdById String
-  createdBy   User @relation("InterviewScheduledBy", fields: [createdById], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdBy   User     @relation("InterviewScheduledBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  @@index([pipelineId]) 
+  @@index([pipelineId])
   @@index([stageId])
   @@index([scheduledAt])
 }
 
-model PipelineStage { 
+model PipelineStage {
   id             String          @id @default(uuid())
   code           String
   label          String
@@ -1347,17 +1344,15 @@ model PipelineStage {
   isTerminal     Boolean         @default(false)
   isActive       Boolean         @default(true)
 
-
-  pipeline       Boolean         @default(true)
+  pipeline Boolean @default(true)
 
   isStandard Boolean @default(false)
 
-
-   // NEW
+  // NEW
   // candidate fell out — rejected, withdrawn, no show, etc.
   // mutually exclusive with isTerminal
-  isSourced Boolean @default(false)
-  isNearTerminal Boolean @default(false)  
+  isSourced      Boolean @default(false)
+  isNearTerminal Boolean @default(false)
 
   candidatePipelines RequirementCandidatePipeline[]
   stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
@@ -1423,7 +1418,6 @@ model MigrationStaging {
   @@index([sourceRow])
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENT CATEGORY
 // Flat lookup for grouping/filtering requirements on the SFJ website.
@@ -1446,19 +1440,18 @@ model RequirementCategory {
   @@index([isActive])
 }
 
-
 enum NaukriPromiseStatus {
-  PENDING   // promise made, not yet judged
-  KEPT      // next-day gap closed
-  BROKEN    // next-day gap still there
-  NONE      // no promise made that day
+  PENDING // promise made, not yet judged
+  KEPT // next-day gap closed
+  BROKEN // next-day gap still there
+  NONE // no promise made that day
 }
 
 enum MemeCategory {
   HAPPY
-  CELEBRATE   // promise kept / perfect day
+  CELEBRATE // promise kept / perfect day
   ANGRY
-  SHAME       // gap / promise broken
+  SHAME // gap / promise broken
   SAD
   NEUTRAL
 }
@@ -1504,12 +1497,12 @@ model NaukriRecruiterDaily {
 
 // banter thread — system taunts, recruiter replies, manager notes
 model NaukriMessage {
-  id       String               @id @default(uuid())
-  dailyId  String
-  daily    NaukriRecruiterDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+  id      String               @id @default(uuid())
+  dailyId String
+  daily   NaukriRecruiterDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
 
   author   NaukriMsgAuthor @default(SYSTEM)
-  authorId String?         // userId when RECRUITER/MANAGER
+  authorId String? // userId when RECRUITER/MANAGER
   body     String
   memeId   String?
   meme     MemeAsset?      @relation(fields: [memeId], references: [id])
@@ -1522,7 +1515,7 @@ model NaukriMessage {
 // game rollup per recruiter — cheap reads for the dashboard
 model NaukriRecruiterStreak {
   recruiterId   String    @id
-  currentStreak Int       @default(0)  // consecutive kept days
+  currentStreak Int       @default(0) // consecutive kept days
   longestStreak Int       @default(0)
   totalKept     Int       @default(0)
   totalBroken   Int       @default(0)
@@ -1533,10 +1526,10 @@ model NaukriRecruiterStreak {
 // reusable meme/gif library (S3 public links) — used here + anywhere else later
 model MemeAsset {
   id        String       @id @default(uuid())
-  url       String       // public S3 link
+  url       String // public S3 link
   category  MemeCategory
   caption   String?
-  weight    Int          @default(1)  // popular ones picked more often
+  weight    Int          @default(1) // popular ones picked more often
   isActive  Boolean      @default(true)
   createdAt DateTime     @default(now())
 
@@ -1565,42 +1558,42 @@ enum TicketPriority {
 }
 
 enum TicketEventKind {
-  MESSAGE        // a human wrote something
-  STATUS_CHANGE  // status moved, with or without a message
-  ASSIGNMENT     // handed to someone
+  MESSAGE // a human wrote something
+  STATUS_CHANGE // status moved, with or without a message
+  ASSIGNMENT // handed to someone
 }
 
 model Ticket {
-  id           String          @id @default(uuid())
-  seq          Int             @unique @default(autoincrement())
-  title        String
-  description  String?         @db.Text
+  id          String  @id @default(uuid())
+  seq         Int     @unique @default(autoincrement())
+  title       String
+  description String? @db.Text
 
-  status       TicketStatus    @default(OPEN)
-  priority     TicketPriority  @default(MEDIUM)
+  status   TicketStatus   @default(OPEN)
+  priority TicketPriority @default(MEDIUM)
 
-  categoryId   String?
-  category     TicketCategory? @relation(fields: [categoryId], references: [id])
+  categoryId String?
+  category   TicketCategory? @relation(fields: [categoryId], references: [id])
 
   // plain UUIDs + snapshot, no cross-service FK
-  raisedById   String
-  raisedByName String?
-  assignedToId String?
+  raisedById     String
+  raisedByName   String?
+  assignedToId   String?
   assignedToName String?
 
-  entityType   String?
-  entityId     String?
+  entityType String?
+  entityId   String?
 
-  resolvedAt   DateTime?
-  closedAt     DateTime?
-  lastActivityAt DateTime      @default(now())
+  resolvedAt     DateTime?
+  closedAt       DateTime?
+  lastActivityAt DateTime  @default(now())
 
-  attachments  TicketAttachment[]
-  comments     TicketComment[]
+  attachments   TicketAttachment[]
+  comments      TicketComment[]
   notifications TicketNotification[]
 
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status, priority])
   @@index([raisedById])
@@ -1617,11 +1610,13 @@ model TicketCategory {
   createdAt DateTime @default(now())
 }
 
-/** files on the ticket itself (the original request) */
+/**
+ * files on the ticket itself (the original request)
+ */
 model TicketAttachment {
-  id           String   @id @default(uuid())
-  ticketId     String
-  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id       String @id @default(uuid())
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   fileName     String
   fileKey      String
@@ -1629,34 +1624,36 @@ model TicketAttachment {
   sizeBytes    Int
   uploadedById String
 
-  createdAt    DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@index([ticketId])
 }
 
-/** one entry in the thread — a message, a status move, or both at once */
+/**
+ * one entry in the thread — a message, a status move, or both at once
+ */
 model TicketComment {
-  id           String          @id @default(uuid())
-  ticketId     String
-  ticket       Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id       String @id @default(uuid())
+  ticketId String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
-  kind         TicketEventKind @default(MESSAGE)
-  body         String?         @db.Text
+  kind TicketEventKind @default(MESSAGE)
+  body String?         @db.Text
 
   // author snapshot — no FK across services
-  authorId     String
-  authorName   String?
-  authorRole   String?
+  authorId   String
+  authorName String?
+  authorRole String?
 
   // where the ticket stood when this was posted, and what moved
-  statusAtPost TicketStatus    @default(OPEN)
+  statusAtPost TicketStatus  @default(OPEN)
   fromStatus   TicketStatus?
   toStatus     TicketStatus?
 
-  attachments  TicketCommentAttachment[]
+  attachments TicketCommentAttachment[]
 
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([ticketId, createdAt])
 }
@@ -1671,36 +1668,36 @@ model TicketCommentAttachment {
   mimeType  String
   sizeBytes Int
 
-  createdAt DateTime      @default(now())
+  createdAt DateTime @default(now())
 
   @@index([commentId])
 }
 
-/** dedicated stream — deliberately not the global notification table */
+/**
+ * dedicated stream — deliberately not the global notification table
+ */
 model TicketNotification {
-  id          String          @id @default(uuid())
-  ticketId    String
-  ticket      Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  commentId   String?
+  id        String  @id @default(uuid())
+  ticketId  String
+  ticket    Ticket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  commentId String?
 
   recipientId String
   actorId     String
   actorName   String?
 
-  kind        TicketEventKind
-  title       String
-  preview     String?
+  kind    TicketEventKind
+  title   String
+  preview String?
 
-  isRead      Boolean         @default(false)
-  readAt      DateTime?
+  isRead Boolean   @default(false)
+  readAt DateTime?
 
-  createdAt   DateTime        @default(now())
+  createdAt DateTime @default(now())
 
   @@index([recipientId, isRead, createdAt])
   @@index([ticketId])
 }
-
-
 
 model Band {
   id String @id @default(uuid())
@@ -1723,4 +1720,55 @@ model Band {
   createdAt DateTime @default(now())
 
   @@index([clientId])
+}
+
+model SavedSearch {
+  id            String    @id @default(uuid())
+  recruiterId   String
+  requirementId String?
+  assignmentId  String?
+  name          String
+  filters       Json
+  lastRunAt     DateTime?
+  runCount      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  recruiter User @relation(fields: [recruiterId], references: [id])
+
+  @@index([recruiterId])
+  @@index([requirementId])
+}
+
+model SearchActivityLog {
+  id            String   @id @default(uuid())
+  recruiterId   String
+  requirementId String?
+  assignmentId  String?
+  filters       Json
+  resultCount   Int?
+  createdAt     DateTime @default(now())
+
+  recruiter User @relation(fields: [recruiterId], references: [id])
+
+  @@index([recruiterId, createdAt])
+  @@index([requirementId])
+  @@index([createdAt])
+}
+
+model SourcingActivityLog {
+  id                 String   @id @default(uuid())
+  recruiterId        String
+  requirementId      String
+  assignmentId       String?
+  candidateServiceId String
+  candidateEmail     String?
+  candidateName      String?
+  createdAt          DateTime @default(now())
+
+  recruiter User @relation(fields: [recruiterId], references: [id])
+
+  @@index([recruiterId, createdAt])
+  @@index([requirementId])
+  @@index([createdAt])
 }
