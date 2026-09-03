@@ -141,7 +141,7 @@ const MONTH_NAMES = [
 
 function mojToFilter(
   mojMonth?: string,
-  mojYear?: string
+  mojYear?: string,
 ): Record<string, any> | null {
   // mojMonth = "2025-01" → "January 2025"
   if (mojMonth) {
@@ -180,8 +180,8 @@ const PIPELINE_SELECT = {
   noticePeriod: true,
   lastWorkingDate: true,
   expectedJoiningDate: true,
-  actualJoiningDate: true,
   monthOfJoining: true,
+  actualJoiningDate: true,
   remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
@@ -238,12 +238,12 @@ const PIPELINE_SELECT = {
 
 function buildRow(p: any, now: number): Record<string, any> {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
   );
   const totalMins =
     (p.stageHistory ?? []).reduce(
       (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-      0
+      0,
     ) + stageAgeMins;
   const rq = p.requirement;
 
@@ -386,9 +386,21 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
     }
 
     // MOJ filter
-    const mojFilter = mojToFilter(q.mojMonth, q.mojYear);
-    if (mojFilter) {
-      Object.assign(pipelineWhere, mojFilter);
+    // const mojFilter = mojToFilter(q.mojMonth, q.mojYear);
+    // if (mojFilter) {
+    //   Object.assign(pipelineWhere, mojFilter);
+    // }
+    // MOJ filter — frontend sends "2026-05", filter by actualJoiningDate range
+    if (q.mojMonth) {
+      const parts = q.mojMonth.split("-");
+      const year = Number(parts[0] ?? 0);
+      const month = Number(parts[1] ?? 0);
+
+      if (year && month) {
+        const start = new Date(year, month - 1, 1); // 2026-05-01
+        const end = new Date(year, month, 1); // 2026-06-01 (exclusive)
+        pipelineWhere.actualJoiningDate = { gte: start, lt: end };
+      }
     }
 
     // ── Type filter — what kind of candidates ───────────────────────────────
@@ -447,7 +459,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
             (p: any) =>
               p.isRejected ||
               p.isWithdrawn ||
-              p.currentStage?.pipeline === false
+              p.currentStage?.pipeline === false,
           )
         : pipelines;
 
@@ -465,7 +477,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
           !r.isNearTerminal &&
           !r.isRejected &&
           !r.isWithdrawn &&
-          !r.isOnHold
+          !r.isOnHold,
       ).length,
       onHold: rows.filter((r: any) => r.isOnHold).length,
       rejected: rows.filter((r: any) => r.isRejected).length,
@@ -495,7 +507,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
 
 export const getRecruiterDrillMojOptions = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const q = req.query as Record<string, string>;
