@@ -70,14 +70,20 @@ function isDateOnly(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
 }
 
-function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
+function resolveDateWindow(
+  q: Record<string, string | string[] | undefined>,
+): DateWindow {
   const now = new Date();
-  if (q.hours) {
-    const h = parseInt(q.hours, 10);
+  const hours = str(q.hours);
+  const range = str(q.range);
+  const fromDate = str(q.fromDate);
+  const toDate = str(q.toDate);
+  if (hours) {
+    const h = parseInt(hours, 10);
     if (!Number.isNaN(h) && h > 0)
       return { gte: new Date(now.getTime() - h * 3600000), lte: now };
   }
-  switch (q.range) {
+  switch (range) {
     case "today":
       return { gte: startOfDay(now), lte: now };
     case "yesterday": {
@@ -94,22 +100,23 @@ function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
       break;
   }
   const w: DateWindow = {};
-  if (q.fromDate)
-    w.gte = isDateOnly(q.fromDate)
-      ? startOfDay(new Date(q.fromDate))
-      : new Date(q.fromDate);
-  if (q.toDate)
-    w.lte = isDateOnly(q.toDate)
-      ? endOfDay(new Date(q.toDate))
-      : new Date(q.toDate);
+  if (fromDate)
+    w.gte = isDateOnly(fromDate)
+      ? startOfDay(new Date(fromDate))
+      : new Date(fromDate);
+  if (toDate)
+    w.lte = isDateOnly(toDate) ? endOfDay(new Date(toDate)) : new Date(toDate);
   return w;
 }
 
-function windowLabel(q: Record<string, string | undefined>): string {
-  if (q.hours) return `last-${q.hours}h`;
-  if (q.range) return q.range;
-  if (q.fromDate || q.toDate)
-    return `${q.fromDate ?? "start"}_to_${q.toDate ?? "now"}`;
+function windowLabel(q: Record<string, string | string[] | undefined>): string {
+  const hours = str(q.hours);
+  const range = str(q.range);
+  const fromDate = str(q.fromDate);
+  const toDate = str(q.toDate);
+  if (hours) return `last-${hours}h`;
+  if (range) return range;
+  if (fromDate || toDate) return `${fromDate ?? "start"}_to_${toDate ?? "now"}`;
   return "all-time";
 }
 
@@ -150,17 +157,56 @@ function parseIds(raw?: string): string[] | null {
 // Accepts every requirement-level filter the frontend can send
 // ─────────────────────────────────────────────────────────────────────────────
 
+// function buildReqWhere(
+//   q: Record<string, string | undefined>
+// ): Record<string, any> {
+//   const where: Record<string, any> = { deletedAt: null };
+//   if (q.clientId) where.clientId = q.clientId;
+//   if (q.clientSpocId) where.clientSpocId = q.clientSpocId;
+//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
+//   if (q.status) where.status = q.status;
+//   if (q.priority) where.priority = q.priority;
+//   if (q.createdById) where.createdById = q.createdById;
+//   return where;
+// }
+
+// ADD this before buildReqWhere
+function prismaIn(v: string | string[] | undefined) {
+  if (!v) return undefined;
+  const arr = Array.isArray(v) ? v : [v];
+  if (!arr.length) return undefined;
+  return arr.length === 1 ? arr[0] : { in: arr };
+}
+
+function str(v: string | string[] | undefined): string | undefined {
+  if (!v) return undefined;
+  return Array.isArray(v) ? v[0] : v;
+}
+
 function buildReqWhere(
-  q: Record<string, string | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
-  if (q.clientId) where.clientId = q.clientId;
-  if (q.clientSpocId) where.clientSpocId = q.clientSpocId;
-  if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+
+  // ── Multi-select (checkbox) filters — can be array or single string ──
+  const clientId = prismaIn(q.clientId);
+  const clientSpocId = prismaIn(q.clientSpocId);
+  const serviceLineId = prismaIn(q.serviceLineId);
+  const status = prismaIn(q.status);
+  const departmentId = prismaIn(q.departmentId);
+
+  if (clientId) where.clientId = clientId;
+  if (clientSpocId) where.clientSpocId = clientSpocId;
+  if (serviceLineId) where.serviceLineId = serviceLineId;
+  if (status) where.status = status;
+  if (departmentId) where.departmentId = departmentId;
+
+  // ── Single-value filters — always a plain string ──
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-  if (q.status) where.status = q.status;
   if (q.priority) where.priority = q.priority;
   if (q.createdById) where.createdById = q.createdById;
+
   return where;
 }
 
@@ -170,8 +216,8 @@ function buildReqWhere(
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildPipelineWhere(
-  q: Record<string, string | undefined>,
-  effectiveUserIds: string[] | null
+  q: Record<string, string | string[] | undefined>,
+  effectiveUserIds: string[] | null,
 ): Record<string, any> {
   const where: Record<string, any> = {};
 
@@ -214,10 +260,13 @@ function buildPipelineWhere(
 
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): string[] | null {
   const scopedIds = resolveScopedUserIds(req);
-  const teamIds = parseIds(q.userIds);
+  // const teamIds = parseIds(q.userIds);
+  const teamIds = parseIds(
+    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds,
+  );
 
   if (!teamIds) return scopedIds; // no team filter — use RBAC scope as-is
 
@@ -246,7 +295,7 @@ function classify(
     isNearTerminal: boolean;
     isSourced: boolean;
     pipeline: boolean;
-  } | null
+  } | null,
 ): Bucket {
   if (!stage) return "inPipeline"; // safe fallback if stage not loaded
   if (stage.isTerminal) return "placed";
@@ -262,7 +311,7 @@ function classify(
 
 export const getRecruiterStats = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const standardOnly = q.standardOnly === "true";
     const effectiveUserIds = resolveEffectiveUserIds(req, q);
 
@@ -317,11 +366,16 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
 
     // ── Fetch all stages for column metadata ─────────────────────────────────
     const stageFilter: Record<string, any> = { isActive: true };
-    if (q.serviceLineId)
+    if (q.serviceLineId) {
+      const slArr = Array.isArray(q.serviceLineId)
+        ? q.serviceLineId
+        : [q.serviceLineId];
+
       stageFilter.OR = [
         { serviceLineId: null },
-        { serviceLineId: q.serviceLineId },
+        { serviceLineId: { in: slArr } },
       ];
+    }
 
     const allStages = await prisma.pipelineStage.findMany({
       where: stageFilter,
@@ -487,7 +541,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       .sort((a, b) => b.sourced - a.sourced);
 
     const byServiceLine = [...slMap.values()].sort(
-      (a, b) => b.sourced - a.sourced
+      (a, b) => b.sourced - a.sourced,
     );
 
     const totalSourced = pipelines.length;
