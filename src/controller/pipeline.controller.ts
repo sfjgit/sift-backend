@@ -1632,6 +1632,218 @@ export const holdCandidate = async (req: Request, res: Response) => {
   }
 };
 
+// File: transferPipelineCandidate.ts
+// Path: src/controllers/pipeline/transferPipelineCandidate.ts
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /pipeline/:pipelineId/transfer
+//
+// Transfers ownership of a pipeline row to a different recruiter.
+// Target recruiter MUST have an active assignment for the SAME requirement.
+//
+// Body:
+//   targetUserId  string   — who to hand the candidate to
+//   note?         string   — optional handover context
+//
+// What changes:
+//   recruiterId       → targetUserId
+//   assignmentId      → target recruiter's active assignment for this requirement
+//   stageUpdatedById  → caller (last-touched audit)
+//
+// What does NOT change:
+//   currentStageId    — stage preserved as-is
+//   snapshot          — frozen, never mutated
+//
+// Side effects (all inside $transaction):
+//   CandidatePipelineStageLog  — transfer note (fromStage = toStage, no TAT)
+//   RequirementActivity        — RECRUITER_ASSIGNED event on the requirement
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const transferPipelineCandidate = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { pipelineId } = req.params;
+    const caller = req.user!;
+    const { targetUserId, note } = req.body as {
+      targetUserId: string;
+      note?: string;
+    };
+
+    if (!targetUserId?.trim()) {
+      res
+        .status(400)
+        .json({ success: false, message: "targetUserId is required" });
+      return;
+    }
+
+    // ── Load pipeline row ──────────────────────────────────────────────────
+    const pipeline = await prisma.requirementCandidatePipeline.findUnique({
+      where: { id: pipelineId },
+      select: {
+        id: true,
+        recruiterId: true,
+        requirementId: true,
+        currentStageId: true,
+        snapshotId: true,
+        assignmentId: true,
+      },
+    });
+
+    if (!pipeline) {
+      res
+        .status(404)
+        .json({ success: false, message: "Pipeline entry not found" });
+      return;
+    }
+
+    if (pipeline.recruiterId === targetUserId) {
+      res.status(400).json({
+        success: false,
+        message: "Candidate is already assigned to this recruiter",
+      });
+      return;
+    }
+
+    // ── Load snapshot ──────────────────────────────────────────────────────
+    const snapshot = await prisma.candidateSnapshot.findUnique({
+      where: { id: pipeline.snapshotId },
+      select: { fullName: true, email: true },
+    });
+
+    const candidateName = snapshot?.fullName ?? "Candidate";
+    const candidateEmail = snapshot?.email ?? "";
+
+    // ── Validate target user ───────────────────────────────────────────────
+    const targetUser = await prisma.user.findUnique({
+      where: { id: targetUserId, isActive: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        employeeId: true,
+        role: { select: { id: true, name: true, canonical: true } },
+      },
+    });
+
+    if (!targetUser) {
+      res.status(404).json({
+        success: false,
+        message: "Target recruiter not found or inactive",
+      });
+      return;
+    }
+
+    // ── Resolve names early — needed for both the error and the log ────────
+    const fromUser = await prisma.user.findUnique({
+      where: { id: pipeline.recruiterId },
+      select: { firstName: true, lastName: true },
+    });
+
+    const fromName = fromUser
+      ? `${fromUser.firstName.trim()} ${fromUser.lastName.trim()}`
+      : "previous recruiter";
+    const toName = `${targetUser.firstName.trim()} ${targetUser.lastName.trim()}`;
+
+    // ── Find target recruiter's active assignment for THIS requirement ──────
+    // orderBy: assignedAt desc — always picks the most recent if somehow
+    // multiple active assignments exist for same req + user
+    const targetAssignment = await prisma.requirementAssignment.findFirst({
+      where: {
+        requirementId: pipeline.requirementId, // ← SAME requirement only
+        assignedToId: targetUserId,
+        status: "ACTIVE",
+      },
+      orderBy: { assignedAt: "desc" }, // ← deterministic pick
+      select: { id: true },
+    });
+
+    if (!targetAssignment) {
+      res.status(400).json({
+        success: false,
+        message: `${toName} does not have an active assignment for this requirement. Assign them first, then transfer.`,
+      });
+      return;
+    }
+
+    const newAssignmentId = targetAssignment.id;
+
+    // ── Build log note ─────────────────────────────────────────────────────
+    const logNote = note?.trim()
+      ? `Transferred from ${fromName} to ${toName}. ${note.trim()}`
+      : `Transferred from ${fromName} to ${toName}`;
+
+    // ── Transaction ────────────────────────────────────────────────────────
+    await prisma.$transaction(async (tx) => {
+      // 1. Move the pipeline row into the target's assignment bucket
+      await tx.requirementCandidatePipeline.update({
+        where: { id: pipelineId },
+        data: {
+          recruiterId: targetUserId,
+          assignmentId: newAssignmentId,
+          isTransferred: true,
+          stageUpdatedById: caller.id,
+          updatedAt: new Date(),
+        },
+      });
+
+      // 2. Stage log — fromStage = toStage (ownership change, not a stage move)
+      await tx.candidatePipelineStageLog.create({
+        data: {
+          pipelineId,
+          fromStageId: pipeline.currentStageId,
+          toStageId: pipeline.currentStageId,
+          changedById: caller.id,
+          wasSkipped: false,
+          note: logNote,
+          timeInPrevStageMins: null,
+        },
+      });
+
+      // 3. Requirement activity feed
+      await tx.requirementActivity.create({
+        data: {
+          requirementId: pipeline.requirementId,
+          actorId: caller.id,
+          type: "RECRUITER_ASSIGNED",
+          summary: `${candidateName} transferred from ${fromName} to ${toName}`,
+          meta: {
+            pipelineId,
+            fromRecruiterId: pipeline.recruiterId,
+            fromRecruiterName: fromName,
+            fromAssignmentId: pipeline.assignmentId,
+            toRecruiterId: targetUserId,
+            toRecruiterName: toName,
+            toAssignmentId: newAssignmentId,
+            candidateName,
+            candidateEmail,
+          },
+        },
+      });
+    });
+
+    res.json({
+      success: true,
+      message: `${candidateName} transferred to ${toName}`,
+      data: {
+        pipelineId,
+        transferredTo: {
+          id: targetUser.id,
+          firstName: targetUser.firstName,
+          lastName: targetUser.lastName,
+          employeeId: targetUser.employeeId,
+          role: targetUser.role,
+          assignmentId: newAssignmentId,
+        },
+      },
+    });
+  } catch (err) {
+    console.error("transferPipelineCandidate:", err);
+    res.status(500).json({ success: false, message: "Transfer failed" });
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /pipeline/:pipelineId/details
 // CTC ladder + joining fields that have no dedicated action endpoint.

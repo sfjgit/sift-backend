@@ -43,6 +43,7 @@ import {
   holdCandidate,
   updateDisposition,
   updatePipelineDetails,
+  transferPipelineCandidate,
 } from "@/controller/pipeline.controller";
 
 const router = Router();
@@ -82,7 +83,7 @@ router.patch(
   scope,
   edit,
   validate.body(updateDispositionSchema),
-  updateDisposition
+  updateDisposition,
 );
 
 // CTC ladder + joining fields that don't have a dedicated action endpoint.
@@ -95,7 +96,7 @@ router.patch(
   scope,
   edit,
   // validate.body(updatePipelineDetailsSchema),
-  updatePipelineDetails
+  updatePipelineDetails,
 );
 
 router.get("/:pipelineId/timeline", auth, scope, getPipelineTimeline);
@@ -111,7 +112,7 @@ router.patch(
   scope,
   edit,
   validate.body(updatePipelineStageSchema),
-  moveCandidateStage
+  moveCandidateStage,
 );
 router.patch(
   "/:pipelineId/submit",
@@ -119,7 +120,7 @@ router.patch(
   scope,
   edit,
   validate.body(submitCandidateSchema),
-  submitCandidate
+  submitCandidate,
 );
 router.patch(
   "/:pipelineId/offer/status",
@@ -127,7 +128,7 @@ router.patch(
   scope,
   edit,
   validate.body(updateOfferStatusSchema),
-  updateOfferStatus
+  updateOfferStatus,
 );
 router.patch(
   "/:pipelineId/offer",
@@ -135,7 +136,7 @@ router.patch(
   scope,
   edit,
   // validate.body(rollOfferSchema),
-  rollOffer
+  rollOffer,
 );
 router.patch(
   "/:pipelineId/reject",
@@ -143,7 +144,7 @@ router.patch(
   scope,
   edit,
   validate.body(rejectCandidateSchema),
-  rejectCandidate
+  rejectCandidate,
 );
 router.patch(
   "/:pipelineId/withdraw",
@@ -151,7 +152,7 @@ router.patch(
   scope,
   edit,
   validate.body(withdrawCandidateSchema),
-  withdrawCandidate
+  withdrawCandidate,
 );
 router.patch(
   "/:pipelineId/hold",
@@ -159,7 +160,15 @@ router.patch(
   scope,
   edit,
   validate.body(holdCandidateSchema),
-  holdCandidate
+  holdCandidate,
+);
+
+router.patch(
+  "/:pipelineId/transfer",
+  auth,
+  scope,
+  edit,
+  transferPipelineCandidate,
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
