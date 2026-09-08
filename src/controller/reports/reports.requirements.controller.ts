@@ -22,26 +22,30 @@ import { computeSaleValue } from "../requirementsController";
 // DATE WINDOW — same pattern as overview controller
 // ─────────────────────────────────────────────────────────────────────────────
 
-function resolveDateWindow(q: Record<string, string>): {
+function resolveDateWindow(q: Record<string, string | string[] | undefined>): {
   gte?: Date;
   lte?: Date;
 } {
   const now = new Date();
-  if (q.hours) {
-    const h = parseInt(q.hours, 10);
+  const hours = str(q.hours);
+  const fromDate = str(q.fromDate);
+  const toDate = str(q.toDate);
+  const range = str(q.range);
+  if (hours) {
+    const h = parseInt(hours, 10);
     return { gte: new Date(now.getTime() - h * 3600000) };
   }
-  if (q.fromDate || q.toDate) {
+  if (fromDate || toDate) {
     return {
-      ...(q.fromDate ? { gte: new Date(q.fromDate) } : {}),
-      ...(q.toDate
-        ? { lte: new Date(new Date(q.toDate).setHours(23, 59, 59, 999)) }
+      ...(fromDate ? { gte: new Date(fromDate) } : {}),
+      ...(toDate
+        ? { lte: new Date(new Date(toDate).setHours(23, 59, 59, 999)) }
         : {}),
     };
   }
-  if (q.range) {
+  if (range) {
     const start = new Date(now);
-    switch (q.range) {
+    switch (range) {
       case "today":
         start.setHours(0, 0, 0, 0);
         return { gte: start };
@@ -68,11 +72,14 @@ function resolveDateWindow(q: Record<string, string>): {
   return {};
 }
 
-function windowLabel(q: Record<string, string>): string {
-  if (q.hours) return `Last ${q.hours}h`;
-  if (q.fromDate || q.toDate)
-    return `${q.fromDate || "start"} → ${q.toDate || "now"}`;
-  if (q.range) {
+function windowLabel(q: Record<string, string | string[] | undefined>): string {
+  const hours = str(q.hours);
+  const fromDate = str(q.fromDate);
+  const toDate = str(q.toDate);
+  const range = str(q.range);
+  if (hours) return `Last ${hours}h`;
+  if (fromDate || toDate) return `${fromDate || "start"} → ${toDate || "now"}`;
+  if (range) {
     const map: Record<string, string> = {
       today: "Today",
       yesterday: "Yesterday",
@@ -80,7 +87,7 @@ function windowLabel(q: Record<string, string>): string {
       last30: "Last 30 days",
       thisMonth: "This month",
     };
-    return map[q.range] ?? q.range;
+    return map[range] ?? range;
   }
   return "All time";
 }
@@ -89,13 +96,37 @@ function windowLabel(q: Record<string, string>): string {
 // BASE REQ WHERE — shared filter builder (no date window — handled separately)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildReqWhere(q: Record<string, string>): Record<string, any> {
+// function buildReqWhere(q: Record<string, string>): Record<string, any> {
+//   const where: Record<string, any> = { deletedAt: null };
+//   if (q.status) where.status = q.status;
+//   if (q.clientId) where.clientId = q.clientId;
+//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
+//   if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← add this
+//   return where;
+// }
+
+//new functions
+function prismaIn(v: string | string[] | undefined) {
+  if (!v) return undefined;
+  const arr = Array.isArray(v) ? v : [v];
+  if (!arr.length) return undefined;
+  return arr.length === 1 ? arr[0] : { in: arr };
+}
+function str(v: string | string[] | undefined): string | undefined {
+  if (!v) return undefined;
+  return Array.isArray(v) ? v[0] : v;
+}
+
+function buildReqWhere(
+  q: Record<string, string | string[] | undefined>,
+): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
-  if (q.status) where.status = q.status;
-  if (q.clientId) where.clientId = q.clientId;
-  if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
-  if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-  if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← add this
+  if (q.status) where.status = prismaIn(q.status);
+  if (q.clientId) where.clientId = prismaIn(q.clientId);
+  if (q.serviceLineId) where.serviceLineId = prismaIn(q.serviceLineId);
+  if (q.businessUnitId) where.businessUnitId = q.businessUnitId; // single only
+  if (q.clientSpocId) where.clientSpocId = prismaIn(q.clientSpocId);
   return where;
 }
 
@@ -103,12 +134,17 @@ function buildReqWhere(q: Record<string, string>): Record<string, any> {
 // STAGE FETCH — scoped by service line
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchScopedStages(serviceLineId?: string) {
+async function fetchScopedStages(serviceLineId?: string | string[]) {
+  const slArr = serviceLineId
+    ? Array.isArray(serviceLineId)
+      ? serviceLineId
+      : [serviceLineId]
+    : null;
   return prisma.pipelineStage.findMany({
     where: {
       isActive: true,
-      ...(serviceLineId
-        ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
+      ...(slArr?.length
+        ? { OR: [{ serviceLineId: null }, { serviceLineId: { in: slArr } }] }
         : {}),
     },
     select: {
@@ -138,7 +174,7 @@ function stageMetaOut(stages: FetchedStage[], standardOnly: boolean) {
       isNearTerminal: s.isNearTerminal,
       serviceLineId: s.serviceLineId,
       serviceLine: s.serviceLine,
-    })
+    }),
   );
 }
 
@@ -168,26 +204,26 @@ function stageMetaOut(stages: FetchedStage[], standardOnly: boolean) {
 
 export const getRequirementReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const standardOnly = q.standardOnly === "true";
 
     // ── Scope: creator BFS tree ───────────────────────────────────────────────
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
 
-    const requestedCreatorId = q.createdById?.trim() || null;
+    const requestedCreatorId = str(q.createdById)?.trim() || null;
     const effectiveCreatorIds =
       creatorIds === null
         ? requestedCreatorId
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-        ? creatorIds.includes(requestedCreatorId)
-          ? [requestedCreatorId]
-          : []
-        : creatorIds;
+          ? creatorIds.includes(requestedCreatorId)
+            ? [requestedCreatorId]
+            : []
+          : creatorIds;
 
     // const createdByWhere =
     //   effectiveCreatorIds === null
@@ -250,7 +286,9 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     // When present, scope to requirements created by OR assigned to those users
     let teamReqIdFilter: { id: { in: string[] } } | Record<string, never> = {};
     if (q.userIds) {
-      const teamIds = q.userIds
+      const rawUserIds = str(q.userIds) ?? "";
+
+      const teamIds = rawUserIds
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
@@ -293,7 +331,9 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     };
 
     // ── Stages ────────────────────────────────────────────────────────────────
-    const stages = await fetchScopedStages(q.serviceLineId);
+    const stages = await fetchScopedStages(
+      Array.isArray(q.serviceLineId) ? q.serviceLineId : q.serviceLineId,
+    );
     const stageIdSet = new Set(stages.map((s) => s.id));
     const terminalStageIds = stages
       .filter((s) => s.isTerminal)
@@ -421,7 +461,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       // Terminal count (candidates in any terminal stage for this req)
       const terminalCount = terminalStageIds.reduce(
         (sum, sid) => sum + (counts[sid] ?? 0),
-        0
+        0,
       );
 
       // Achieved value
@@ -434,7 +474,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((terminalCount / r.totalOpenings) * 1000) / 10
+              Math.round((terminalCount / r.totalOpenings) * 1000) / 10,
             )
           : 0;
 
@@ -503,7 +543,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     // ── Group by service line ─────────────────────────────────────────────────
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     const byLine = new Map<string, any[]>();

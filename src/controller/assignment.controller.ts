@@ -93,6 +93,8 @@ const FULL_PIPELINE_SELECT = {
 
   // ── Status flags — ADD THESE (if missing)
 
+  isTransferred: true,
+  transferredAt: true,
   rejectionReason: true,
   withdrawnReason: true,
   onHoldReason: true,
@@ -522,6 +524,32 @@ function shapePipelineRow(p: any) {
     // but it's sourced from currentStage.canonicalStage — single source of truth
     currentCanonicalStage: p.currentStage?.canonicalStage ?? null,
     aging: computeAging(p.stageUpdatedAt),
+    // ← use the real DB field, not a derived comparison
+    isTransferred: p.isTransferred === true,
+    // ← expose last transfer info from stage history for tracking
+    lastTransfer: (() => {
+      const log = (p.stageHistory ?? []).find((h: any) =>
+        h.note?.startsWith("Transferred from"),
+      );
+      if (!log) return null;
+      const match = log.note?.match(
+        /^Transferred from (.+?) to (.+?)(?:\. .+)?$/,
+      );
+
+      return {
+        note: log.note,
+        at: log.createdAt,
+        by: log.changedBy
+          ? {
+              id: log.changedBy.id,
+              name: `${log.changedBy.firstName} ${log.changedBy.lastName}`.trim(),
+            }
+          : null,
+        // parsed from the note — avoids needing extra DB fields
+        fromRecruiter: match?.[1]?.trim() ?? null,
+        toRecruiter: match?.[2]?.trim() ?? null,
+      };
+    })(),
   };
 }
 
@@ -542,6 +570,7 @@ export const getAssignments = async (req: Request, res: Response) => {
       sortBy = "assignedAt",
       sortDir = "desc",
       search,
+      isTransferred = "false",
     } = req.query as Record<string, string>;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -593,6 +622,84 @@ export const getAssignments = async (req: Request, res: Response) => {
         take,
       }),
     ]);
+    // ── Fetch latest transfer activity for each requirement in this page ──
+    // RequirementActivity.type = "RECRUITER_ASSIGNED" is logged on every transfer
+    // with full meta: fromRecruiterId, fromRecruiterName, toRecruiterId,
+    // toRecruiterName, transferredBy (actor)
+    const requirementIds = [
+      ...new Set(assignments.map((a: any) => a.requirementId).filter(Boolean)),
+    ];
+    console.log("[getAssignments] requirementIds:", requirementIds);
+
+    const transferActivities = requirementIds.length
+      ? await prisma.requirementActivity.findMany({
+          where: {
+            requirementId: { in: requirementIds },
+            type: "RECRUITER_ASSIGNED",
+          },
+          select: {
+            id: true,
+            requirementId: true,
+            createdAt: true,
+            meta: true,
+            actor: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                role: { select: { id: true, name: true } },
+              },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+        })
+      : [];
+    console.log(
+      "[getAssignments] transferActivities:",
+      JSON.stringify(transferActivities, null, 2),
+    );
+    // Build map: requirementId → latest transfer activity
+    const latestTransferMap = new Map<string, any>();
+    for (const activity of transferActivities) {
+      if (!latestTransferMap.has(activity.requirementId)) {
+        latestTransferMap.set(activity.requirementId, activity);
+      }
+    }
+
+    // ── Shape each assignment with transfer info attached ─────────────────
+    const shaped = assignments.map((a: any) => {
+      const shaped = shapeAssignment(a);
+      const latestActivity = latestTransferMap.get(a.requirement?.id);
+
+      if (!latestActivity) {
+        return { ...shaped, lastTransfer: null };
+      }
+
+      const meta = latestActivity.meta as any;
+      return {
+        ...shaped,
+        lastTransfer: {
+          at: latestActivity.createdAt,
+          // DL/TL who performed the transfer
+          by: {
+            id: latestActivity.actor.id,
+            name: `${latestActivity.actor.firstName} ${latestActivity.actor.lastName}`.trim(),
+            role: latestActivity.actor.role?.name ?? null,
+          },
+          from: {
+            id: meta?.fromRecruiterId ?? null,
+            name: meta?.fromRecruiterName ?? null,
+            assignmentId: meta?.fromAssignmentId ?? null,
+          },
+          to: {
+            id: meta?.toRecruiterId ?? null,
+            name: meta?.toRecruiterName ?? null,
+            assignmentId: meta?.toAssignmentId ?? null,
+          },
+          candidateName: meta?.candidateName ?? null,
+        },
+      };
+    });
 
     res.json({
       success: true,
