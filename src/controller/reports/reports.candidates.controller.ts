@@ -25,6 +25,7 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { resolveOrgTreeDown } from "./reports.controller";
+import { string } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE WINDOW
@@ -177,7 +178,7 @@ function joiningInRange(
   start: Date,
   end: Date,
   storedLabel?: string | null,
-  storedYearSubstr?: string | null
+  storedYearSubstr?: string | null,
 ): Record<string, any> {
   const range = { gte: start, lte: end };
   const or: any[] = [
@@ -220,11 +221,11 @@ function formatAging(mins: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildScopeFilter(
-  req: Request
+  req: Request,
 ): Promise<Record<string, any> | null> {
   const orgTree = await resolveOrgTreeDown(
     req.user!.id,
-    req.user!.isSuperAdmin
+    req.user!.isSuperAdmin,
   );
   if (orgTree === null) return null; // super admin — see everything
   if (orgTree.length === 0) return { id: { in: [] } }; // paranoid: deny
@@ -257,7 +258,7 @@ async function buildScopeFilter(
 
 async function buildCandidateWhere(
   req: Request,
-  q: Record<string, string>
+  q: Record<string, string>,
 ): Promise<Record<string, any>> {
   const and: Record<string, any>[] = [];
 
@@ -295,10 +296,16 @@ async function buildCandidateWhere(
   const teamIds = parseIds(q.userIds);
   if (teamIds) and.push({ recruiterId: { in: teamIds } });
 
+  const rawStageId = req.query.stageId;
+  const rawStageIds = q.stageIds;
   // ── Stage ────────────────────────────────────────────────────────────────
-  const stageIds = parseIds(q.stageIds);
-  if (stageIds) and.push({ currentStageId: { in: stageIds } });
-  else if (q.stageId) and.push({ currentStageId: q.stageId });
+  const stageIds: string[] | null = rawStageId
+    ? Array.isArray(rawStageId)
+      ? (rawStageId as string[]).filter(Boolean)
+      : [rawStageId as string]
+    : parseIds(rawStageIds);
+
+  if (stageIds?.length) and.push({ currentStageId: { in: stageIds } });
 
   // Stage bucket — flag-based, mutually exclusive
   switch (q.bucket) {
@@ -352,8 +359,8 @@ async function buildCandidateWhere(
       joiningInRange(
         new Date(yr, mo - 1, 1, 0, 0, 0, 0),
         new Date(yr, mo, 0, 23, 59, 59, 999),
-        mojParamToLabel(q.mojMonth)
-      )
+        mojParamToLabel(q.mojMonth),
+      ),
     );
   } else if (mojMonthNum && mojMonthNum >= 1 && mojMonthNum <= 12) {
     if (mojYearNum && !isNaN(mojYearNum)) {
@@ -361,8 +368,8 @@ async function buildCandidateWhere(
         joiningInRange(
           new Date(mojYearNum, mojMonthNum - 1, 1, 0, 0, 0, 0),
           new Date(mojYearNum, mojMonthNum, 0, 23, 59, 59, 999),
-          `${MONTHS_FULL[mojMonthNum - 1]} ${mojYearNum}`
-        )
+          `${MONTHS_FULL[mojMonthNum - 1]} ${mojYearNum}`,
+        ),
       );
     } else {
       const thisYear = new Date().getFullYear();
@@ -374,7 +381,7 @@ async function buildCandidateWhere(
           { actualJoiningDate: { gte: s, lte: e } },
           { expectedJoiningDate: { gte: s, lte: e } },
           { lastWorkingDate: { gte: s, lte: e } },
-          { monthOfJoining: `${MONTHS_FULL[mojMonthNum - 1]} ${y}` }
+          { monthOfJoining: `${MONTHS_FULL[mojMonthNum - 1]} ${y}` },
         );
       }
       and.push({ OR: ors });
@@ -385,8 +392,8 @@ async function buildCandidateWhere(
         new Date(mojYearNum, 0, 1, 0, 0, 0, 0),
         new Date(mojYearNum, 11, 31, 23, 59, 59, 999),
         null,
-        q.mojYear
-      )
+        q.mojYear,
+      ),
     );
   }
 
@@ -544,15 +551,15 @@ function bucketOf(s: any): string {
 function buildRow(
   p: any,
   now: number,
-  dupMap: Map<string, any[]>
+  dupMap: Map<string, any[]>,
 ): Record<string, any> {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
   );
   const totalMins =
     (p.stageHistory ?? []).reduce(
       (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-      0
+      0,
     ) + stageAgeMins;
 
   const derived = deriveJoiningDate(p);
@@ -561,7 +568,7 @@ function buildRow(
 
   // Other requirements this same person sits in
   const others = (dupMap.get(snap?.candidateServiceId ?? "") ?? []).filter(
-    (o: any) => o.requirementId !== p.requirementId
+    (o: any) => o.requirementId !== p.requirementId,
   );
 
   return {
@@ -678,7 +685,7 @@ function buildRow(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildDuplicateMap(
-  candidateServiceIds: string[]
+  candidateServiceIds: string[],
 ): Promise<Map<string, any[]>> {
   const map = new Map<string, any[]>();
   if (!candidateServiceIds.length) return map;
@@ -755,7 +762,7 @@ export const getCandidatesList = async (req: Request, res: Response) => {
     const page = Math.max(1, parseInt(q.page ?? "1", 10) || 1);
     const limit = Math.min(
       200,
-      Math.max(1, parseInt(q.limit ?? "50", 10) || 50)
+      Math.max(1, parseInt(q.limit ?? "50", 10) || 50),
     );
     const skip = (page - 1) * limit;
 
@@ -778,7 +785,7 @@ export const getCandidatesList = async (req: Request, res: Response) => {
       ...new Set(
         pipelines
           .map((p: any) => p.snapshot?.candidateServiceId)
-          .filter(Boolean) as string[]
+          .filter(Boolean) as string[],
       ),
     ];
     const dupMap = await buildDuplicateMap(csIds);
@@ -914,7 +921,7 @@ export const getCandidatesStats = async (req: Request, res: Response) => {
       take: 20000, // safety bound; beyond this the ratio is indicative
     });
     const distinctPeople = new Set(
-      distinctRows.map((r) => r.snapshot?.candidateServiceId).filter(Boolean)
+      distinctRows.map((r) => r.snapshot?.candidateServiceId).filter(Boolean),
     ).size;
 
     return res.json({
@@ -969,7 +976,7 @@ export const getCandidatesFilters = async (req: Request, res: Response) => {
   try {
     const orgTree = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
 
     const recruiterWhere =
@@ -1134,7 +1141,7 @@ export const getCandidatesDrill = async (req: Request, res: Response) => {
       ...new Set(
         pipelines
           .map((p: any) => p.snapshot?.candidateServiceId)
-          .filter(Boolean) as string[]
+          .filter(Boolean) as string[],
       ),
     ];
     const dupMap = await buildDuplicateMap(csIds);
