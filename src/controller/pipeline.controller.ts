@@ -654,7 +654,7 @@ const requiresInterviewSchedule = (c: string | null | undefined) =>
 export const moveCandidateStage = async (req: Request, res: Response) => {
   try {
     const { pipelineId } = req.params;
-    const { stageId, note, interview } = req.body;
+    const { stageId, note, interview, noticePeriod } = req.body;
     const actorId = req.user!.id;
 
     const pipeline = await findPipeline(pipelineId);
@@ -687,6 +687,16 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
 
     if (!targetStage) {
       res.status(404).json({ success: false, message: "Stage not found" });
+      return;
+    }
+
+    const isSubmittedToClient = targetStage.canonicalStage === "SUBMMITED";
+    if (isSubmittedToClient && !noticePeriod?.trim()) {
+      res.status(422).json({
+        success: false,
+        code: "NOTICE_PERIOD_REQUIRED",
+        message: "Notice period is required when moving to Submitted to Client",
+      });
       return;
     }
 
@@ -735,6 +745,7 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
           isOnHold: false,
           onHoldAt: null,
           onHoldReason: null,
+          ...(isSubmittedToClient ? { noticePeriod: noticePeriod.trim() } : {}),
         },
       });
 
