@@ -166,23 +166,65 @@ export async function resolveOrgTreeDown(
   return [...visited];
 }
 
+function toSingleQ(
+  q: Record<string, string | string[] | undefined>,
+): Record<string, string | undefined> {
+  return Object.fromEntries(
+    Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-VALUE QUERY PARAM HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toArray(val: string | string[] | undefined): string[] {
+  if (!val) return [];
+  return Array.isArray(val) ? val : [val];
+}
+
+function toPrismaFilter(
+  val: string | string[] | undefined,
+): string | { in: string[] } | undefined {
+  const arr = toArray(val);
+  if (arr.length === 0) return undefined;
+  if (arr.length === 1) return arr[0];
+  return { in: arr };
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUIREMENT WHERE builder
 // ─────────────────────────────────────────────────────────────────────────────
 function buildReqWhere(
-  q: Record<string, string | undefined>,
+  q: Record<string, string | string[] | undefined>,
   opts: { withDateWindow?: boolean } = {},
 ): Record<string, any> {
   const { withDateWindow = true } = opts;
   const where: Record<string, any> = { deletedAt: null };
-  if (q.clientId) where.clientId = q.clientId;
-  if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← ADD
-  if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
-  if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-  if (q.status) where.status = q.status;
-  if (q.priority) where.priority = q.priority;
+
+  const clientFilter = toPrismaFilter(q.clientId);
+  if (clientFilter) where.clientId = clientFilter;
+
+  const spocFilter = toPrismaFilter(q.clientSpocId);
+  if (spocFilter) where.clientSpocId = spocFilter;
+
+  const slFilter = toPrismaFilter(q.serviceLineId);
+  if (slFilter) where.serviceLineId = slFilter;
+
+  const buFilter = toPrismaFilter(q.businessUnitId);
+  if (buFilter) where.businessUnitId = buFilter;
+
+  const statusArr = toArray(q.status);
+  if (statusArr.length === 1) where.status = statusArr[0];
+  else if (statusArr.length > 1) where.status = { in: statusArr };
+
+  const priorityFilter = toPrismaFilter(q.priority);
+  if (priorityFilter) where.priority = priorityFilter;
+
   if (withDateWindow) {
-    const win = resolveDateWindow(q);
+    // q.fromDate / q.toDate etc. are always single-value — safe to cast
+    const singleQ = Object.fromEntries(
+      Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
+    ) as Record<string, string | undefined>;
+    const win = resolveDateWindow(singleQ);
     if (win.gte || win.lte) {
       where.createdAt = {};
       if (win.gte) where.createdAt.gte = win.gte;
@@ -224,15 +266,25 @@ const STAGE_SELECT = {
   order: true,
   isStandard: true,
   isTerminal: true,
+  isNearTerminal: true,
   pipeline: true,
   canonicalStage: true,
   serviceLineId: true,
   serviceLine: { select: { id: true, name: true } },
 } as const;
 
-async function fetchScopedStages(serviceLineId?: string) {
+async function fetchScopedStages(serviceLineId?: string | string[]) {
+  const ids = toArray(serviceLineId);
+
   const where: Record<string, any> = { isActive: true };
-  if (serviceLineId) where.OR = [{ serviceLineId: null }, { serviceLineId }];
+  if (ids.length > 0) {
+    where.OR = [
+      { serviceLineId: null },
+      ids.length === 1
+        ? { serviceLineId: ids[0] }
+        : { serviceLineId: { in: ids } },
+    ];
+  }
   return prisma.pipelineStage.findMany({
     where,
     orderBy: { order: "asc" },
@@ -687,8 +739,13 @@ function buildCandidateSheet(
   return { totalRows, dispositionCount };
 }
 
-function parseIds(raw?: string): string[] | null {
+function parseIds(raw?: string | string[]): string[] | null {
   if (!raw) return null;
+  // If Express already gave us an array, use it directly
+  if (Array.isArray(raw)) {
+    const arr = raw.map((s) => s.trim()).filter(Boolean);
+    return arr.length ? [...new Set(arr)] : null;
+  }
   const arr = raw
     .split(",")
     .map((s) => s.trim())
@@ -703,8 +760,8 @@ function parseIds(raw?: string): string[] | null {
 
 export const getReportsOverview = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
-    const win = resolveDateWindow(q);
+    const q = req.query as Record<string, string | string[] | undefined>;
+    const win = resolveDateWindow(toSingleQ(q));
     const scopedUserIds = resolveScopedUserIds(req); // !! sync now, reads req.scopeFilter
 
     const reqWhere = buildReqWhere(q);
@@ -918,7 +975,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         leaderboard,
       },
       meta: {
-        window: windowLabel(q),
+        window: windowLabel(toSingleQ(q)),
         granularity: bucketByHour ? "hour" : "day",
         scope: req.scopeFilter?.type ?? "ALL",
         multiLine: byServiceLine.length > 1,
@@ -1313,7 +1370,7 @@ export const RECRUITER_EXPORT_FIXED_RIGHT = [
 
 export const getRecruiterReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const { recruiterId, requirementId } = q;
     const standardOnly = q.standardOnly === "true";
 
@@ -1335,7 +1392,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 
     const stages = await fetchScopedStages(q.serviceLineId);
 
-    const win = resolveDateWindow(q);
+    const win = resolveDateWindow(toSingleQ(q));
     const activityWindow =
       win.gte || win.lte
         ? {
@@ -1378,7 +1435,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 
     const commonMeta = {
       scope: req.scopeFilter?.type ?? "ALL",
-      window: windowLabel(q),
+      window: windowLabel(toSingleQ(q)),
       standardOnly,
     };
     const stagesForLine = (lineId: string | null) =>
@@ -1480,7 +1537,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
 //   disposition, clientId, status, range/hours/fromDate/toDate
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const selectedIds = parseIds(q.ids);
     const selectedStageIds = parseIds(q.stageIds);
     const hiddenStageIds = new Set(parseIds(q.hiddenStageIds) ?? []);
@@ -1849,7 +1906,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         : { createdById: { in: effectiveCreatorIds } };
     const baseReqWhere = buildReqWhere(q, { withDateWindow: false });
 
-    const win = resolveDateWindow(q);
+    const win = resolveDateWindow(toSingleQ(q));
     const activityWindow =
       win.gte || win.lte
         ? {
@@ -1914,7 +1971,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         success: true,
         groups: [],
         meta: {
-          window: windowLabel(q),
+          window: windowLabel(toSingleQ(q)),
           standardOnly,
           total: 0,
           multiLine: false,
@@ -1974,7 +2031,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       success: true,
       groups,
       meta: {
-        window: windowLabel(q),
+        window: windowLabel(toSingleQ(q)),
         standardOnly,
         multiLine: groups.length > 1,
       },
@@ -1994,7 +2051,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 //   disposition, clientId, status, createdById, range/hours/fromDate/toDate
 export const exportRequirementReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const singleId = req.params.id ?? null;
     const selectedIds = parseIds(q.ids);
     const selectedStageIds = parseIds(q.stageIds);
@@ -2010,7 +2067,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         req.user!.isSuperAdmin,
       );
       const reqFilter = buildReqWhere(q, { withDateWindow: false });
-      const win = resolveDateWindow(q);
+      const win = resolveDateWindow(toSingleQ(q));
       const activityWindow =
         win.gte || win.lte
           ? {
@@ -3279,7 +3336,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
 export const getCandidateReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const reqWhere = buildReqWhere(q);
     const scopedUserIds = resolveScopedUserIds(req); // !! sync
     const stages = await fetchScopedStages(q.serviceLineId);
@@ -3345,7 +3402,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
         avgPipelineDays:
           total > 0 ? +(totalAgingMins / total / 1440).toFixed(1) : 0,
       },
-      meta: { window: windowLabel(q) },
+      meta: { window: windowLabel(toSingleQ(q)) },
     });
   } catch (err) {
     console.error("getCandidateReport:", err);
@@ -3358,7 +3415,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
 // GET /reports/candidates/export
 export const exportCandidateReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    const q = req.query as Record<string, string | string[] | undefined>;
     const reqWhere = buildReqWhere(q);
     const scopedUserIds = resolveScopedUserIds(req); // !! sync
     const selectedStageIds = parseIds(q.stageIds);
