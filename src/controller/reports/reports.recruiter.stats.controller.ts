@@ -194,13 +194,13 @@ function buildReqWhere(
   const clientSpocId = prismaIn(q.clientSpocId);
   const serviceLineId = prismaIn(q.serviceLineId);
   const status = prismaIn(q.status);
-  const departmentId = prismaIn(q.departmentId);
+  // const departmentId = prismaIn(q.departmentId);
 
   if (clientId) where.clientId = clientId;
   if (clientSpocId) where.clientSpocId = clientSpocId;
   if (serviceLineId) where.serviceLineId = serviceLineId;
   if (status) where.status = status;
-  if (departmentId) where.departmentId = departmentId;
+  // if (departmentId) where.departmentId = departmentId;
 
   // ── Single-value filters — always a plain string ──
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
@@ -225,7 +225,12 @@ function buildPipelineWhere(
   if (effectiveUserIds !== null) {
     where.recruiterId = { in: effectiveUserIds };
   }
-
+  const recruiterWhere: Record<string, any> = {};
+  const departmentId = prismaIn(q.departmentId);
+  if (departmentId) recruiterWhere.departmentId = departmentId;
+  if (Object.keys(recruiterWhere).length) {
+    where.recruiter = { is: recruiterWhere };
+  }
   // ── Direct pipeline filters ───────────────────────────────────────────────
   if (q.disposition) where.disposition = q.disposition;
   if (q.currentStageId) where.currentStageId = q.currentStageId;
@@ -234,7 +239,7 @@ function buildPipelineWhere(
   // ── Requirement filters ───────────────────────────────────────────────────
   const reqWhere = buildReqWhere(q);
   // always attach — even if just { deletedAt: null } to exclude deleted reqs
-  where.requirement = reqWhere;
+  where.requirement = { is: reqWhere };
 
   // ── Date window — activity-based: sourced OR updated OR stage moved in window
   const win = resolveDateWindow(q);
