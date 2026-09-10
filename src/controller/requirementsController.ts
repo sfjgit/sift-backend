@@ -167,17 +167,17 @@ export async function buildRequirementsWhere(
       //   bandId: null,
       //   salaryMin: null,
       // },
+      // no direct sale value
+      { saleValue: null },
+      // no band value
       {
-        saleValue: null, // no direct sale value
-        OR: [{ bandId: null }, { band: { value: null } }], // no band value
-        AND: [
-          {
-            OR: [
-              { salaryMin: null }, // no salary
-              { client: null }, // no client
-              { client: { percentageValue: null } }, // client has no %
-            ],
-          },
+        OR: [{ bandId: null }, { band: { is: { value: null } } }],
+      },
+      // no way to compute FIXED_PCT: salaryMin missing OR client has no percentageValue
+      {
+        OR: [
+          { salaryMin: null },
+          { client: { is: { percentageValue: null } } },
         ],
       },
     ];
