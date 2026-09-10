@@ -162,10 +162,23 @@ export async function buildRequirementsWhere(
   if (filters.noData) {
     where.AND = [
       ...(where.AND ?? []),
+      // {
+      //   saleValue: null,
+      //   bandId: null,
+      //   salaryMin: null,
+      // },
       {
-        saleValue: null,
-        bandId: null,
-        salaryMin: null,
+        saleValue: null, // no direct sale value
+        OR: [{ bandId: null }, { band: { value: null } }], // no band value
+        AND: [
+          {
+            OR: [
+              { salaryMin: null }, // no salary
+              { client: null }, // no client
+              { client: { percentageValue: null } }, // client has no %
+            ],
+          },
+        ],
       },
     ];
   }
