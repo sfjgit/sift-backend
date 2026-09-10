@@ -36,7 +36,7 @@ const PIPELINE_SELECT_FOR_STATS = {
   offeredCtc: true,
   salaryType: true,
   salaryCurrency: true,
-
+  isTransferred: true,
   currentStage: {
     select: {
       id: true,
