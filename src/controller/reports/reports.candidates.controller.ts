@@ -205,6 +205,23 @@ function parseIds(raw?: string): string[] | null {
   return arr.length ? [...new Set(arr)] : null;
 }
 
+// Express parses repeated `?mojMonthNum=1&mojMonthNum=6` as an array; a
+// single `?mojMonthNum=1` comes through as a plain string. parseInt() on an
+// array silently stringifies it ("1,6" → 1), which is why multi-select was
+// only ever matching the first month. Handle both shapes explicitly here,
+// the same way stageId already does a few lines below.
+function parseMonthNums(raw: unknown): number[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return [
+    ...new Set(
+      arr
+        .map((v) => parseInt(String(v), 10))
+        .filter((n) => !isNaN(n) && n >= 1 && n <= 12),
+    ),
+  ];
+}
+
 function formatAging(mins: number): string {
   if (mins < 60) return `${mins}m`;
   if (mins < 1440) return `${Math.floor(mins / 60)}h`;
@@ -350,8 +367,13 @@ async function buildCandidateWhere(
   // ── Month of joining ─────────────────────────────────────────────────────
   // Matches the stored label OR any row whose derived date lands in that month.
   // The stored-label match is indexed; the date range covers unstored rows.
+  //
+  // mojMonthNum can now arrive as multiple repeated query params (the front
+  // end's month multi-select), so it's read straight off req.query — same
+  // as stageId above — instead of off `q`, which flattens everything to a
+  // string and silently keeps only the first value.
   const mojYearNum = q.mojYear ? parseInt(q.mojYear, 10) : null;
-  const mojMonthNum = q.mojMonthNum ? parseInt(q.mojMonthNum, 10) : null;
+  const mojMonthNums = parseMonthNums(req.query.mojMonthNum);
 
   if (q.mojMonth && /^\d{4}-\d{2}$/.test(q.mojMonth)) {
     const [yr, mo] = q.mojMonth.split("-").map(Number);
@@ -362,30 +384,38 @@ async function buildCandidateWhere(
         mojParamToLabel(q.mojMonth),
       ),
     );
-  } else if (mojMonthNum && mojMonthNum >= 1 && mojMonthNum <= 12) {
+  } else if (mojMonthNums.length > 0) {
+    // Union across every selected month (and, if no year is pinned, across
+    // a ±3-year window per month) — a joining date only ever falls in one
+    // month, so this is always an OR, never an AND.
+    const ors: any[] = [];
     if (mojYearNum && !isNaN(mojYearNum)) {
-      and.push(
-        joiningInRange(
-          new Date(mojYearNum, mojMonthNum - 1, 1, 0, 0, 0, 0),
-          new Date(mojYearNum, mojMonthNum, 0, 23, 59, 59, 999),
-          `${MONTHS_FULL[mojMonthNum - 1]} ${mojYearNum}`,
-        ),
-      );
-    } else {
-      const thisYear = new Date().getFullYear();
-      const ors: any[] = [];
-      for (let y = thisYear - 3; y <= thisYear + 3; y++) {
-        const s = new Date(y, mojMonthNum - 1, 1, 0, 0, 0, 0);
-        const e = new Date(y, mojMonthNum, 0, 23, 59, 59, 999);
+      for (const mn of mojMonthNums) {
+        const s = new Date(mojYearNum, mn - 1, 1, 0, 0, 0, 0);
+        const e = new Date(mojYearNum, mn, 0, 23, 59, 59, 999);
         ors.push(
           { actualJoiningDate: { gte: s, lte: e } },
           { expectedJoiningDate: { gte: s, lte: e } },
           { lastWorkingDate: { gte: s, lte: e } },
-          { monthOfJoining: `${MONTHS_FULL[mojMonthNum - 1]} ${y}` },
+          { monthOfJoining: `${MONTHS_FULL[mn - 1]} ${mojYearNum}` },
         );
       }
-      and.push({ OR: ors });
+    } else {
+      const thisYear = new Date().getFullYear();
+      for (const mn of mojMonthNums) {
+        for (let y = thisYear - 3; y <= thisYear + 3; y++) {
+          const s = new Date(y, mn - 1, 1, 0, 0, 0, 0);
+          const e = new Date(y, mn, 0, 23, 59, 59, 999);
+          ors.push(
+            { actualJoiningDate: { gte: s, lte: e } },
+            { expectedJoiningDate: { gte: s, lte: e } },
+            { lastWorkingDate: { gte: s, lte: e } },
+            { monthOfJoining: `${MONTHS_FULL[mn - 1]} ${y}` },
+          );
+        }
+      }
     }
+    and.push({ OR: ors });
   } else if (mojYearNum && !isNaN(mojYearNum)) {
     and.push(
       joiningInRange(
