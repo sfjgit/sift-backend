@@ -93,6 +93,7 @@ function computeTimeInStage(stageUpdatedAt: Date): number {
 async function syncDispositionAndClosure(
   tx: Prisma.TransactionClient,
   pipelineId: string,
+  actorId: string,
 ) {
   const p = await tx.requirementCandidatePipeline.findUniqueOrThrow({
     where: { id: pipelineId },
@@ -143,23 +144,25 @@ async function syncDispositionAndClosure(
   const totalPlaced = await tx.requirementCandidatePipeline.count({
     where: { requirementId: p.requirementId, disposition: "PLACED" },
   });
-  const shouldClose = totalPlaced >= requirement.totalOpenings;
+  //this is for auto closure
+  // const shouldClose = totalPlaced >= requirement.totalOpenings;
 
-  if (shouldClose && requirement.status !== "CLOSED") {
-    await tx.requirement.update({
-      where: { id: p.requirementId },
-      data: {
-        status: "CLOSED",
-        closureReason: "FILLED",
-        closedAt: new Date(),
-      },
-    });
-  } else if (!shouldClose && requirement.status === "CLOSED") {
-    await tx.requirement.update({
-      where: { id: p.requirementId },
-      data: { status: "ACTIVE", closureReason: null, closedAt: null },
-    });
-  }
+  // if (shouldClose && requirement.status !== "CLOSED") {
+  //   await tx.requirement.update({
+  //     where: { id: p.requirementId },
+  //     data: {
+  //       status: "CLOSED",
+  //       closureReason: "FILLED",
+  //       closedAt: new Date(),
+  //       closedById: actorId,
+  //     },
+  //   });
+  // } else if (!shouldClose && requirement.status === "CLOSED") {
+  //   await tx.requirement.update({
+  //     where: { id: p.requirementId },
+  //     data: { status: "ACTIVE", closureReason: null, closedAt: null },
+  //   });
+  // }
 }
 
 const PIPELINE_SELECT = {
@@ -776,7 +779,7 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       const crossesTerminalBoundary =
         targetStage.isTerminal || pipeline.currentStage.isTerminal;
       if (crossesTerminalBoundary) {
-        await syncDispositionAndClosure(tx, pipelineId);
+        await syncDispositionAndClosure(tx, pipelineId, actorId);
       }
 
       if (needsInterview) {
@@ -1260,7 +1263,7 @@ export const updateOfferStatus = async (req: Request, res: Response) => {
             note: stageNote,
           },
         });
-        await syncDispositionAndClosure(tx, pipelineId);
+        await syncDispositionAndClosure(tx, pipelineId, actorId);
       }
     });
 
@@ -1319,7 +1322,7 @@ export const rejectCandidate = async (req: Request, res: Response) => {
           note: `Rejected: ${rejectionReason}`,
         },
       });
-      await syncDispositionAndClosure(tx, pipelineId);
+      await syncDispositionAndClosure(tx, pipelineId, actorId);
     });
 
     res.json({ success: true, message: "Candidate rejected" });
@@ -1372,7 +1375,7 @@ export const withdrawCandidate = async (req: Request, res: Response) => {
           note: `Withdrawn: ${withdrawnReason}`,
         },
       });
-      await syncDispositionAndClosure(tx, pipelineId);
+      await syncDispositionAndClosure(tx, pipelineId, actorId);
     });
 
     res.json({ success: true, message: "Candidate withdrawn" });
@@ -1419,7 +1422,7 @@ export const holdCandidate = async (req: Request, res: Response) => {
         where: { id: pipelineId },
         data: { isOnHold: true, onHoldAt: new Date(), onHoldReason },
       });
-      await syncDispositionAndClosure(tx, pipelineId);
+      await syncDispositionAndClosure(tx, pipelineId, actorId);
     });
 
     res.json({ success: true, message: "Candidate placed on hold" });
