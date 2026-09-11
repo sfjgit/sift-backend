@@ -1697,6 +1697,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
         createdAt: true,
         updatedAt: true,
         approvedAt: true,
+        saleValue: true,
         client: { select: { id: true, name: true, industry: true } },
         businessUnit: { select: { id: true, name: true } },
         serviceLine: { select: { id: true, name: true } },
