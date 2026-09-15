@@ -451,6 +451,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       offPipeline: number;
       sourcedOnly: number;
       inPipeline: number;
+      total: number;
       stageCounts: Record<string, number>;
     };
 
@@ -493,6 +494,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
           offPipeline: 0,
           sourcedOnly: 0,
           inPipeline: 0,
+          total: 0,
           stageCounts: {},
         });
       }
@@ -501,6 +503,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       ragg.sourced++;
       ragg.stageCounts[p.currentStageId] =
         (ragg.stageCounts[p.currentStageId] ?? 0) + 1;
+      ragg.total++;
 
       const bucket = classify(p.currentStage);
       ragg[bucket]++;

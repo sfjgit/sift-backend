@@ -323,6 +323,46 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       }
     }
 
+    // ── Sort params ───────────────────────────────────────────────────────────
+    // Frontend sends: sortBy=aging|openings|salaryMin|salaryMax|computedSaleValue
+    //                          |achievedValue|bandValue|totalCandidates|createdAt
+    //                 sortDir=asc|desc
+    //
+    // Computed fields (computedSaleValue, achievedValue, bandValue) don't exist
+    // in the DB — we fetch unsorted and sort in-memory after enrichment.
+    const rawSortBy = str(q.sortBy) ?? null;
+    const rawSortDir = str(q.sortDir) === "asc" ? "asc" : "desc";
+
+    // Fields that need in-memory sort (computed after DB fetch)
+    const COMPUTED_SORT_KEYS = new Set([
+      "computedSaleValue",
+      "achievedValue",
+      "bandValue",
+    ]);
+
+    const isComputedSort =
+      rawSortBy != null && COMPUTED_SORT_KEYS.has(rawSortBy);
+
+    // Map frontend sort keys → Prisma orderBy clauses
+    // aging is (now - createdAt), so asc aging = oldest first = asc createdAt...
+    // wait — oldest = smallest createdAt = furthest in the past → desc createdAt
+    // actually: aging asc = low days first = recent createdAt = desc createdAt
+    //           aging desc = high days first = old createdAt  = asc createdAt
+    const DB_SORT_MAP: Record<string, object> = {
+      aging: { createdAt: rawSortDir === "asc" ? "desc" : "asc" }, // inverted
+      openings: { totalOpenings: rawSortDir },
+      salaryMin: { salaryMin: rawSortDir },
+      salaryMax: { salaryMax: rawSortDir },
+      totalCandidates: { pipelines: { _count: rawSortDir } },
+      createdAt: { createdAt: rawSortDir },
+    };
+
+    // For computed sorts → fall back to createdAt desc (in-memory handles it)
+    const orderBy: object =
+      rawSortBy && !isComputedSort && DB_SORT_MAP[rawSortBy]
+        ? DB_SORT_MAP[rawSortBy]
+        : { createdAt: "desc" };
+
     const reqWhere = {
       ...buildReqWhere(q),
       ...activityFilter,
@@ -376,7 +416,8 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         },
         _count: { select: { pipelines: true } },
       },
-      orderBy: { createdAt: "desc" },
+      // orderBy: { createdAt: "desc" },
+      orderBy,
       take: 1000,
     });
 
@@ -545,7 +586,21 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         createdBy: r.createdBy,
       };
     });
-
+    // ── In-memory sort for computed fields ────────────────────────────────────
+    // Only runs when frontend sent sortBy=computedSaleValue|achievedValue|bandValue
+    if (isComputedSort && rawSortBy) {
+      const getVal = (r: (typeof rows)[0]): number => {
+        if (rawSortBy === "computedSaleValue")
+          return r.computedSaleValue ?? -Infinity;
+        if (rawSortBy === "achievedValue") return r.achievedValue ?? -Infinity;
+        if (rawSortBy === "bandValue") return r.bandValue ?? -Infinity;
+        return 0;
+      };
+      rows.sort((a, b) => {
+        const diff = getVal(a) - getVal(b);
+        return rawSortDir === "asc" ? diff : -diff;
+      });
+    }
     // ── Group by service line ─────────────────────────────────────────────────
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
