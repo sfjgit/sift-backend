@@ -434,11 +434,16 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     let totalSaleValue = 0;
     let totalAchievedValue = 0;
     let omittedCount = 0;
+    const now = Date.now(); // ← add once before .map(), or inside if you prefer
 
     // ── Build enriched rows ───────────────────────────────────────────────────
     const rows = requirements.map((r) => {
       const counts = countsByReq[r.id] ?? {};
       const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
+
+      const aging = Math.floor(
+        (now - new Date(r.createdAt).getTime()) / 86_400_000,
+      ); // ← add
 
       // Sale value
       const { computedSaleValue, saleValueBasis } = computeSaleValue({
@@ -506,6 +511,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         isTurnaroundBreached: r.isTurnaroundBreached,
         createdAt: r.createdAt,
         deletedAt: r.deletedAt,
+        aging,
 
         // Salary (normalised from Decimal)
         salaryMin: r.salaryMin != null ? Number(r.salaryMin) : null,
