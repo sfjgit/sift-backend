@@ -10,6 +10,7 @@ import type {
   UpdateAssignmentInput,
 } from "@/validators/assignment.validator";
 import { Prisma } from "@prisma/client";
+import { sendMail } from "@/utils/mailer";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE SELECT FOR STATS
@@ -1028,8 +1029,22 @@ export const createAssignment = async (req: Request, res: Response) => {
         clientId: true,
         businessUnitId: true,
         serviceLineId: true,
+        reqCode: true, // ← add
+        title: true, // ← add
+        description: true, // ← add
+        totalOpenings: true, // ← add
+        priority: true, // ← add
+        targetDate: true, // ← add
+        respondBy: true, // ← add
+        experienceMin: true, // ← add
+        experienceMax: true, // ← add
+        primarySkills: true, // ← add
+        client: { select: { name: true } }, // ← add
+        serviceLine: { select: { name: true } }, // ← add
+        createdBy: { select: { firstName: true, lastName: true } }, // ← add
       },
     });
+
     if (!requirement) {
       res
         .status(404)
@@ -1063,7 +1078,13 @@ export const createAssignment = async (req: Request, res: Response) => {
 
     const assignee = await prisma.user.findUnique({
       where: { id: body.assignedToId },
-      select: { id: true, departmentId: true },
+      select: {
+        id: true,
+        departmentId: true,
+        email: true, // ← add
+        firstName: true, // ← add
+        lastName: true, // ← add
+      },
     });
     if (!assignee) {
       res
@@ -1088,11 +1109,110 @@ export const createAssignment = async (req: Request, res: Response) => {
       select: ASSIGNMENT_SELECT,
     });
 
+    // ── respond immediately, email fires after ────────────────────────────────
     res.status(201).json({
       success: true,
       message: "Assignment created",
       data: shapeAssignment(assignment),
     });
+
+    // ── send assignment email (non-blocking, won't affect response) ───────────
+    try {
+      const reqUrl = `${process.env.FRONTEND_URL}/assignments`;
+      const deadline = body.deadline
+        ? new Date(body.deadline).toDateString()
+        : "Not set";
+      const expRange =
+        requirement.experienceMin != null || requirement.experienceMax != null
+          ? `${requirement.experienceMin ?? 0} – ${requirement.experienceMax ?? "?"} yrs`
+          : "Not specified";
+
+      await sendMail({
+        to: assignee.email,
+        subject: `New Requirement Assigned: ${requirement.reqCode} – ${requirement.title}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1E3A5F;">You have a new requirement assigned</h2>
+
+            <p>Hi ${assignee.firstName},</p>
+
+            <p>
+              <strong>${req.user!.firstName} ${req.user!.lastName}</strong>
+              has assigned the following requirement to you.
+            </p>
+
+            <table style="width:100%; border-collapse:collapse; margin: 20px 0;">
+              <tr style="background:#f0f4f8;">
+                <td style="padding:10px; font-weight:bold; width:40%;">Req Code</td>
+                <td style="padding:10px;">${requirement.reqCode}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; font-weight:bold;">Title</td>
+                <td style="padding:10px;">${requirement.title}</td>
+              </tr>
+              <tr style="background:#f0f4f8;">
+                <td style="padding:10px; font-weight:bold;">Client</td>
+                <td style="padding:10px;">${requirement.client?.name ?? "—"}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; font-weight:bold;">Service Line</td>
+                <td style="padding:10px;">${requirement.serviceLine?.name ?? "—"}</td>
+              </tr>
+              <tr style="background:#f0f4f8;">
+                <td style="padding:10px; font-weight:bold;">Priority</td>
+                <td style="padding:10px;">${requirement.priority}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; font-weight:bold;">Total Openings</td>
+                <td style="padding:10px;">${requirement.totalOpenings}</td>
+              </tr>
+              <tr style="background:#f0f4f8;">
+                <td style="padding:10px; font-weight:bold;">Experience</td>
+                <td style="padding:10px;">${expRange}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; font-weight:bold;">Primary Skills</td>
+                <td style="padding:10px;">${(requirement.primarySkills ?? []).join(", ") || "—"}</td>
+              </tr>
+              <tr style="background:#f0f4f8;">
+                <td style="padding:10px; font-weight:bold;">Your Deadline</td>
+                <td style="padding:10px;">${deadline}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; font-weight:bold;">Respond By</td>
+                <td style="padding:10px;">${requirement.respondBy ? new Date(requirement.respondBy).toDateString() : "Not set"}</td>
+              </tr>
+              ${
+                requirement.description
+                  ? `<tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold;">Description</td>
+                      <td style="padding:10px;">${requirement.description}</td>
+                    </tr>`
+                  : ""
+              }
+            </table>
+
+            <a href="${reqUrl}" style="
+              display: inline-block;
+              padding: 12px 24px;
+              background: #1E3A5F;
+              color: white;
+              text-decoration: none;
+              border-radius: 6px;
+              font-weight: bold;
+            ">
+              View Assignment
+            </a>
+
+            <p style="color: #6B7280; font-size: 13px; margin-top: 24px;">
+              This is an automated notification from your ATS.
+            </p>
+          </div>
+        `,
+      });
+    } catch (mailErr) {
+      console.error("createAssignment: email failed:", mailErr);
+    }
   } catch (err) {
     console.error("createAssignment:", err);
     res
