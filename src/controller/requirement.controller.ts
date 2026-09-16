@@ -13,6 +13,7 @@ import {
   RowValidationError,
   ValidatedRequirementRow,
 } from "@/types/bulkRequirement.type";
+import { sendMail } from "@/utils/mailer";
 
 import ExcelJS from "exceljs";
 import { parseUploadedFile } from "@/utils/bulkRequirementParser";
@@ -3345,7 +3346,16 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
 
     const existing = await prisma.requirement.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, status: true, reqCode: true },
+      select: {
+        id: true,
+        status: true,
+        reqCode: true,
+        title: true, // ← add
+        priority: true, // ← add
+        totalOpenings: true, // ← add
+        client: { select: { name: true } }, // ← add
+        serviceLine: { select: { name: true } }, // ← add
+      },
     });
 
     if (!existing)
@@ -3366,38 +3376,7 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       data.closedById = actorId;
       data.closedAt = new Date();
     }
-    // ── Client/SPOC change — derive everything from the SPOC, never trust the payload ──
-    let derived: {
-      clientId?: string;
-      clientSpocId?: string;
-      serviceLineId?: string;
-      businessUnitId?: string;
-    } = {};
 
-    // if (body.clientSpocId !== undefined && body.clientSpocId !== null) {
-    //   // reuse the SAME resolver bulk-upload uses so behaviour never drifts
-    //   const spoc = await prisma.clientSpoc.findFirst({
-    //     where: { id: body.clientSpocId, deletedAt: null },
-    //     select: {
-    //       id: true,
-    //       clientId: true,
-    //       serviceLineId: true,
-    //       businessUnitId: true,
-    //     },
-    //   });
-
-    //   if (!spoc) {
-    //     return res
-    //       .status(400)
-    //       .json({ success: false, message: "Invalid SPOC selected" });
-    //   }
-    //   derived = {
-    //     clientSpocId: spoc.id,
-    //     clientId: spoc.clientId,
-    //     serviceLineId: spoc.serviceLineId ?? undefined,
-    //     businessUnitId: spoc.businessUnitId ?? undefined,
-    //   };
-    // }
     const [updated] = await prisma.$transaction([
       prisma.requirement.update({
         where: { id },
@@ -3424,11 +3403,115 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       }),
     ]);
 
-    return res.json({
-      success: true,
-      message: "Status updated",
-      data: updated,
-    });
+    // ── respond immediately ───────────────────────────────────────────────────
+    res.json({ success: true, message: "Status updated", data: updated });
+
+    // ── fetch all active assignees and email them (non-blocking) ─────────────
+    try {
+      const activeAssignments = await prisma.requirementAssignment.findMany({
+        where: { requirementId: id, status: "ACTIVE" },
+        select: {
+          assignedTo: {
+            select: { email: true, firstName: true, lastName: true },
+          },
+        },
+      });
+
+      if (activeAssignments.length === 0) return;
+
+      const statusColors: Record<string, string> = {
+        ACTIVE: "#00875A",
+        ON_HOLD: "#FF991F",
+        CLOSED: "#DE350B",
+        CANCELLED: "#DE350B",
+        PENDING_APPROVAL: "#0052CC",
+      };
+      const badgeColor = statusColors[status] ?? "#6B778C";
+      const reqUrl = `${process.env.FRONTEND_URL}/assignments`;
+
+      // send one email per assignee
+      await Promise.allSettled(
+        activeAssignments.map(({ assignedTo }) =>
+          sendMail({
+            to: assignedTo.email,
+            subject: `Requirement ${existing.reqCode} status changed to ${status}`,
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #1E3A5F;">Requirement Status Update</h2>
+
+                <p>Hi ${assignedTo.firstName},</p>
+
+                <p>
+                  A requirement assigned to you has had its status updated.
+                </p>
+
+                <table style="width:100%; border-collapse:collapse; margin: 20px 0;">
+                  <tr style="background:#f0f4f8;">
+                    <td style="padding:10px; font-weight:bold; width:40%;">Req Code</td>
+                    <td style="padding:10px;">${existing.reqCode}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold;">Title</td>
+                    <td style="padding:10px;">${existing.title}</td>
+                  </tr>
+                  <tr style="background:#f0f4f8;">
+                    <td style="padding:10px; font-weight:bold;">Client</td>
+                    <td style="padding:10px;">${existing.client?.name ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold;">Service Line</td>
+                    <td style="padding:10px;">${existing.serviceLine?.name ?? "—"}</td>
+                  </tr>
+                  <tr style="background:#f0f4f8;">
+                    <td style="padding:10px; font-weight:bold;">Previous Status</td>
+                    <td style="padding:10px;">${existing.status}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold;">New Status</td>
+                    <td style="padding:10px;">
+                      <span style="
+                        background: ${badgeColor};
+                        color: white;
+                        padding: 4px 10px;
+                        border-radius: 4px;
+                        font-weight: bold;
+                        font-size: 13px;
+                      ">${status}</span>
+                    </td>
+                  </tr>
+                  ${
+                    reason
+                      ? `<tr style="background:#f0f4f8;">
+                          <td style="padding:10px; font-weight:bold;">Reason</td>
+                          <td style="padding:10px;">${reason}</td>
+                        </tr>`
+                      : ""
+                  }
+                </table>
+
+                <a href="${reqUrl}" style="
+                  display: inline-block;
+                  padding: 12px 24px;
+                  background: #1E3A5F;
+                  color: white;
+                  text-decoration: none;
+                  border-radius: 6px;
+                  font-weight: bold;
+                ">
+                  View Requirement
+                </a>
+
+                <p style="color: #6B7280; font-size: 13px; margin-top: 24px;">
+                  This is an automated notification from your ATS.
+                </p>
+              </div>
+            `,
+          }),
+        ),
+      );
+    } catch (mailErr) {
+      console.error("updateRequirementStatus: email failed:", mailErr);
+    }
   } catch (err) {
     console.error("updateRequirementStatus:", err);
     return res
@@ -3436,7 +3519,6 @@ export const updateRequirementStatus = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to update status" });
   }
 };
-
 export const deleteRequirement = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -3466,6 +3548,11 @@ export const deleteRequirement = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to delete requirement" });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /requirements/:id/assignments
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const createAssignment = async (req: Request, res: Response) => {
   try {
     const { id: requirementId } = req.params;
@@ -3605,11 +3692,123 @@ export const createAssignment = async (req: Request, res: Response) => {
     // ── 6. Response — single returns flat object, bulk returns array ──────────
     if (ids.length === 1) {
       if (created.length === 1) {
-        return res.status(201).json({
+        const createdAssignment = (created[0] as any).assignment;
+
+        res.status(201).json({
           success: true,
           message: "Assignment created",
-          data: (created[0] as any).assignment,
+          data: createdAssignment,
         });
+
+        // ── send email after response ───────────────────────────────────────
+        try {
+          const assigneeUser = await prisma.user.findUnique({
+            where: { id: ids[0] },
+            select: { email: true, firstName: true, lastName: true },
+          });
+
+          const fullReq = await prisma.requirement.findUnique({
+            where: { id: requirementId },
+            select: {
+              reqCode: true,
+              title: true,
+              description: true,
+              priority: true,
+              totalOpenings: true,
+              respondBy: true,
+              primarySkills: true,
+              experienceMin: true,
+              experienceMax: true,
+              client: { select: { name: true } },
+              serviceLine: { select: { name: true } },
+            },
+          });
+
+          if (assigneeUser && fullReq) {
+            const deadlineStr = deadline
+              ? new Date(deadline).toDateString()
+              : "Not set";
+            const expRange =
+              fullReq.experienceMin != null || fullReq.experienceMax != null
+                ? `${fullReq.experienceMin ?? 0} – ${fullReq.experienceMax ?? "?"} yrs`
+                : "Not specified";
+
+            await sendMail({
+              to: assigneeUser.email,
+              subject: `New Requirement Assigned: ${fullReq.reqCode} – ${fullReq.title}`,
+              html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                  <h2 style="color: #1E3A5F;">You have a new requirement assigned</h2>
+                  <p>Hi ${assigneeUser.firstName},</p>
+                  <p><strong>${req.user!.firstName} ${req.user!.lastName}</strong> has assigned the following requirement to you.</p>
+                  <table style="width:100%; border-collapse:collapse; margin: 20px 0;">
+                    <tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold; width:40%;">Req Code</td>
+                      <td style="padding:10px;">${fullReq.reqCode}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px; font-weight:bold;">Title</td>
+                      <td style="padding:10px;">${fullReq.title}</td>
+                    </tr>
+                    <tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold;">Client</td>
+                      <td style="padding:10px;">${fullReq.client?.name ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px; font-weight:bold;">Service Line</td>
+                      <td style="padding:10px;">${fullReq.serviceLine?.name ?? "—"}</td>
+                    </tr>
+                    <tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold;">Priority</td>
+                      <td style="padding:10px;">${fullReq.priority}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px; font-weight:bold;">Total Openings</td>
+                      <td style="padding:10px;">${fullReq.totalOpenings}</td>
+                    </tr>
+                    <tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold;">Experience</td>
+                      <td style="padding:10px;">${expRange}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px; font-weight:bold;">Primary Skills</td>
+                      <td style="padding:10px;">${(fullReq.primarySkills ?? []).join(", ") || "—"}</td>
+                    </tr>
+                    <tr style="background:#f0f4f8;">
+                      <td style="padding:10px; font-weight:bold;">Your Deadline</td>
+                      <td style="padding:10px;">${deadlineStr}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px; font-weight:bold;">Respond By</td>
+                      <td style="padding:10px;">${fullReq.respondBy ? new Date(fullReq.respondBy).toDateString() : "Not set"}</td>
+                    </tr>
+                    ${
+                      fullReq.description
+                        ? `<tr style="background:#f0f4f8;">
+                          <td style="padding:10px; font-weight:bold;">Description</td>
+                          <td style="padding:10px;">${fullReq.description}</td>
+                        </tr>`
+                        : ""
+                    }
+                  </table>
+                  <a href="${process.env.FRONTEND_URL}/assignments" style="
+                    display:inline-block; padding:12px 24px;
+                    background:#1E3A5F; color:white;
+                    text-decoration:none; border-radius:6px; font-weight:bold;">
+                    View Assignment
+                  </a>
+                  <p style="color:#6B7280; font-size:13px; margin-top:24px;">
+                    This is an automated notification from your ATS.
+                  </p>
+                </div>
+              `,
+            });
+          }
+        } catch (mailErr) {
+          console.error("createAssignment: email failed:", mailErr);
+        }
+
+        return;
       } else {
         const reason = (skipped[0] as any)?.reason ?? "Failed";
         const statusCode =

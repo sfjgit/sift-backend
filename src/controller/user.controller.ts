@@ -5,6 +5,9 @@ import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import bcrypt from "bcryptjs";
 import { getSubordinateIds } from "@/services/orgService";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+import env from "@/config/env";
 
 // ─────────────────────────────────────────
 // GET /users
@@ -476,6 +479,7 @@ export const createUser = async (req: Request, res: Response) => {
     const body = req.body;
     const actorId = req.user!.id;
 
+    // ── existing validation guards (unchanged) ────────────────────────────────
     const emailExists = await prisma.user.findFirst({
       where: { email: body.email, isActive: true },
       select: { id: true },
@@ -533,13 +537,22 @@ export const createUser = async (req: Request, res: Response) => {
       }
     }
 
-    const passwordHash = await bcrypt.hash(body.password, 10);
+    // ── generate password-setup token upfront ─────────────────────────────────
+    const setupToken = crypto.randomBytes(32).toString("hex");
+    const setupExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hrs
 
+    // Use a placeholder hash — user hasn't set a real password yet
+    const placeholderHash = await bcrypt.hash(
+      crypto.randomBytes(16).toString("hex"),
+      10,
+    );
+
+    // ── create user + audit log in one transaction ────────────────────────────
     const user = await prisma.$transaction(async (tx) => {
       const u = await tx.user.create({
         data: {
           email: body.email,
-          passwordHash,
+          passwordHash: placeholderHash, // they'll set the real one via the link
           firstName: body.firstName,
           lastName: body.lastName,
           middleName: body.middleName ?? null,
@@ -557,6 +570,8 @@ export const createUser = async (req: Request, res: Response) => {
           isSuperAdmin: body.isSuperAdmin ?? false,
           isActive: true,
           createdById: actorId,
+          resetPasswordToken: setupToken, // reusing the same fields
+          resetPasswordExpires: setupExpires,
         },
         select: {
           id: true,
@@ -594,9 +609,57 @@ export const createUser = async (req: Request, res: Response) => {
       return u;
     });
 
-    res
-      .status(201)
-      .json({ success: true, message: "User created", data: user });
+    // ── send welcome email (outside transaction — failure won't roll back user) ─
+    try {
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT),
+        secure: false,
+        auth: {
+          user: env.SMTP_USER,
+          pass: env.SMTP_PASS,
+        },
+      });
+
+      // Reuses the same frontend route as forgot-password — token works identically
+      const setupUrl = `${process.env.FRONTEND_URL}/sign-in?token=${setupToken}`;
+
+      await transporter.sendMail({
+        from: env.SMTP_FROM,
+        to: user.email,
+        subject: "Welcome — Set up your password",
+        html: `
+          <h2>Welcome to the team, ${user.firstName}!</h2>
+
+          <p>Your account has been created. Click below to set your password and get started:</p>
+
+          <a href="${setupUrl}" style="
+            display: inline-block;
+            padding: 12px 24px;
+            background: #4F46E5;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+          ">
+            Set Your Password
+          </a>
+
+          <p style="color: #6B7280; font-size: 14px;">
+            This link expires in 24 hours. If you weren't expecting this email, you can ignore it.
+          </p>
+        `,
+      });
+    } catch (mailErr) {
+      // Log but don't fail the request — user is already created
+      console.error("createUser: welcome email failed:", mailErr);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "User created. A password setup email has been sent.",
+      data: user,
+    });
   } catch (err) {
     console.error("createUser:", err);
     res.status(500).json({ success: false, message: "Failed to create user" });
@@ -1057,11 +1120,11 @@ export const getUserTree = async (req: Request, res: Response) => {
           totalFilled: s._sum.filledOpenings ?? 0,
           totalAllocated: s._sum.allocatedOpenings ?? 0,
         },
-      ])
+      ]),
     );
 
     const reqsMap = new Map(
-      reqsCreated.map((r) => [r.createdById, r._count.id])
+      reqsCreated.map((r) => [r.createdById, r._count.id]),
     );
 
     const spocsMap = new Map<string, typeof spocs>();
@@ -1383,27 +1446,27 @@ export const getUserCard = async (req: Request, res: Response) => {
         acc[label] = (acc[label] || 0) + 1;
         return acc;
       },
-      {}
+      {},
     );
 
     const activeAssignments = user.assignmentsReceived.filter(
-      (a) => a.status === "ACTIVE"
+      (a) => a.status === "ACTIVE",
     );
 
     const aggregateStats = {
       activeReqs: user._count.assignmentsReceived,
       totalSubmissions: activeAssignments.reduce(
         (s, a) => s + a.submissionsCount,
-        0
+        0,
       ),
       totalInterviews: activeAssignments.reduce(
         (s, a) => s + a.interviewsCount,
-        0
+        0,
       ),
       totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
       totalAllocated: activeAssignments.reduce(
         (s, a) => s + (a.allocatedOpenings ?? 0),
-        0
+        0,
       ),
       totalAssignmentsGiven: user._count.assignmentsGiven,
       requirementsCreated: user._count.requirementsCreated,
