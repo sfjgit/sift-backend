@@ -1372,7 +1372,7 @@ export const exportRequirements = async (req: Request, res: Response) => {
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Title", key: "title", width: 38 },
       { header: "Status", key: "status", width: 16 },
-      { header: "Priority", key: "priority", width: 12 },
+      // { header: "Priority", key: "priority", width: 12 },
       { header: "Client", key: "client", width: 24 },
       { header: "Client SPOC", key: "spoc", width: 22 }, // NEW
       { header: "Agreement", key: "agreementType", width: 14 },
