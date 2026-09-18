@@ -1,9 +1,56 @@
 // File: reports.controller.ts
-// Path: src/controller/reports.controller.ts
+// Path: src/controller/reports/reports.controller.ts
 
 import { Request, Response } from "express";
 import ExcelJS from "exceljs";
 import prisma from "@/utils/prisma/client";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOJ HELPERS — single source of truth
+// mojMonth = "2025-09" → monthOfJoining = "September 2025" (stored string)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+function mojMonthToLabel(mojMonth: string): string | null {
+  const parts = mojMonth.split("-");
+  const year = parts[0];
+  const monthIdx = parseInt(parts[1] ?? "0", 10) - 1;
+  if (!year || monthIdx < 0 || monthIdx > 11) return null;
+  return `${MONTH_NAMES[monthIdx]} ${year}`;
+}
+
+function buildMojWhere(
+  q: Record<string, string | string[] | undefined>
+): Record<string, any> | null {
+  const mojMonth = Array.isArray(q.mojMonth) ? q.mojMonth[0] : q.mojMonth;
+  const mojYear = Array.isArray(q.mojYear) ? q.mojYear[0] : q.mojYear;
+
+  if (mojMonth) {
+    const label = mojMonthToLabel(mojMonth);
+    if (label) return { monthOfJoining: label };
+    return null;
+  }
+
+  if (mojYear) {
+    return { monthOfJoining: { contains: mojYear } };
+  }
+
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE / TIME WINDOW RESOLVER
@@ -38,12 +85,14 @@ interface DateWindow {
   gte?: Date;
   lte?: Date;
 }
+
 function prismaIn(v: string | string[] | undefined) {
   if (!v) return undefined;
   const arr = Array.isArray(v) ? v : [v];
   if (!arr.length) return undefined;
   return arr.length === 1 ? arr[0] : { in: arr };
 }
+
 function resolveDateWindow(q: Record<string, string | undefined>): DateWindow {
   const now = new Date();
   if (q.hours) {
@@ -89,23 +138,8 @@ function windowLabel(q: Record<string, string | undefined>): string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCOPE RESOLUTION
-//
-// !! CRITICAL FIX: The old approach (BFS via reportingToId only) missed team
-// leads entirely — they use teamLeadId, not reportingToId.
-//
-// resolveScopedUserIds → reads req.scopeFilter (set by middleware).
-//   TEAM scope now correctly returns teamMemberIds which includes the lead.
-//
-// resolveOrgTreeDown → kept only for CREATOR scope on requirement report
-//   (who created requirements I can see follows the reporting tree,
-//    not the team-lead tree — intentionally separate).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Resolves the set of user IDs whose pipeline rows the current user may see.
- * Reads from req.scopeFilter (already resolved by scopeFilter middleware).
- * Returns null = no restriction (ALL scope / super admin).
- */
 function resolveScopedUserIds(req: Request): string[] | null {
   const scope = req.scopeFilter;
   if (!scope || scope.type === "ALL") return null;
@@ -114,7 +148,6 @@ function resolveScopedUserIds(req: Request): string[] | null {
     case "OWN":
       return [scope.userId!];
     case "TEAM":
-      // teamMemberIds already includes the team lead themselves
       return scope.teamMemberIds ?? [scope.userId!];
     case "REPORTING":
       return scope.subordinateIds ?? [scope.userId!];
@@ -123,32 +156,20 @@ function resolveScopedUserIds(req: Request): string[] | null {
     case "BU":
       return scope.subordinateIds ?? [scope.userId!];
     case "DEPARTMENT":
-      // Can't express as a flat id list — fall back to self (safe default)
       return [scope.userId!];
     default:
       return [scope.userId!];
   }
 }
 
-/**
- * BFS down BOTH reportingToId AND teamLeadId trees.
- * Used for requirement creator-scope — "which users' created requirements can I see?"
- *
- * A team lead's members are linked via teamLeadId, NOT reportingToId.
- * Without walking teamLeadId, a team lead only sees requirements created by
- * people in the reportingTo chain — missing their entire team.
- *
- * Returns null for super admin (no filter).
- */
 export async function resolveOrgTreeDown(
   userId: string,
-  isSuperAdmin: boolean,
+  isSuperAdmin: boolean
 ): Promise<string[] | null> {
   if (isSuperAdmin) return null;
   const visited = new Set<string>([userId]);
   let frontier = [userId];
   while (frontier.length > 0) {
-    // Walk both trees in one query — union of reportingToId and teamLeadId children
     const children = await prisma.user.findMany({
       where: {
         OR: [
@@ -172,12 +193,13 @@ export async function resolveOrgTreeDown(
 }
 
 function toSingleQ(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): Record<string, string | undefined> {
   return Object.fromEntries(
-    Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
+    Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v])
   );
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MULTI-VALUE QUERY PARAM HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,19 +210,21 @@ function toArray(val: string | string[] | undefined): string[] {
 }
 
 function toPrismaFilter(
-  val: string | string[] | undefined,
+  val: string | string[] | undefined
 ): string | { in: string[] } | undefined {
   const arr = toArray(val);
   if (arr.length === 0) return undefined;
   if (arr.length === 1) return arr[0];
   return { in: arr };
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT WHERE builder
+// REQUIREMENT WHERE BUILDER
 // ─────────────────────────────────────────────────────────────────────────────
+
 function buildReqWhere(
   q: Record<string, string | string[] | undefined>,
-  opts: { withDateWindow?: boolean } = {},
+  opts: { withDateWindow?: boolean } = {}
 ): Record<string, any> {
   const { withDateWindow = true } = opts;
   const where: Record<string, any> = { deletedAt: null };
@@ -224,10 +248,16 @@ function buildReqWhere(
   const priorityFilter = toPrismaFilter(q.priority);
   if (priorityFilter) where.priority = priorityFilter;
 
+  // ── CSM / creator filter ──────────────────────────────────────────────────
+  // On Recruiters tab: filter requirements created by this CSM, then show
+  // which recruiters worked those requirements.
+  // On Requirements tab: filter requirements by who created them.
+  const createdByFilter = toPrismaFilter(q.createdById);
+  if (createdByFilter) where.createdById = createdByFilter;
+
   if (withDateWindow) {
-    // q.fromDate / q.toDate etc. are always single-value — safe to cast
     const singleQ = Object.fromEntries(
-      Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
+      Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v])
     ) as Record<string, string | undefined>;
     const win = resolveDateWindow(singleQ);
     if (win.gte || win.lte) {
@@ -238,27 +268,6 @@ function buildReqWhere(
   }
   return where;
 }
-// function buildReqWhere(
-//   q: Record<string, string | undefined>,
-//   opts: { withDateWindow?: boolean } = {}
-// ): Record<string, any> {
-//   const { withDateWindow = true } = opts;
-//   const where: Record<string, any> = { deletedAt: null };
-//   if (q.clientId) where.clientId = q.clientId;
-//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
-//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-//   if (q.status) where.status = q.status;
-//   if (q.priority) where.priority = q.priority;
-//   if (withDateWindow) {
-//     const win = resolveDateWindow(q);
-//     if (win.gte || win.lte) {
-//       where.createdAt = {};
-//       if (win.gte) where.createdAt.gte = win.gte;
-//       if (win.lte) where.createdAt.lte = win.lte;
-//     }
-//   }
-//   return where;
-// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGES
@@ -280,7 +289,6 @@ const STAGE_SELECT = {
 
 async function fetchScopedStages(serviceLineId?: string | string[]) {
   const ids = toArray(serviceLineId);
-
   const where: Record<string, any> = { isActive: true };
   if (ids.length > 0) {
     where.OR = [
@@ -411,10 +419,7 @@ const PIPELINE_DETAIL_SELECT = {
   expectedCtc: true,
   negotiatedCtc: true,
   lastWorkingDate: true,
-  expectedJoiningDate: true,
-  actualJoiningDate: true,
   monthOfJoining: true,
-  remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
   noticePeriod: true,
@@ -425,9 +430,9 @@ const PIPELINE_DETAIL_SELECT = {
       label: true,
       order: true,
       canonicalStage: true,
-      isTerminal: true, // ← ADD
-      isNearTerminal: true, // ← ADD
-      pipeline: true, // ← ADD
+      isTerminal: true,
+      isNearTerminal: true,
+      pipeline: true,
     },
   },
   stageHistory: { select: { timeInPrevStageMins: true } },
@@ -469,13 +474,10 @@ const REQ_LOOKUP_SELECT = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ALL CANDIDATE COLUMNS — single source of truth
-// key   = what the frontend sends in ?hiddenCandidateCols=key1,key2
-// Everything here is opt-out. User hides what they don't want.
+// ALL CANDIDATE COLUMNS
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ALL_CANDIDATE_COLS = [
-  // ── Requirement context ──
   { key: "reqCode", header: "Req Code", width: 14, group: "requirement" },
   { key: "reqTitle", header: "Requirement", width: 34, group: "requirement" },
   {
@@ -483,7 +485,7 @@ const ALL_CANDIDATE_COLS = [
     header: "Total Pipeline",
     width: 14,
     group: "requirement",
-  }, // total candidates in this req
+  },
   { key: "client", header: "Client", width: 24, group: "requirement" },
   { key: "spoc", header: "Client SPOC", width: 22, group: "requirement" },
   { key: "spocEmail", header: "SPOC Email", width: 26, group: "requirement" },
@@ -500,7 +502,6 @@ const ALL_CANDIDATE_COLS = [
     group: "requirement",
   },
   { key: "bu", header: "Business Unit", width: 20, group: "requirement" },
-  // ── Candidate identity ──
   { key: "name", header: "Candidate Name", width: 26, group: "candidate" },
   { key: "email", header: "Email", width: 30, group: "candidate" },
   { key: "phone", header: "Phone", width: 16, group: "candidate" },
@@ -508,7 +509,6 @@ const ALL_CANDIDATE_COLS = [
   { key: "company", header: "Current Company", width: 22, group: "candidate" },
   { key: "exp", header: "Exp (yrs)", width: 10, group: "candidate" },
   { key: "skills", header: "Top Skills", width: 34, group: "candidate" },
-  // ── Pipeline state ──
   { key: "recruiter", header: "Recruiter", width: 22, group: "pipeline" },
   { key: "stage", header: "Current Stage", width: 24, group: "pipeline" },
   { key: "disposition", header: "Status", width: 14, group: "pipeline" },
@@ -522,40 +522,23 @@ const ALL_CANDIDATE_COLS = [
   { key: "aging", header: "Stage Aging", width: 12, group: "pipeline" },
   { key: "submittedAt", header: "Submitted At", width: 18, group: "pipeline" },
   { key: "offerStatus", header: "Offer Status", width: 14, group: "pipeline" },
-  // ── CTC ──
   { key: "currentCtc", header: "Current CTC", width: 14, group: "ctc" },
   { key: "expectedCtc", header: "Expected CTC", width: 14, group: "ctc" },
   { key: "negotiatedCtc", header: "Negotiated CTC", width: 14, group: "ctc" },
   { key: "offeredCtc", header: "Offered CTC", width: 14, group: "ctc" },
   { key: "currency", header: "Currency", width: 10, group: "ctc" },
   { key: "salaryType", header: "Salary Type", width: 12, group: "ctc" },
-  // ── Joining ──
   { key: "noticePeriod", header: "Notice Period", width: 14, group: "joining" },
   { key: "lwd", header: "Last Working Day", width: 16, group: "joining" },
-  {
-    key: "expectedJoining",
-    header: "Expected Joining",
-    width: 16,
-    group: "joining",
-  },
-  {
-    key: "actualJoining",
-    header: "Actual Joining",
-    width: 16,
-    group: "joining",
-  },
   {
     key: "monthOfJoining",
     header: "Month of Joining",
     width: 16,
     group: "joining",
   },
-  { key: "daysToJoin", header: "Days to Join", width: 14, group: "joining" },
-  // ── Flags ──
   { key: "rejected", header: "Rejected?", width: 10, group: "flags" },
   { key: "withdrawn", header: "Withdrawn?", width: 10, group: "flags" },
   { key: "onHold", header: "On Hold?", width: 10, group: "flags" },
-  // ── Audit ──
   { key: "reqCreated", header: "Req Created", width: 16, group: "audit" },
   { key: "reqDeleted", header: "Req Deleted", width: 16, group: "audit" },
 ] as const;
@@ -564,11 +547,6 @@ type CandidateColKey = (typeof ALL_CANDIDATE_COLS)[number]["key"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CANDIDATE SHEET BUILDER
-//
-// opts.hiddenCols  — keys the user has unchecked in the candidate column picker
-// opts.stageIds    — filter: only emit rows where currentStageId is in this set
-// opts.disposition — filter: only emit rows with this disposition
-// totalPipelineByReq — total pipeline count per req (all stages, pre-computed)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildCandidateSheet(
@@ -580,11 +558,9 @@ function buildCandidateSheet(
     stageIds?: string[];
     disposition?: string;
   } = {},
-  totalPipelineByReq: Record<string, number> = {},
+  totalPipelineByReq: Record<string, number> = {}
 ) {
   const hidden = opts.hiddenCols ?? new Set<CandidateColKey>();
-
-  // Only include columns the user hasn't hidden
   const activeCols = ALL_CANDIDATE_COLS.filter((c) => !hidden.has(c.key));
 
   const sheet = workbook.addWorksheet("Candidates", {
@@ -614,12 +590,12 @@ function buildCandidateSheet(
 
     const req = reqLookup[p.requirementId];
     const stageAgeMins = Math.floor(
-      (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+      (now - new Date(p.stageUpdatedAt).getTime()) / 60000
     );
     const totalMins =
       (p.stageHistory ?? []).reduce(
         (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-        0,
+        0
       ) + stageAgeMins;
     const pipelineDays = Math.floor(totalMins / 1440);
 
@@ -628,7 +604,6 @@ function buildCandidateSheet(
     dispositionCount[p.disposition] =
       (dispositionCount[p.disposition] ?? 0) + 1;
 
-    // Build row data only for active columns — avoids setting unused keys
     const rowData: Record<string, any> = {};
     if (has("reqCode")) rowData.reqCode = req?.reqCode ?? "";
     if (has("reqTitle")) rowData.reqTitle = req?.title ?? "";
@@ -672,16 +647,7 @@ function buildCandidateSheet(
     if (has("noticePeriod")) rowData.noticePeriod = p.noticePeriod ?? "";
     if (has("lwd"))
       rowData.lwd = p.lastWorkingDate ? new Date(p.lastWorkingDate) : "";
-    if (has("expectedJoining"))
-      rowData.expectedJoining = p.expectedJoiningDate
-        ? new Date(p.expectedJoiningDate)
-        : "";
-    if (has("actualJoining"))
-      rowData.actualJoining = p.actualJoiningDate
-        ? new Date(p.actualJoiningDate)
-        : "";
     if (has("monthOfJoining")) rowData.monthOfJoining = p.monthOfJoining ?? "";
-    if (has("daysToJoin")) rowData.daysToJoin = p.remainingDaysToJoin ?? "";
     if (has("rejected")) rowData.rejected = p.isRejected ? "Yes" : "No";
     if (has("withdrawn")) rowData.withdrawn = p.isWithdrawn ? "Yes" : "No";
     if (has("onHold")) rowData.onHold = p.isOnHold ? "Yes" : "No";
@@ -697,10 +663,6 @@ function buildCandidateSheet(
       row.getCell("submittedAt").numFmt = "dd-mmm-yyyy hh:mm";
     if (has("lwd") && p.lastWorkingDate)
       row.getCell("lwd").numFmt = "dd-mmm-yyyy";
-    if (has("expectedJoining") && p.expectedJoiningDate)
-      row.getCell("expectedJoining").numFmt = "dd-mmm-yyyy";
-    if (has("actualJoining") && p.actualJoiningDate)
-      row.getCell("actualJoining").numFmt = "dd-mmm-yyyy";
     if (has("reqCreated") && req?.createdAt)
       row.getCell("reqCreated").numFmt = "dd-mmm-yyyy hh:mm";
     if (has("reqDeleted") && req?.deletedAt)
@@ -713,14 +675,12 @@ function buildCandidateSheet(
     }
   }
 
-  // ── TOTALS ROW ────────────────────────────────────────────────────────────
   const dispositionSummary = Object.entries(dispositionCount)
     .sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${k}: ${v}`)
     .join(" | ");
 
   const totalsData: Record<string, any> = {};
-  // First visible column gets the total label
   if (activeCols.length > 0)
     totalsData[activeCols[0].key] = `TOTAL: ${totalRows} candidates`;
   if (activeCols.length > 1)
@@ -746,7 +706,6 @@ function buildCandidateSheet(
 
 function parseIds(raw?: string | string[]): string[] | null {
   if (!raw) return null;
-  // If Express already gave us an array, use it directly
   if (Array.isArray(raw)) {
     const arr = raw.map((s) => s.trim()).filter(Boolean);
     return arr.length ? [...new Set(arr)] : null;
@@ -767,7 +726,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
     const win = resolveDateWindow(toSingleQ(q));
-    const scopedUserIds = resolveScopedUserIds(req); // !! sync now, reads req.scopeFilter
+    const scopedUserIds = resolveScopedUserIds(req);
 
     const reqWhere = buildReqWhere(q);
     const stages = await fetchScopedStages(q.serviceLineId);
@@ -809,7 +768,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     const NONE = "__none__";
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0]),
+      stages.map((s) => [s.id, 0])
     );
     const dispositionCounts: Record<string, number> = {};
     const recruiterAgg: Record<
@@ -923,7 +882,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     const stageForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
 
     const byServiceLine = Object.values(lineAgg)
@@ -946,7 +905,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total,
+      (a, b) => b.total - a.total
     );
     const timeSeries = Object.entries(series)
       .map(([bucket, count]) => ({ bucket, count }))
@@ -999,187 +958,6 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 // GET /reports/recruiters
 // ─────────────────────────────────────────────────────────────────────────────
 
-// function buildRecruiterRows(pipes: any[]) {
-//   type ReqStats = {
-//     requirementId: string;
-//     reqCode: string;
-//     title: string;
-//     status: string;
-//     totalOpenings: number;
-//     client: any;
-//     serviceLine: any;
-//     businessUnit: any;
-//     sourced: number;
-//     submitted: number;
-//     offered: number;
-//     joined: number;
-//     dropped: number;
-//     active: number;
-//     stageCounts: Record<string, number>;
-//   };
-//   type RecAgg = {
-//     id: string;
-//     name: string;
-//     email: string;
-//     sourced: number;
-//     submitted: number;
-//     offered: number;
-//     joined: number;
-//     dropped: number;
-//     active: number;
-//     submitTimeMins: number[];
-//     stageCounts: Record<string, number>;
-//     reqMap: Record<string, ReqStats>;
-//   };
-
-//   const map: Record<string, RecAgg> = {};
-
-//   for (const p of pipes) {
-//     const rid = p.recruiterId;
-//     if (!map[rid]) {
-//       map[rid] = {
-//         id: rid,
-//         name: `${p.recruiter.firstName} ${p.recruiter.lastName}`,
-//         email: p.recruiter.email,
-//         sourced: 0,
-//         submitted: 0,
-//         offered: 0,
-//         joined: 0,
-//         dropped: 0,
-//         active: 0,
-//         submitTimeMins: [],
-//         stageCounts: {},
-//         reqMap: {},
-//       };
-//     }
-//     const r = map[rid];
-//     r.sourced++;
-//     r.stageCounts[p.currentStageId] =
-//       (r.stageCounts[p.currentStageId] ?? 0) + 1;
-//     if (p.submittedAt) r.submitted++;
-//     if (p.offerStatus) r.offered++;
-//     if (isJoined(p)) r.joined++;
-//     if (isDropped(p)) r.dropped++;
-//     if (isActive(p)) r.active++;
-//     if (p.submittedAt)
-//       r.submitTimeMins.push(
-//         (p.stageHistory ?? []).reduce(
-//           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-//           0
-//         )
-//       );
-
-//     const rq = p.requirement;
-//     const reqId = p.requirementId;
-//     if (!r.reqMap[reqId])
-//       r.reqMap[reqId] = {
-//         requirementId: reqId,
-//         reqCode: rq?.reqCode ?? "",
-//         title: rq?.title ?? "",
-//         status: rq?.status ?? "",
-//         totalOpenings: rq?.totalOpenings ?? 0,
-//         client: rq?.client ?? null,
-//         serviceLine: rq?.serviceLine ?? null,
-//         businessUnit: rq?.businessUnit ?? null,
-//         sourced: 0,
-//         submitted: 0,
-//         offered: 0,
-//         joined: 0,
-//         dropped: 0,
-//         active: 0,
-//         stageCounts: {},
-//       };
-//     const rqs = r.reqMap[reqId];
-//     rqs.sourced++;
-//     rqs.stageCounts[p.currentStageId] =
-//       (rqs.stageCounts[p.currentStageId] ?? 0) + 1;
-//     if (p.submittedAt) rqs.submitted++;
-//     if (p.offerStatus) rqs.offered++;
-//     if (isJoined(p)) rqs.joined++;
-//     if (isDropped(p)) rqs.dropped++;
-//     if (isActive(p)) rqs.active++;
-//   }
-
-//   return Object.values(map)
-//     .map((r) => ({
-//       id: r.id,
-//       name: r.name,
-//       email: r.email,
-//       sourced: r.sourced,
-//       submitted: r.submitted,
-//       offered: r.offered,
-//       joined: r.joined,
-//       dropped: r.dropped,
-//       active: r.active,
-//       submissionRate:
-//         r.sourced > 0 ? +((r.submitted / r.sourced) * 100).toFixed(1) : 0,
-//       offerRate:
-//         r.submitted > 0 ? +((r.offered / r.submitted) * 100).toFixed(1) : 0,
-//       joinRate: r.offered > 0 ? +((r.joined / r.offered) * 100).toFixed(1) : 0,
-//       avgTimeToSubmitDays:
-//         r.submitTimeMins.length > 0
-//           ? +(
-//               r.submitTimeMins.reduce((a, b) => a + b, 0) /
-//               r.submitTimeMins.length /
-//               1440
-//             ).toFixed(1)
-//           : null,
-//       stageCounts: r.stageCounts,
-//       requirementBreakdown: Object.values(r.reqMap)
-//         .sort((a, b) => b.sourced - a.sourced)
-//         .map((rq) => ({ ...rq })),
-//     }))
-//     .sort((a, b) => b.sourced - a.sourced);
-// }
-
-// File: reports.controller.recruiter.stats.patch.ts
-// Path: DROP INTO src/controller/reports/reports.controller.ts
-//
-// INSTRUCTIONS:
-// 1. Replace the existing `buildRecruiterRows` function wholesale.
-// 2. In `getRecruiterReport`, replace the `pipelines` select to include
-//    the new stage flags (isNearTerminal, isSourced, pipeline).
-// 3. In `exportRecruiterReport`, update the summary sheet columns to add
-//    the new stat columns.
-//
-// WHAT CHANGED vs old version:
-//   OLD: isJoined(p) checked disposition=PLACED || actualJoiningDate → "joined"
-//        isDropped(p) checked disposition=DROPPED || isRejected || isWithdrawn → "dropped"
-//        isActive(p) checked disposition=ACTIVE → "active"
-//
-//   NEW: reads currentStage flags instead:
-//        isTerminal  → placed (achieved)
-//        isNearTerminal && !isTerminal → nearTerminal
-//        pipeline=false → offPipeline (dropped, rejected, duplicate, withdrawn — all "out")
-//        pipeline=true && !isTerminal && !isNearTerminal → inPipeline
-//
-//   "sourced" = total candidates in the recruiter's pipeline — unchanged.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE SELECT — add to your existing PIPELINE_DETAIL_SELECT:
-// currentStage now includes the flags we need.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// In PIPELINE_DETAIL_SELECT, ensure currentStage select has these fields:
-//
-// currentStage: {
-//   select: {
-//     id: true,
-//     code: true,
-//     label: true,
-//     order: true,
-//     canonicalStage: true,
-//     isTerminal: true,      // ← NEW (may already be there)
-//     isNearTerminal: true,  // ← NEW
-//     isSourced: true,       // ← NEW
-//     pipeline: true,        // ← NEW (Boolean — false = off pipeline)
-//   },
-// },
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REPLACEMENT FUNCTION — drop in place of existing buildRecruiterRows
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function buildRecruiterRows(pipes: any[]) {
   type ReqStats = {
     requirementId: string;
@@ -1190,14 +968,13 @@ export function buildRecruiterRows(pipes: any[]) {
     client: any;
     serviceLine: any;
     businessUnit: any;
-    departement: any;
     sourced: number;
     submitted: number;
     offered: number;
-    placed: number; // isTerminal
-    nearTerminal: number; // isNearTerminal && !isTerminal
-    offPipeline: number; // pipeline=false (rejected, dropped, dup, withdrawn)
-    inPipeline: number; // pipeline=true && !isTerminal && !isNearTerminal
+    placed: number;
+    nearTerminal: number;
+    offPipeline: number;
+    inPipeline: number;
     stageCounts: Record<string, number>;
   };
 
@@ -1208,10 +985,10 @@ export function buildRecruiterRows(pipes: any[]) {
     sourced: number;
     submitted: number;
     offered: number;
-    placed: number; // isTerminal
-    nearTerminal: number; // isNearTerminal && !isTerminal
-    offPipeline: number; // pipeline=false
-    inPipeline: number; // active in pipeline
+    placed: number;
+    nearTerminal: number;
+    offPipeline: number;
+    inPipeline: number;
     submitTimeMins: number[];
     stageCounts: Record<string, number>;
     reqMap: Record<string, ReqStats>;
@@ -1245,27 +1022,18 @@ export function buildRecruiterRows(pipes: any[]) {
     if (p.submittedAt) r.submitted++;
     if (p.offerStatus) r.offered++;
 
-    // ── Stage flag classification ─────────────────────────────────────────
     const stage = p.currentStage;
-    if (stage?.isTerminal) {
-      r.placed++;
-    } else if (stage?.isNearTerminal) {
-      r.nearTerminal++;
-    } else if (stage?.pipeline === false) {
-      // pipeline=false covers: rejected, withdrawn, duplicate, dropped —
-      // anything that is permanently out of the active funnel
-      r.offPipeline++;
-    } else {
-      // pipeline=true, not terminal, not near-terminal → actively in pipeline
-      r.inPipeline++;
-    }
+    if (stage?.isTerminal) r.placed++;
+    else if (stage?.isNearTerminal) r.nearTerminal++;
+    else if (stage?.pipeline === false) r.offPipeline++;
+    else r.inPipeline++;
 
     if (p.submittedAt)
       r.submitTimeMins.push(
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0,
-        ),
+          0
+        )
       );
 
     const rq = p.requirement;
@@ -1335,43 +1103,17 @@ export function buildRecruiterRows(pipes: any[]) {
     .sort((a, b) => b.sourced - a.sourced);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EXPORT SHEET COLUMNS PATCH
-// In exportRecruiterReport, replace the fixedRight array with this:
-// ─────────────────────────────────────────────────────────────────────────────
-
-// export const RECRUITER_EXPORT_FIXED_RIGHT = [
-//   { header: "Offered", key: "offered", width: 12 },
-//   { header: "Placed", key: "placed", width: 12 }, // was "Joined"
-//   { header: "Near Close", key: "nearTerminal", width: 14 }, // NEW
-//   { header: "In Pipeline", key: "inPipeline", width: 14 }, // was "Active"
-//   { header: "Off Pipeline", key: "offPipeline", width: 14 }, // was "Dropped"
-//   { header: "Avg Days to Submit", key: "avgDays", width: 18 },
-// ];
-
 export const RECRUITER_EXPORT_FIXED_RIGHT = [
   { header: "Offered", key: "offered", width: 12 },
-  { header: "Placed", key: "placed", width: 12 }, // was "Joined"
-  { header: "Near Close", key: "nearTerminal", width: 14 }, // NEW
-  { header: "In Pipeline", key: "inPipeline", width: 14 }, // was "Active"
-  { header: "Off Pipeline", key: "offPipeline", width: 14 }, // was "Dropped"
+  { header: "Placed", key: "placed", width: 12 },
+  { header: "Near Close", key: "nearTerminal", width: 14 },
+  { header: "In Pipeline", key: "inPipeline", width: 14 },
+  { header: "Off Pipeline", key: "offPipeline", width: 14 },
   { header: "Avg Days to Submit", key: "avgDays", width: 18 },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXPORT ROW PATCH
-// In exportRecruiterReport data loop, replace old joined/dropped/active with:
-//
-//   placed:       r.placed,
-//   nearTerminal: r.nearTerminal,
-//   inPipeline:   r.inPipeline,
-//   offPipeline:  r.offPipeline,
-//
-// And in totals row:
-//   placed:       totalPlaced,
-//   nearTerminal: totalNearTerminal,
-//   inPipeline:   totalInPipeline,
-//   offPipeline:  totalOffPipeline,
+// GET /reports/recruiters
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRecruiterReport = async (req: Request, res: Response) => {
@@ -1380,12 +1122,15 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
     const { recruiterId, requirementId } = q;
     const standardOnly = q.standardOnly === "true";
 
-    const scopedUserIds = resolveScopedUserIds(req); // !! sync, reads req.scopeFilter
+    const scopedUserIds = resolveScopedUserIds(req);
 
     let recruiterFilter: Record<string, any> = {};
 
     if (recruiterId) {
-      if (scopedUserIds !== null && !scopedUserIds.includes(recruiterId))
+      if (
+        scopedUserIds !== null &&
+        !scopedUserIds.includes(recruiterId as string)
+      )
         return res
           .status(403)
           .json({ success: false, message: "Recruiter not in your scope" });
@@ -1394,7 +1139,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       recruiterFilter = { recruiterId: { in: scopedUserIds } };
     }
 
-    // ── Department filter — lives on recruiter, not requirement ──
+    // Department filter lives on recruiter, not requirement
     const departmentId = prismaIn(q.departmentId);
     if (departmentId) {
       recruiterFilter = {
@@ -1403,12 +1148,10 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       };
     }
 
+    // buildReqWhere now includes createdById — filters reqs by CSM creator
     const reqWhere = buildReqWhere(q, { withDateWindow: false });
     if (requirementId) reqWhere.id = requirementId;
-    // console.log("q.departmentId raw:", q.departmentId);
-    // console.log("departmentId prismaIn:", JSON.stringify(departmentId));
-    // console.log("recruiterFilter:", JSON.stringify(recruiterFilter, null, 2));
-    // console.log("reqWhere:", JSON.stringify(reqWhere, null, 2));
+
     const stages = await fetchScopedStages(q.serviceLineId);
 
     const win = resolveDateWindow(toSingleQ(q));
@@ -1420,10 +1163,15 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
           }
         : null;
 
+    // ── MOJ filter — scope pipeline rows to candidates joining in selected month
+    const mojWhere = buildMojWhere(q);
+
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: {
         requirement: { is: reqWhere },
         ...recruiterFilter,
+        // MOJ: only candidates whose monthOfJoining matches — null = no filter
+        ...(mojWhere ?? {}),
         ...(activityWindow
           ? {
               OR: [
@@ -1456,10 +1204,21 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       scope: req.scopeFilter?.type ?? "ALL",
       window: windowLabel(toSingleQ(q)),
       standardOnly,
+      // Echo active filters back to frontend
+      filters: {
+        mojMonth: Array.isArray(q.mojMonth)
+          ? q.mojMonth[0]
+          : q.mojMonth ?? null,
+        mojYear: Array.isArray(q.mojYear) ? q.mojYear[0] : q.mojYear ?? null,
+        createdById: Array.isArray(q.createdById)
+          ? q.createdById[0]
+          : q.createdById ?? null,
+      },
     };
+
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
 
     const recruiterIds = [...new Set(pipelines.map((p) => p.recruiterId))];
@@ -1481,6 +1240,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
             },
           })
         : [];
+
     const userLine = new Map<string, { id: string; name: string } | null>();
     const userDept = new Map<string, { id: string; name: string } | null>();
 
@@ -1547,7 +1307,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .sort(
         (a, b) =>
           b.data.reduce((s, r) => s + r.sourced, 0) -
-          a.data.reduce((s, r) => s + r.sourced, 0),
+          a.data.reduce((s, r) => s + r.sourced, 0)
       );
 
     return res.json({
@@ -1563,12 +1323,10 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /reports/recruiters/export
-// Query params synced from frontend:
-//   ids, recruiterId, requirementId, serviceLineId, standardOnly,
-//   stageIds      — stage IDs the user explicitly selected (filters Candidates sheet to those stages)
-//   hiddenStageIds — stage column IDs hidden via column picker (omit from Sheet 1 AND Candidates)
-//   disposition, clientId, status, range/hours/fromDate/toDate
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const exportRecruiterReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
@@ -1591,29 +1349,33 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     }
     if (q.recruiterId) recruiterFilter = { recruiterId: q.recruiterId };
 
+    // buildReqWhere includes createdById for CSM filter
     const reqWhere = buildReqWhere(q);
     if (q.requirementId) reqWhere.id = q.requirementId;
 
     const stages = await fetchScopedStages(q.serviceLineId);
-    // Remove stages the user has hidden in the column picker
     const activeStages = (
       standardOnly ? stages.filter((s) => s.isStandard) : stages
     ).filter((s) => !hiddenStageIds.has(s.id));
-    // ── Stage classification sets (mirrors buildRecruiterRows logic) ──────────
+
     const terminalStageIds = new Set(
-      stages.filter((s) => s.isTerminal).map((s) => s.id),
+      stages.filter((s) => s.isTerminal).map((s) => s.id)
     );
     const nearTerminalStageIds = new Set(
-      stages.filter((s) => s.isNearTerminal && !s.isTerminal).map((s) => s.id),
+      stages.filter((s) => s.isNearTerminal && !s.isTerminal).map((s) => s.id)
     );
-    // off-pipeline = stages where pipeline === false (rejected, dropped, duplicates, etc.)
     const offPipelineStageIds = new Set(
-      stages.filter((s) => !s.pipeline).map((s) => s.id),
+      stages.filter((s) => !s.pipeline).map((s) => s.id)
     );
+
+    // ── MOJ filter
+    const mojWhere = buildMojWhere(q);
 
     const pipelineWhere: Record<string, any> = {
       requirement: reqWhere,
       ...recruiterFilter,
+      // MOJ scoping — export only includes candidates for the selected joining month
+      ...(mojWhere ?? {}),
     };
     if (q.disposition) pipelineWhere.disposition = q.disposition as any;
 
@@ -1632,11 +1394,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       nearClose: number;
       inPipeline: number;
       offPipeline: number;
-      // submitted: number;
-      // offered: number;
-      // joined: number;
-      // dropped: number;
-      // active: number;
       submitTimeMins: number[];
       requirementIds: Set<string>;
       stageCounts: Record<string, number>;
@@ -1656,11 +1413,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
           nearClose: 0,
           inPipeline: 0,
           offPipeline: 0,
-          // submitted: 0,
-          // offered: 0,
-          // joined: 0,
-          // dropped: 0,
-          // active: 0,
           submitTimeMins: [],
           requirementIds: new Set(),
           stageCounts: {},
@@ -1670,36 +1422,25 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       r.sourced++;
       r.stageCounts[p.currentStageId] =
         (r.stageCounts[p.currentStageId] ?? 0) + 1;
-      // if (p.submittedAt) r.submitted++;
-      // if (p.offerStatus) r.offered++;
-      // if (isJoined(p)) r.joined++;
-      // if (isDropped(p)) r.dropped++;
-      // if (isActive(p)) r.active++;
 
-      // Outcome bucket — same classification as buildRecruiterRows
-      if (terminalStageIds.has(p.currentStageId)) {
-        r.placed++;
-      } else if (nearTerminalStageIds.has(p.currentStageId)) {
-        r.nearClose++;
-      } else if (offPipelineStageIds.has(p.currentStageId)) {
-        r.offPipeline++;
-      } else {
-        r.inPipeline++;
-      }
+      if (terminalStageIds.has(p.currentStageId)) r.placed++;
+      else if (nearTerminalStageIds.has(p.currentStageId)) r.nearClose++;
+      else if (offPipelineStageIds.has(p.currentStageId)) r.offPipeline++;
+      else r.inPipeline++;
+
       if (p.submittedAt)
         r.submitTimeMins.push(
           (p.stageHistory ?? []).reduce(
             (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0,
-          ),
+            0
+          )
         );
     }
 
     const summaryRows = Object.values(recruiterMap).sort(
-      (a, b) => b.sourced - a.sourced,
+      (a, b) => b.sourced - a.sourced
     );
 
-    // Pre-compute grand stage totals — bake into column headers as "Label (N)"
     const grandStageCounts: Record<string, number> = {};
     for (const r of summaryRows) {
       for (const s of activeStages) {
@@ -1720,22 +1461,12 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       { header: "Email", key: "email", width: 30 },
       { header: "Requirements", key: "reqs", width: 14 },
       { header: "Sourced", key: "sourced", width: 12 },
-      // { header: "Submitted", key: "submitted", width: 12 },
     ];
-    // "Label (N)" — column total visible at a glance without scrolling to the totals row
     const stageCols = activeStages.map((s) => ({
       header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
       key: `stage_${s.id}`,
       width: Math.max(s.label.length + 6, 14),
     }));
-    // const fixedRight = [
-    //   { header: "Offered", key: "offered", width: 12 },
-    //   { header: "Joined", key: "joined", width: 12 },
-    //   { header: "Dropped", key: "dropped", width: 12 },
-    //   { header: "Active", key: "active", width: 12 },
-    //   { header: "Avg Days to Submit", key: "avgDays", width: 18 },
-    // ];
-    // Fixed right — now matches UI outcome columns exactly
     const fixedRight = [
       { header: "Placed", key: "placed", width: 12 },
       { header: "Near Close", key: "nearClose", width: 14 },
@@ -1746,13 +1477,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     sheet1.columns = [...fixedLeft, ...stageCols, ...fixedRight];
     styleHdr(sheet1.getRow(1));
 
-    // let totalSourced = 0,
-    //   totalSubmitted = 0,
-    //   totalOffered = 0,
-    //   totalJoined = 0,
-    //   totalDropped = 0,
-    //   totalActive = 0;
-    // const totalReqs = new Set<string>();
     let totalSourced = 0,
       totalPlaced = 0,
       totalNearClose = 0,
@@ -1773,11 +1497,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       for (const s of activeStages)
         dynVals[`stage_${s.id}`] = r.stageCounts[s.id] ?? 0;
       totalSourced += r.sourced;
-      // totalSubmitted += r.submitted;
-      // totalOffered += r.offered;
-      // totalJoined += r.joined;
-      // totalDropped += r.dropped;
-      // totalActive += r.active;
       totalPlaced += r.placed;
       totalNearClose += r.nearClose;
       totalInPipeline += r.inPipeline;
@@ -1788,12 +1507,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         email: r.email,
         reqs: r.requirementIds.size,
         sourced: r.sourced,
-        // submitted: r.submitted,
         ...dynVals,
-        // offered: r.offered,
-        // joined: r.joined,
-        // dropped: r.dropped,
-        // active: r.active,
         placed: r.placed,
         nearClose: r.nearClose,
         inPipeline: r.inPipeline,
@@ -1810,12 +1524,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       email: "",
       reqs: totalReqs.size,
       sourced: totalSourced,
-      // submitted: totalSubmitted,
       ...grandDynVals,
-      // offered: totalOffered,
-      // joined: totalJoined,
-      // dropped: totalDropped,
-      // active: totalActive,
       placed: totalPlaced,
       nearClose: totalNearClose,
       inPipeline: totalInPipeline,
@@ -1830,7 +1539,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     };
 
     // ── Sheet 2: Candidates ───────────────────────────────────────────────────
-    // stageIds priority: explicit selection > hidden exclusion (show visible only) > all
     const reqIds = [...new Set(pipelines.map((p) => p.requirementId))];
     const requirements = await prisma.requirement.findMany({
       where: { id: { in: reqIds } },
@@ -1857,7 +1565,6 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     });
     const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
 
-    // totalPipeline per req — count ALL pipelines for that req (not just filtered subset)
     const totalPipelineByReq: Record<string, number> = {};
     for (const p of pipelines) {
       totalPipelineByReq[p.requirementId] =
@@ -1865,7 +1572,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     }
 
     const hiddenCandidateCols = new Set(
-      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[],
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
     );
     const candidateStageIds =
       selectedStageIds ??
@@ -1878,22 +1585,22 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
       {
         hiddenCols: hiddenCandidateCols,
         stageIds: candidateStageIds,
-        disposition: q.disposition || undefined,
+        disposition: q.disposition as string | undefined,
       },
-      totalPipelineByReq,
+      totalPipelineByReq
     );
 
     const dateStr = new Date().toISOString().split("T")[0];
     const scopeTag = selectedIds ? "selected" : "all";
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="recruiter-report-${scopeTag}-${windowLabel(
-        q,
-      )}-${dateStr}.xlsx"`,
+        toSingleQ(q)
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1905,11 +1612,8 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
   }
 };
 
-// };
-
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. REQUIREMENT REPORT
-// GET /reports/requirements
+// 2. REQUIREMENT REPORT — GET /reports/requirements
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementReport = async (req: Request, res: Response) => {
@@ -1917,10 +1621,9 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     const q = req.query as Record<string, string>;
     const standardOnly = q.standardOnly === "true";
 
-    // Creator scope: reporting-tree BFS (intentionally separate from pipeline scope)
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin,
+      req.user!.isSuperAdmin
     );
     const requestedCreatorId = q.createdById?.trim() || null;
     const effectiveCreatorIds =
@@ -1929,10 +1632,10 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-          ? creatorIds.includes(requestedCreatorId)
-            ? [requestedCreatorId]
-            : []
-          : creatorIds;
+        ? creatorIds.includes(requestedCreatorId)
+          ? [requestedCreatorId]
+          : []
+        : creatorIds;
 
     const createdByWhere =
       effectiveCreatorIds === null
@@ -2035,7 +1738,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
     const byLine = new Map<string, any[]>();
     const lineMeta = new Map<string, { id: string; name: string } | null>();
@@ -2078,384 +1781,15 @@ export const getRequirementReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/requirements/export
-// Synced params: ids, serviceLineId, standardOnly,
-//   stageIds      — explicit stage selection for Candidates sheet
-//   hiddenStageIds — hidden stage columns → omit from Sheet 1 AND Candidates
-//   disposition, clientId, status, createdById, range/hours/fromDate/toDate
-export const exportRequirementReport = async (req: Request, res: Response) => {
-  try {
-    const q = req.query as Record<string, string | string[] | undefined>;
-    const singleId = req.params.id ?? null;
-    const selectedIds = parseIds(q.ids);
-    const selectedStageIds = parseIds(q.stageIds);
-    const hiddenStageIds = new Set(parseIds(q.hiddenStageIds) ?? []);
-    const standardOnly = q.standardOnly === "true";
-
-    let baseWhere: Record<string, any>;
-    if (singleId) {
-      baseWhere = { id: singleId, deletedAt: null };
-    } else {
-      const creatorIds = await resolveOrgTreeDown(
-        req.user!.id,
-        req.user!.isSuperAdmin,
-      );
-      const reqFilter = buildReqWhere(q, { withDateWindow: false });
-      const win = resolveDateWindow(toSingleQ(q));
-      const activityWindow =
-        win.gte || win.lte
-          ? {
-              ...(win.gte ? { gte: win.gte } : {}),
-              ...(win.lte ? { lte: win.lte } : {}),
-            }
-          : null;
-      const activityFilter = activityWindow
-        ? {
-            pipelines: {
-              some: {
-                OR: [
-                  { createdAt: activityWindow },
-                  { updatedAt: activityWindow },
-                  { stageHistory: { some: { createdAt: activityWindow } } },
-                ],
-              },
-            },
-          }
-        : {};
-      baseWhere =
-        creatorIds !== null
-          ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
-          : { ...reqFilter, ...activityFilter };
-      if (selectedIds) {
-        baseWhere.id = { in: selectedIds };
-        delete baseWhere.pipelines;
-      }
-    }
-
-    const stages = await fetchScopedStages(q.serviceLineId);
-    // Remove hidden stage columns from Sheet 1
-    const activeStages = (
-      standardOnly ? stages.filter((s) => s.isStandard) : stages
-    ).filter((s) => !hiddenStageIds.has(s.id));
-    const stageIdSet = new Set(stages.map((s) => s.id));
-
-    const requirements = await prisma.requirement.findMany({
-      where: baseWhere,
-      select: {
-        id: true,
-        reqCode: true,
-        title: true,
-        status: true,
-        priority: true,
-        jobType: true,
-        remoteType: true,
-        totalOpenings: true,
-        city: true,
-        state: true,
-        country: true,
-        respondBy: true,
-        isRespondByBreached: true,
-        isTurnaroundBreached: true,
-        createdAt: true,
-        deletedAt: true,
-        client: { select: { id: true, name: true } },
-        clientSpoc: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            designation: true,
-          },
-        },
-        businessUnit: { select: { id: true, name: true } },
-        serviceLine: { select: { id: true, name: true } },
-        createdBy: { select: { firstName: true, lastName: true } },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 1000,
-    });
-
-    if (!requirements.length)
-      return res
-        .status(404)
-        .json({ success: false, message: "No requirements found" });
-
-    const reqIds = requirements.map((r) => r.id);
-
-    const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
-      by: ["requirementId", "currentStageId"],
-      where: { requirementId: { in: reqIds } },
-      _count: { id: true },
-    });
-    const countsByReq: Record<string, Record<string, number>> = {};
-    for (const sc of stageCounts as any[]) {
-      if (!stageIdSet.has(sc.currentStageId)) continue;
-      if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
-      countsByReq[sc.requirementId][sc.currentStageId] =
-        (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
-    }
-
-    const pipelineWhere: Record<string, any> = {
-      requirementId: { in: reqIds },
-    };
-    if (q.disposition) pipelineWhere.disposition = q.disposition as any;
-
-    const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: pipelineWhere,
-      select: PIPELINE_DETAIL_SELECT,
-      orderBy: { createdAt: "asc" },
-    });
-
-    // Pre-compute grand stage totals for column headers
-    const grandStageCounts: Record<string, number> = {};
-    for (const r of requirements) {
-      const counts = countsByReq[r.id] ?? {};
-      for (const s of activeStages) {
-        grandStageCounts[s.id] =
-          (grandStageCounts[s.id] ?? 0) + (counts[s.id] ?? 0);
-      }
-    }
-
-    const workbook = new ExcelJS.Workbook();
-    workbook.creator = "TalentOS";
-    workbook.created = new Date();
-
-    const sheet1 = workbook.addWorksheet("Requirements", {
-      views: [{ state: "frozen", ySplit: 2 }],
-    });
-    const fixedCols = [
-      { header: "Req Code", key: "reqCode", width: 14 },
-      { header: "Title", key: "title", width: 38 },
-      { header: "Status", key: "status", width: 16 },
-      { header: "Priority", key: "priority", width: 12 },
-      { header: "Client", key: "client", width: 24 },
-      { header: "Client SPOC", key: "spoc", width: 22 },
-      { header: "SPOC Email", key: "spocEmail", width: 26 },
-      { header: "Business Unit", key: "bu", width: 22 },
-      { header: "Service Line", key: "sl", width: 20 },
-      { header: "City", key: "city", width: 16 },
-      { header: "Country", key: "country", width: 14 },
-      { header: "Job Type", key: "jobType", width: 16 },
-      { header: "Remote", key: "remote", width: 12 },
-      { header: "Total Openings", key: "openings", width: 14 },
-      { header: "Created By", key: "createdBy", width: 22 },
-      { header: "Created Date", key: "createdAt", width: 18 },
-      { header: "Deleted Date", key: "deletedAt", width: 18 },
-      { header: "Days Open", key: "daysOpen", width: 12 },
-      { header: "Respond By", key: "respondBy", width: 18 },
-      { header: "SLA Breached?", key: "breached", width: 14 },
-      { header: "Total Candidates", key: "total", width: 16 },
-    ];
-    // "Label (N)" — grand total per stage baked into column header
-    const stageCols = activeStages.map((s) => ({
-      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
-      key: `stage_${s.id}`,
-      width: Math.max(s.label.length + 6, 14),
-    }));
-    sheet1.columns = [...fixedCols, ...stageCols];
-
-    const groupRow = sheet1.getRow(1);
-    groupRow.getCell(1).value = "Requirement Details";
-    if (stageCols.length > 0) {
-      groupRow.getCell(fixedCols.length + 1).value = "Pipeline Stages";
-      sheet1.mergeCells(1, 1, 1, fixedCols.length);
-      sheet1.mergeCells(
-        1,
-        fixedCols.length + 1,
-        1,
-        fixedCols.length + stageCols.length,
-      );
-    }
-    styleHdr(groupRow);
-    if (stageCols.length > 0)
-      groupRow.getCell(fixedCols.length + 1).fill = SUB_FILL;
-
-    const colHdr = sheet1.getRow(2);
-    [...fixedCols, ...stageCols].forEach((col, i) => {
-      colHdr.getCell(i + 1).value = col.header;
-    });
-    styleHdr(colHdr, SUB_FILL);
-
-    const now = Date.now();
-    const STATUS_COLORS: Record<string, string> = {
-      ACTIVE: "FF00875A",
-      CLOSED: "FFDE350B",
-      ON_HOLD: "FFFF991F",
-      PENDING_APPROVAL: "FF0052CC",
-      DRAFT: "FF6B778C",
-      CANCELLED: "FF5E6C84",
-    };
-
-    let grandTotal = 0,
-      grandDaysOpen = 0;
-
-    for (const r of requirements) {
-      const counts = countsByReq[r.id] ?? {};
-      const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
-      const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000,
-      );
-      grandTotal += totalCandidates;
-      grandDaysOpen += daysOpen;
-
-      const rowData: Record<string, any> = {
-        reqCode: r.reqCode,
-        title: r.title,
-        status: r.status,
-        priority: r.priority,
-        client: r.client?.name ?? "",
-        spoc: spocName(r.clientSpoc),
-        spocEmail: r.clientSpoc?.email ?? "",
-        bu: r.businessUnit?.name ?? "",
-        sl: r.serviceLine?.name ?? "",
-        city: r.city ?? "",
-        country: r.country ?? "",
-        jobType: r.jobType,
-        remote: r.remoteType,
-        openings: r.totalOpenings,
-        createdBy: [r.createdBy.firstName, r.createdBy.lastName]
-          .filter(Boolean)
-          .join(" "),
-        createdAt: new Date(r.createdAt),
-        deletedAt: r.deletedAt ? new Date(r.deletedAt) : "",
-        daysOpen,
-        respondBy: r.respondBy ? new Date(r.respondBy) : "",
-        breached:
-          r.isRespondByBreached || r.isTurnaroundBreached ? "Yes" : "No",
-        total: totalCandidates,
-      };
-      for (const s of activeStages)
-        rowData[`stage_${s.id}`] = counts[s.id] ?? 0;
-
-      const dataRow = sheet1.addRow(rowData);
-      dataRow.height = 20;
-      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy hh:mm";
-      if (r.deletedAt)
-        dataRow.getCell("deletedAt").numFmt = "dd-mmm-yyyy hh:mm";
-      if (r.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
-
-      const sc = STATUS_COLORS[r.status];
-      if (sc) {
-        dataRow.getCell("status").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: sc },
-        };
-        dataRow.getCell("status").font = {
-          color: { argb: "FFFFFFFF" },
-          bold: true,
-        };
-      }
-      if (r.isRespondByBreached || r.isTurnaroundBreached) {
-        dataRow.getCell("breached").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFDE350B" },
-        };
-        dataRow.getCell("breached").font = {
-          color: { argb: "FFFFFFFF" },
-          bold: true,
-        };
-      }
-    }
-
-    const grandStageData: Record<string, number> = {};
-    for (const s of activeStages)
-      grandStageData[`stage_${s.id}`] = grandStageCounts[s.id] ?? 0;
-    const totalsRow1 = sheet1.addRow({
-      reqCode: `TOTAL: ${requirements.length} requirements`,
-      title: "",
-      status: "",
-      priority: "",
-      client: "",
-      spoc: "",
-      spocEmail: "",
-      bu: "",
-      sl: "",
-      city: "",
-      country: "",
-      jobType: "",
-      remote: "",
-      openings: requirements.reduce((s, r) => s + r.totalOpenings, 0),
-      createdBy: "",
-      createdAt: "",
-      deletedAt: "",
-      daysOpen:
-        requirements.length > 0
-          ? Math.round(grandDaysOpen / requirements.length)
-          : 0,
-      respondBy: "",
-      breached: "",
-      total: grandTotal,
-      ...grandStageData,
-    });
-    styleTotalsRow(totalsRow1);
-    sheet1.mergeCells(totalsRow1.number, 1, totalsRow1.number, 4);
-
-    sheet1.autoFilter = {
-      from: { row: 2, column: 1 },
-      to: { row: 2, column: fixedCols.length + stageCols.length },
-    };
-
-    // ── Sheet 2: Candidates ───────────────────────────────────────────────────
-    const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
-
-    // totalPipeline per req — total ALL pipelines for that req
-    const totalPipelineByReq: Record<string, number> = {};
-    for (const p of pipelines) {
-      totalPipelineByReq[p.requirementId] =
-        (totalPipelineByReq[p.requirementId] ?? 0) + 1;
-    }
-
-    const hiddenCandidateCols = new Set(
-      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[],
-    );
-    const candidateStageIds =
-      selectedStageIds ??
-      (hiddenStageIds.size > 0 ? activeStages.map((s) => s.id) : undefined);
-
-    buildCandidateSheet(
-      workbook,
-      pipelines,
-      reqLookup,
-      {
-        hiddenCols: hiddenCandidateCols,
-        stageIds: candidateStageIds,
-        disposition: q.disposition || undefined,
-      },
-      totalPipelineByReq,
-    );
-
-    const suffix = singleId
-      ? (requirements[0]?.reqCode ?? singleId)
-      : selectedIds
-        ? "selected"
-        : "all";
-    const dateStr = new Date().toISOString().split("T")[0];
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`,
-    );
-    await workbook.xlsx.write(res);
-    res.end();
-  } catch (err) {
-    console.error("exportRequirementReport:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to export requirement report" });
-  }
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE REPORT — GET /reports/candidates
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const getCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
     const reqWhere = buildReqWhere(q);
-    const scopedUserIds = resolveScopedUserIds(req); // !! sync
+    const scopedUserIds = resolveScopedUserIds(req);
     const stages = await fetchScopedStages(q.serviceLineId);
 
     const where: Record<string, any> = { requirement: reqWhere };
@@ -2476,7 +1810,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
     });
 
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0]),
+      stages.map((s) => [s.id, 0])
     );
     const dispositionCounts: Record<string, number> = {};
     let totalAgingMins = 0;
@@ -2486,12 +1820,12 @@ export const getCandidateReport = async (req: Request, res: Response) => {
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
       const stageAge = Math.floor(
-        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       totalAgingMins +=
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0,
+          0
         ) + stageAge;
     }
 
@@ -2529,17 +1863,20 @@ export const getCandidateReport = async (req: Request, res: Response) => {
   }
 };
 
-// GET /reports/candidates/export
+// ─────────────────────────────────────────────────────────────────────────────
+// CANDIDATE EXPORT — GET /reports/candidates/export
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const exportCandidateReport = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
     const reqWhere = buildReqWhere(q);
-    const scopedUserIds = resolveScopedUserIds(req); // !! sync
+    const scopedUserIds = resolveScopedUserIds(req);
     const selectedStageIds = parseIds(q.stageIds);
 
     const where: Record<string, any> = { requirement: reqWhere };
     if (scopedUserIds !== null) where.recruiterId = { in: scopedUserIds };
-    if (q.stageId) where.currentStageId = q.stageId; // single-stage drill
+    if (q.stageId) where.currentStageId = q.stageId;
     if (q.disposition) where.disposition = q.disposition as any;
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
@@ -2557,7 +1894,7 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     workbook.created = new Date();
 
     const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
+      pipelines.map((p) => [p.requirementId, (p as any).requirement])
     );
 
     const totalPipelineByReq: Record<string, number> = {};
@@ -2567,7 +1904,7 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     }
 
     const hiddenCandidateCols = new Set(
-      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[],
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
     );
     buildCandidateSheet(
       workbook,
@@ -2576,21 +1913,21 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
       {
         hiddenCols: hiddenCandidateCols,
         stageIds: selectedStageIds ?? undefined,
-        disposition: q.disposition || undefined,
+        disposition: q.disposition as string | undefined,
       },
-      totalPipelineByReq,
+      totalPipelineByReq
     );
 
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="candidate-report-${windowLabel(
-        q,
-      )}-${dateStr}.xlsx"`,
+        toSingleQ(q)
+      )}-${dateStr}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();

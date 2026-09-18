@@ -1,37 +1,5 @@
 // File: reports.recruiter.stats.controller.ts
 // Path: src/controller/reports/reports.recruiter.stats.controller.ts
-//
-// GET /reports/recruiters/stats
-//
-// Single purpose: compute recruiter pipeline stats classified by stage flags.
-// Accepts every filter the frontend can send — same params as the main
-// recruiter report so filters are universal.
-//
-// Response shape:
-// {
-//   success: true,
-//   data: {
-//     totals: {
-//       recruiters: number,   // distinct recruiter count
-//       sourced:    number,   // all pipeline rows matched
-//       inPipeline: number,   // pipeline=true, !isTerminal, !isNearTerminal, !isSourced
-//       nearClose:  number,   // isNearTerminal=true, !isTerminal
-//       placed:     number,   // isTerminal=true
-//       offPipeline:number,   // pipeline=false (rejected/withdrawn/dup/dropped)
-//       sourced_only:number,  // isSourced=true (entry stages — sourced but not yet processed)
-//     },
-//     byRecruiter: [{
-//       id, name, email, serviceLineId, serviceLine,
-//       sourced, inPipeline, nearClose, placed, offPipeline, sourced_only,
-//       placementRate,   // placed/sourced %
-//       conversionRate,  // (placed+nearClose)/sourced %
-//       stageCounts: { [stageId]: number }  // every stage broken down
-//     }],
-//     byServiceLine: [{ id, name, sourced, inPipeline, nearClose, placed, offPipeline }],
-//     stages: StageMeta[],   // all stages used — for frontend column rendering
-//   },
-//   meta: { window, scope, filters }
-// }
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
@@ -70,8 +38,13 @@ function isDateOnly(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
 }
 
+function str(v: string | string[] | undefined): string | undefined {
+  if (!v) return undefined;
+  return Array.isArray(v) ? v[0] : v;
+}
+
 function resolveDateWindow(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): DateWindow {
   const now = new Date();
   const hours = str(q.hours);
@@ -121,7 +94,7 @@ function windowLabel(q: Record<string, string | string[] | undefined>): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCOPE — reads req.scopeFilter set by middleware
+// SCOPE
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveScopedUserIds(req: Request): string[] | null {
@@ -152,26 +125,6 @@ function parseIds(raw?: string): string[] | null {
   return arr.length ? [...new Set(arr)] : null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BUILD REQUIREMENT WHERE
-// Accepts every requirement-level filter the frontend can send
-// ─────────────────────────────────────────────────────────────────────────────
-
-// function buildReqWhere(
-//   q: Record<string, string | undefined>
-// ): Record<string, any> {
-//   const where: Record<string, any> = { deletedAt: null };
-//   if (q.clientId) where.clientId = q.clientId;
-//   if (q.clientSpocId) where.clientSpocId = q.clientSpocId;
-//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
-//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-//   if (q.status) where.status = q.status;
-//   if (q.priority) where.priority = q.priority;
-//   if (q.createdById) where.createdById = q.createdById;
-//   return where;
-// }
-
-// ADD this before buildReqWhere
 function prismaIn(v: string | string[] | undefined) {
   if (!v) return undefined;
   const arr = Array.isArray(v) ? v : [v];
@@ -179,45 +132,71 @@ function prismaIn(v: string | string[] | undefined) {
   return arr.length === 1 ? arr[0] : { in: arr };
 }
 
-function str(v: string | string[] | undefined): string | undefined {
-  if (!v) return undefined;
-  return Array.isArray(v) ? v[0] : v;
+// ─────────────────────────────────────────────────────────────────────────────
+// MOJ HELPERS
+// mojMonth = "2025-09" → monthOfJoining = "September 2025"
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function mojMonthToLabel(mojMonth: string): string | null {
+  const parts = mojMonth.split("-");
+  const year = parts[0];
+  const monthIdx = parseInt(parts[1] ?? "0", 10) - 1;
+  if (!year || monthIdx < 0 || monthIdx > 11) return null;
+  return `${MONTH_NAMES[monthIdx]} ${year}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REQUIREMENT WHERE
+// ─────────────────────────────────────────────────────────────────────────────
+
 function buildReqWhere(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
 
-  // ── Multi-select (checkbox) filters — can be array or single string ──
   const clientId = prismaIn(q.clientId);
   const clientSpocId = prismaIn(q.clientSpocId);
   const serviceLineId = prismaIn(q.serviceLineId);
   const status = prismaIn(q.status);
-  // const departmentId = prismaIn(q.departmentId);
 
   if (clientId) where.clientId = clientId;
   if (clientSpocId) where.clientSpocId = clientSpocId;
   if (serviceLineId) where.serviceLineId = serviceLineId;
   if (status) where.status = status;
-  // if (departmentId) where.departmentId = departmentId;
-
-  // ── Single-value filters — always a plain string ──
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
   if (q.priority) where.priority = q.priority;
-  if (q.createdById) where.createdById = q.createdById;
+
+  // ── CSM / creator filter ──────────────────────────────────────────────────
+  // Super manager picks a CSM → filter requirements created by that CSM.
+  // createdById can be a single ID or comma-separated list.
+  const createdById = prismaIn(q.createdById);
+  if (createdById) where.createdById = createdById;
 
   return where;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUILD PIPELINE WHERE
-// Accepts every pipeline-level filter + date window activity filter
+// PIPELINE WHERE
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildPipelineWhere(
   q: Record<string, string | string[] | undefined>,
-  effectiveUserIds: string[] | null,
+  effectiveUserIds: string[] | null
 ): Record<string, any> {
   const where: Record<string, any> = {};
 
@@ -225,23 +204,44 @@ function buildPipelineWhere(
   if (effectiveUserIds !== null) {
     where.recruiterId = { in: effectiveUserIds };
   }
-  const recruiterWhere: Record<string, any> = {};
+
+  // ── Department filter on recruiter ────────────────────────────────────────
   const departmentId = prismaIn(q.departmentId);
-  if (departmentId) recruiterWhere.departmentId = departmentId;
-  if (Object.keys(recruiterWhere).length) {
-    where.recruiter = { is: recruiterWhere };
+  if (departmentId) {
+    where.recruiter = { is: { departmentId } };
   }
+
   // ── Direct pipeline filters ───────────────────────────────────────────────
   if (q.disposition) where.disposition = q.disposition;
   if (q.currentStageId) where.currentStageId = q.currentStageId;
   if (q.assignmentId) where.assignmentId = q.assignmentId;
 
-  // ── Requirement filters ───────────────────────────────────────────────────
+  // ── MOJ filter ────────────────────────────────────────────────────────────
+  // mojMonth = "2025-09" → filter by stored monthOfJoining string "September 2025"
+  // mojYear  = "2025"    → filter all months in that year
+  //
+  // monthOfJoining is indexed — this is just a WHERE on an indexed string column,
+  // no reverse lookup into candidate service needed.
+  const mojMonth = str(q.mojMonth);
+  const mojYear = str(q.mojYear);
+
+  if (mojMonth) {
+    const label = mojMonthToLabel(mojMonth);
+    if (label) where.monthOfJoining = label;
+  } else if (mojYear) {
+    // "contains year" — e.g. "September 2025" contains "2025"
+    where.monthOfJoining = { contains: mojYear };
+  }
+
+  // ── Requirement filters (includes createdById for CSM filter) ─────────────
   const reqWhere = buildReqWhere(q);
-  // always attach — even if just { deletedAt: null } to exclude deleted reqs
   where.requirement = { is: reqWhere };
 
-  // ── Date window — activity-based: sourced OR updated OR stage moved in window
+  // ── Date window — activity-based ──────────────────────────────────────────
+  // NOTE: when mojMonth is active, date window still applies on top.
+  // Both conditions must match — candidates joining in Sep AND activity in window.
+  // If that's too restrictive, skip date window when mojMonth is set.
+  // For now: apply both (stricter, more correct for "who worked in this period").
   const win = resolveDateWindow(q);
   if (win.gte || win.lte) {
     const range = {
@@ -260,31 +260,27 @@ function buildPipelineWhere(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RESOLVE EFFECTIVE USER IDS
-// RBAC scope ∩ team picker — team picker can only narrow, never expand
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): string[] | null {
   const scopedIds = resolveScopedUserIds(req);
-  // const teamIds = parseIds(q.userIds);
   const teamIds = parseIds(
-    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds,
+    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds
   );
 
-  if (!teamIds) return scopedIds; // no team filter — use RBAC scope as-is
-
-  // Team picker present — intersect with RBAC scope
-  if (scopedIds === null) return teamIds; // RBAC = ALL, team picker narrows
+  if (!teamIds) return scopedIds;
+  if (scopedIds === null) return teamIds;
 
   const allowed = new Set(scopedIds);
   const intersected = teamIds.filter((id) => allowed.has(id));
-  return intersected.length > 0 ? intersected : [req.user!.id]; // fallback to self
+  return intersected.length > 0 ? intersected : [req.user!.id];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CLASSIFY — given stage flags, return which bucket this row falls into
+// CLASSIFY
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Bucket =
@@ -300,9 +296,9 @@ function classify(
     isNearTerminal: boolean;
     isSourced: boolean;
     pipeline: boolean;
-  } | null,
+  } | null
 ): Bucket {
-  if (!stage) return "inPipeline"; // safe fallback if stage not loaded
+  if (!stage) return "inPipeline";
   if (stage.isTerminal) return "placed";
   if (stage.isNearTerminal) return "nearClose";
   if (!stage.pipeline) return "offPipeline";
@@ -320,7 +316,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
     const standardOnly = q.standardOnly === "true";
     const effectiveUserIds = resolveEffectiveUserIds(req, q);
 
-    // ── Fetch pipeline rows ───────────────────────────────────────────────────
     const pipelineWhere = buildPipelineWhere(q, effectiveUserIds);
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
@@ -330,7 +325,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
         recruiterId: true,
         currentStageId: true,
         requirementId: true,
-        // ── Stage flags — this is what makes classification work ──────────────
+        monthOfJoining: true,
         currentStage: {
           select: {
             id: true,
@@ -344,7 +339,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
             serviceLineId: true,
           },
         },
-        // ── Recruiter info ────────────────────────────────────────────────────
         recruiter: {
           select: {
             id: true,
@@ -358,24 +352,26 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
             buId: true,
           },
         },
-        // ── Requirement context for service-line grouping ─────────────────────
         requirement: {
           select: {
             serviceLineId: true,
             serviceLine: { select: { id: true, name: true } },
+            // Include creator info so frontend can group/display CSM context
+            createdById: true,
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
           },
         },
       },
-      // No take() — stats need the full set. Date window bounds it.
     });
 
-    // ── Fetch all stages for column metadata ─────────────────────────────────
+    // ── Stage metadata ────────────────────────────────────────────────────────
     const stageFilter: Record<string, any> = { isActive: true };
     if (q.serviceLineId) {
       const slArr = Array.isArray(q.serviceLineId)
         ? q.serviceLineId
         : [q.serviceLineId];
-
       stageFilter.OR = [
         { serviceLineId: null },
         { serviceLineId: { in: slArr } },
@@ -424,6 +420,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
         meta: {
           window: windowLabel(q),
           scope: req.scopeFilter?.type ?? "ALL",
+          // Echo active filters back so frontend knows what's applied
           filters: {
             clientId: q.clientId ?? null,
             clientSpocId: q.clientSpocId ?? null,
@@ -433,6 +430,8 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
             priority: q.priority ?? null,
             createdById: q.createdById ?? null,
             disposition: q.disposition ?? null,
+            mojMonth: str(q.mojMonth) ?? null,
+            mojYear: str(q.mojYear) ?? null,
           },
         },
       });
@@ -455,9 +454,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       stageCounts: Record<string, number>;
     };
 
-    const recruiterMap = new Map<string, RecAgg>();
-
-    // Service line agg (by requirement's service line — source of truth)
     type SlAgg = {
       id: string | null;
       name: string;
@@ -468,9 +464,10 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       sourcedOnly: number;
       inPipeline: number;
     };
+
+    const recruiterMap = new Map<string, RecAgg>();
     const slMap = new Map<string, SlAgg>();
 
-    // Grand totals
     let totalPlaced = 0,
       totalNearClose = 0,
       totalOffPipeline = 0,
@@ -508,7 +505,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       const bucket = classify(p.currentStage);
       ragg[bucket]++;
 
-      // Service line from requirement
+      // Service line from requirement (source of truth)
       const reqSl = (p.requirement as any)?.serviceLine ?? null;
       const reqSlId = (p.requirement as any)?.serviceLineId ?? null;
       const slKey = reqSlId ?? "__none__";
@@ -529,7 +526,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       sagg.sourced++;
       sagg[bucket]++;
 
-      // Grand totals
       if (bucket === "placed") totalPlaced++;
       else if (bucket === "nearClose") totalNearClose++;
       else if (bucket === "offPipeline") totalOffPipeline++;
@@ -537,7 +533,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       else totalInPipeline++;
     }
 
-    // ── Build output ──────────────────────────────────────────────────────────
     const byRecruiter = [...recruiterMap.values()]
       .map((r) => ({
         ...r,
@@ -551,7 +546,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       .sort((a, b) => b.sourced - a.sourced);
 
     const byServiceLine = [...slMap.values()].sort(
-      (a, b) => b.sourced - a.sourced,
+      (a, b) => b.sourced - a.sourced
     );
 
     const totalSourced = pipelines.length;
@@ -584,6 +579,8 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
           priority: q.priority ?? null,
           createdById: q.createdById ?? null,
           disposition: q.disposition ?? null,
+          mojMonth: str(q.mojMonth) ?? null,
+          mojYear: str(q.mojYear) ?? null,
         },
       },
     });

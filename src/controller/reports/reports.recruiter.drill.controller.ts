@@ -1,20 +1,5 @@
 // File: reports.recruiter.drill.controller.ts
 // Path: src/controller/reports/reports.recruiter.drill.controller.ts
-//
-// GET /reports/recruiters/drill
-//
-// Dedicated drill endpoint for the Recruiters tab.
-// Returns candidate rows for a recruiter (or all recruiters in scope).
-// Supports every filter the tab uses PLUS:
-//   - mojMonth   = "2025-01" (YYYY-MM) — filter by month of joining
-//   - mojYear    = "2025"    — filter by year of joining (all months)
-//   - type       = recruiter | stage | placed | near_terminal | active_pipeline
-//                  | dropped | sourced (filters which candidates to return)
-//   - recruiterId = specific recruiter (omit = all in scope)
-//   - stageId    = specific stage (required when type=stage)
-//
-// Response shape exactly matches what RecruiterCandidateDrillDialog expects —
-// no field mapping needed in the frontend.
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
@@ -107,21 +92,7 @@ function resolveScopedUserIds(req: Request): string[] | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FORMATTING
-// ─────────────────────────────────────────────────────────────────────────────
-
-function formatAging(mins: number): string {
-  if (mins < 60) return `${mins}m`;
-  if (mins < 1440) return `${Math.floor(mins / 60)}h`;
-  if (mins < 10080) return `${Math.floor(mins / 1440)}d`;
-  if (mins < 43800) return `${Math.floor(mins / 10080)}wk`;
-  return `${Math.floor(mins / 43800)}mo`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MOJ HELPERS — Month of Joining filter
-// monthOfJoining stored as "June 2025" string on the pipeline row
-// We also support ISO filter: mojMonth=2025-06, mojYear=2025
+// MOJ HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MONTH_NAMES = [
@@ -139,23 +110,24 @@ const MONTH_NAMES = [
   "December",
 ];
 
-function mojToFilter(
-  mojMonth?: string,
-  mojYear?: string,
-): Record<string, any> | null {
-  // mojMonth = "2025-01" → "January 2025"
-  if (mojMonth) {
-    const [yr, mo] = mojMonth.split("-");
-    const monthIdx = parseInt(mo, 10) - 1;
-    if (isNaN(monthIdx) || monthIdx < 0 || monthIdx > 11) return null;
-    const label = `${MONTH_NAMES[monthIdx]} ${yr}`;
-    return { monthOfJoining: label };
-  }
-  // mojYear = "2025" → contains "2025"
-  if (mojYear) {
-    return { monthOfJoining: { contains: mojYear } };
-  }
-  return null;
+function mojMonthToLabel(mojMonth: string): string | null {
+  const parts = mojMonth.split("-");
+  const year = parts[0];
+  const monthIdx = parseInt(parts[1] ?? "0", 10) - 1;
+  if (!year || monthIdx < 0 || monthIdx > 11) return null;
+  return `${MONTH_NAMES[monthIdx]} ${year}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FORMATTING
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatAging(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h`;
+  if (mins < 10080) return `${Math.floor(mins / 1440)}d`;
+  if (mins < 43800) return `${Math.floor(mins / 10080)}wk`;
+  return `${Math.floor(mins / 43800)}mo`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,10 +151,7 @@ const PIPELINE_SELECT = {
   negotiatedCtc: true,
   noticePeriod: true,
   lastWorkingDate: true,
-  expectedJoiningDate: true,
   monthOfJoining: true,
-  actualJoiningDate: true,
-  remainingDaysToJoin: true,
   stageUpdatedAt: true,
   createdAt: true,
   currentStage: {
@@ -228,22 +197,25 @@ const PIPELINE_SELECT = {
       serviceLine: { select: { id: true, name: true } },
       businessUnit: { select: { id: true, name: true } },
       band: { select: { code: true, name: true, value: true } },
+      // Include creator for CSM filter context
+      createdById: true,
+      createdBy: { select: { id: true, firstName: true, lastName: true } },
     },
   },
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUILD ROW — maps a pipeline record to the DrillRow shape
+// BUILD ROW
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildRow(p: any, now: number): Record<string, any> {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
   );
   const totalMins =
     (p.stageHistory ?? []).reduce(
       (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-      0,
+      0
     ) + stageAgeMins;
   const rq = p.requirement;
 
@@ -254,7 +226,6 @@ function buildRow(p: any, now: number): Record<string, any> {
     stageAging: formatAging(stageAgeMins),
     stageAgeMins,
 
-    // Stage
     stageId: p.currentStageId,
     stageLabel: p.currentStage?.label ?? "—",
     stageCode: p.currentStage?.code ?? "",
@@ -263,12 +234,10 @@ function buildRow(p: any, now: number): Record<string, any> {
     isNearTerminal: p.currentStage?.isNearTerminal ?? false,
     isSourced: p.currentStage?.isSourced ?? false,
 
-    // Flags
     isRejected: p.isRejected,
     isWithdrawn: p.isWithdrawn,
     isOnHold: p.isOnHold,
 
-    // Offer / submission
     submittedAt: p.submittedAt ?? null,
     offerStatus: p.offerStatus ?? null,
     offeredCtc: p.offeredCtc != null ? Number(p.offeredCtc) : null,
@@ -276,15 +245,10 @@ function buildRow(p: any, now: number): Record<string, any> {
     expectedCtc: p.expectedCtc != null ? Number(p.expectedCtc) : null,
     negotiatedCtc: p.negotiatedCtc != null ? Number(p.negotiatedCtc) : null,
 
-    // Joining
     noticePeriod: p.noticePeriod ?? null,
     lastWorkingDate: p.lastWorkingDate ?? null,
-    expectedJoiningDate: p.expectedJoiningDate ?? null,
-    actualJoiningDate: p.actualJoiningDate ?? null,
     monthOfJoining: p.monthOfJoining ?? null,
-    daysToJoin: p.remainingDaysToJoin ?? null,
 
-    // Candidate
     candidateName: p.snapshot?.fullName ?? "—",
     candidateEmail: p.snapshot?.email ?? "",
     candidatePhone: p.snapshot?.phone ?? "",
@@ -294,14 +258,12 @@ function buildRow(p: any, now: number): Record<string, any> {
     topSkills: (p.snapshot?.topSkills ?? []).join(", "),
     resumeUrl: p.snapshot?.resumeUrl ?? null,
 
-    // Recruiter
     recruiterId: p.recruiterId,
     recruiterName: `${p.recruiter?.firstName ?? ""} ${
       p.recruiter?.lastName ?? ""
     }`.trim(),
     recruiterEmail: p.recruiter?.email ?? "",
 
-    // Requirement
     requirementId: rq?.id ?? "",
     reqCode: rq?.reqCode ?? "",
     reqTitle: rq?.title ?? "",
@@ -315,7 +277,74 @@ function buildRow(p: any, now: number): Record<string, any> {
       : "",
     serviceLineName: rq?.serviceLine?.name ?? "",
     businessUnitName: rq?.businessUnit?.name ?? "",
+
+    // Creator context — useful when CSM filter is active
+    createdById: rq?.createdById ?? null,
+    createdByName: rq?.createdBy
+      ? `${rq.createdBy.firstName} ${rq.createdBy.lastName}`.trim()
+      : null,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUILD PIPELINE WHERE — shared between drill + moj-options
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildDrillPipelineWhere(
+  q: Record<string, string>,
+  effectiveIds: string[] | null
+): Record<string, any> {
+  const pipelineWhere: Record<string, any> = {};
+
+  // Recruiter scope
+  if (effectiveIds !== null) {
+    pipelineWhere.recruiterId = { in: effectiveIds };
+  }
+
+  // Requirement filters — includes createdById for CSM filter
+  const reqWhere: Record<string, any> = { deletedAt: null };
+  if (q.clientId) reqWhere.clientId = q.clientId;
+  if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId;
+  if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
+  if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
+  if (q.status) reqWhere.status = q.status;
+
+  // ── CSM / creator filter ──────────────────────────────────────────────────
+  // createdById can be comma-separated for multi-select
+  if (q.createdById) {
+    const ids = q.createdById
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    reqWhere.createdById = ids.length === 1 ? ids[0] : { in: ids };
+  }
+
+  pipelineWhere.requirement = reqWhere;
+
+  // ── MOJ filter ────────────────────────────────────────────────────────────
+  // mojMonth = "2025-09" → monthOfJoining = "September 2025" (stored string, indexed)
+  if (q.mojMonth) {
+    const label = mojMonthToLabel(q.mojMonth);
+    if (label) pipelineWhere.monthOfJoining = label;
+  } else if (q.mojYear) {
+    pipelineWhere.monthOfJoining = { contains: q.mojYear };
+  }
+
+  // Date window — activity-based
+  const win = resolveDateWindow(q);
+  if (win.gte || win.lte) {
+    const range = {
+      ...(win.gte ? { gte: win.gte } : {}),
+      ...(win.lte ? { lte: win.lte } : {}),
+    };
+    pipelineWhere.OR = [
+      { createdAt: range },
+      { updatedAt: range },
+      { stageHistory: { some: { createdAt: range } } },
+    ];
+  }
+
+  return pipelineWhere;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,10 +355,9 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string>;
 
-    // ── Scope ───────────────────────────────────────────────────────────────
+    // ── Scope ────────────────────────────────────────────────────────────────
     const scopedIds = resolveScopedUserIds(req);
 
-    // Team picker narrows scope
     let effectiveIds: string[] | null = scopedIds;
     if (q.userIds) {
       const teamIds = q.userIds
@@ -344,7 +372,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
       }
     }
 
-    // Single recruiter drill (from RecruiterTable click)
+    // Single recruiter drill
     if (q.recruiterId && q.recruiterId !== "__all__") {
       if (effectiveIds !== null && !effectiveIds.includes(q.recruiterId)) {
         return res
@@ -354,56 +382,10 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
       effectiveIds = [q.recruiterId];
     }
 
-    // ── Build pipeline where ─────────────────────────────────────────────────
-    const pipelineWhere: Record<string, any> = {};
+    // ── Build where ──────────────────────────────────────────────────────────
+    const pipelineWhere = buildDrillPipelineWhere(q, effectiveIds);
 
-    // Recruiter scope
-    if (effectiveIds !== null) {
-      pipelineWhere.recruiterId = { in: effectiveIds };
-    }
-
-    // Requirement filters
-    const reqWhere: Record<string, any> = { deletedAt: null };
-    if (q.clientId) reqWhere.clientId = q.clientId;
-    if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId;
-    if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
-    if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
-    if (q.status) reqWhere.status = q.status;
-    pipelineWhere.requirement = reqWhere;
-
-    // Date window — activity-based
-    const win = resolveDateWindow(q);
-    if (win.gte || win.lte) {
-      const range = {
-        ...(win.gte ? { gte: win.gte } : {}),
-        ...(win.lte ? { lte: win.lte } : {}),
-      };
-      pipelineWhere.OR = [
-        { createdAt: range },
-        { updatedAt: range },
-        { stageHistory: { some: { createdAt: range } } },
-      ];
-    }
-
-    // MOJ filter
-    // const mojFilter = mojToFilter(q.mojMonth, q.mojYear);
-    // if (mojFilter) {
-    //   Object.assign(pipelineWhere, mojFilter);
-    // }
-    // MOJ filter — frontend sends "2026-05", filter by actualJoiningDate range
-    if (q.mojMonth) {
-      const parts = q.mojMonth.split("-");
-      const year = Number(parts[0] ?? 0);
-      const month = Number(parts[1] ?? 0);
-
-      if (year && month) {
-        const start = new Date(year, month - 1, 1); // 2026-05-01
-        const end = new Date(year, month, 1); // 2026-06-01 (exclusive)
-        pipelineWhere.actualJoiningDate = { gte: start, lt: end };
-      }
-    }
-
-    // ── Type filter — what kind of candidates ───────────────────────────────
+    // ── Type filter ──────────────────────────────────────────────────────────
     const type = q.type ?? "recruiter";
 
     if (q.stageId && type === "stage") {
@@ -427,18 +409,10 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
             isSourced: false,
           };
           break;
-        case "dropped":
-          // off pipeline — rejected OR withdrawn OR pipeline=false stage
-          pipelineWhere.OR = [
-            ...(pipelineWhere.OR ?? []),
-            ...(win.gte || win.lte ? [] : []), // preserve existing OR if no date window
-          ];
-          // simpler: filter in memory after fetch
-          break;
         case "sourced":
           pipelineWhere.currentStage = { isSourced: true };
           break;
-        // "recruiter" = no extra stage filter, show all
+        // "dropped" and "recruiter" — no extra stage filter, handle post-fetch
       }
     }
 
@@ -447,19 +421,19 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
       where: pipelineWhere,
       select: PIPELINE_SELECT as any,
       orderBy: { createdAt: "desc" },
-      take: 1000, // hard cap — export covers larger sets
+      take: 1000,
     });
 
     const now = Date.now();
 
-    // Post-filter for "dropped" (rejected/withdrawn/off-pipeline stage)
+    // Post-filter for "dropped"
     const filtered =
       type === "dropped"
         ? pipelines.filter(
             (p: any) =>
               p.isRejected ||
               p.isWithdrawn ||
-              p.currentStage?.pipeline === false,
+              p.currentStage?.pipeline === false
           )
         : pipelines;
 
@@ -477,7 +451,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
           !r.isNearTerminal &&
           !r.isRejected &&
           !r.isWithdrawn &&
-          !r.isOnHold,
+          !r.isOnHold
       ).length,
       onHold: rows.filter((r: any) => r.isOnHold).length,
       rejected: rows.filter((r: any) => r.isRejected).length,
@@ -488,7 +462,16 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       data: rows,
-      meta: { stats, capped: stats.capped },
+      meta: {
+        stats,
+        capped: stats.capped,
+        // Echo active filters so frontend can show "filtered by Sep 2025 MOJ" etc.
+        filters: {
+          mojMonth: q.mojMonth ?? null,
+          mojYear: q.mojYear ?? null,
+          createdById: q.createdById ?? null,
+        },
+      },
     });
   } catch (err) {
     console.error("getRecruiterDrill:", err);
@@ -501,13 +484,14 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /reports/recruiters/drill/moj-options
 //
-// Returns the distinct months of joining available for the current scope+filters.
-// Used to populate the MOJ filter dropdown.
+// Returns distinct months of joining for the current scope + filters.
+// Respects createdById filter so the MOJ dropdown only shows months
+// relevant to the selected CSM's requirements.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRecruiterDrillMojOptions = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const q = req.query as Record<string, string>;
@@ -530,9 +514,25 @@ export const getRecruiterDrillMojOptions = async (
     const where: Record<string, any> = {
       monthOfJoining: { not: null },
     };
+
     if (effectiveIds !== null) where.recruiterId = { in: effectiveIds };
-    if (q.serviceLineId)
-      where.requirement = { serviceLineId: q.serviceLineId, deletedAt: null };
+
+    // ── Requirement filters including createdById ─────────────────────────────
+    const reqWhere: Record<string, any> = { deletedAt: null };
+    if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
+    if (q.clientId) reqWhere.clientId = q.clientId;
+    if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
+
+    // CSM filter: only show MOJ months for requirements this CSM created
+    if (q.createdById) {
+      const ids = q.createdById
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      reqWhere.createdById = ids.length === 1 ? ids[0] : { in: ids };
+    }
+
+    where.requirement = reqWhere;
 
     const rows = await prisma.requirementCandidatePipeline.findMany({
       where,
@@ -541,20 +541,21 @@ export const getRecruiterDrillMojOptions = async (
       orderBy: { monthOfJoining: "asc" },
     });
 
-    // monthOfJoining is stored as "June 2025" — parse and sort chronologically
+    // Parse "September 2025" → sort chronologically → return with ISO value
     const months = rows
       .map((r) => r.monthOfJoining!)
       .filter(Boolean)
       .map((label) => {
         const parts = label.split(" ");
-        const monthIdx = MONTH_NAMES.indexOf(parts[0]);
-        const year = parseInt(parts[1], 10);
+        const monthIdx = MONTH_NAMES.indexOf(parts[0] ?? "");
+        const year = parseInt(parts[1] ?? "0", 10);
         return { label, monthIdx, year, sortKey: year * 100 + monthIdx };
       })
+      .filter((m) => m.monthIdx >= 0) // skip unparseable entries
       .sort((a, b) => a.sortKey - b.sortKey)
       .map(({ label, monthIdx, year }) => ({
         label,
-        value: `${year}-${String(monthIdx + 1).padStart(2, "0")}`, // "2025-06"
+        value: `${year}-${String(monthIdx + 1).padStart(2, "0")}`, // "2025-09"
       }));
 
     return res.json({ success: true, data: months });

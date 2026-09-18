@@ -1186,8 +1186,8 @@ model RequirementCandidatePipeline {
   @@index([recruiterId])
   @@index([assignmentId])
   @@index([stageUpdatedAt])
-  @@index([actualJoiningDate])
-  @@index([expectedJoiningDate])
+  // @@index([actualJoiningDate])
+  // @@index([expectedJoiningDate])
   @@index([monthOfJoining])
   @@index([disposition])
 }
