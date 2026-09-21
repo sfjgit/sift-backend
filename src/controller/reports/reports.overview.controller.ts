@@ -109,7 +109,7 @@ function resolveScopedUserIds(req: Request): string[] | null {
 // Team filter can only NARROW scope, never expand it — security guarantee.
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | undefined>
+  q: Record<string, string | undefined>,
 ): string[] | null {
   const scopedUserIds = resolveScopedUserIds(req);
 
@@ -171,7 +171,7 @@ function computeSaleValue(input: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getDescendantsWithDepth(
-  rootId: string
+  rootId: string,
 ): Promise<{ id: string; depth: number }[]> {
   const result: { id: string; depth: number }[] = [];
   const visited = new Set<string>([rootId]);
@@ -195,7 +195,7 @@ async function getDescendantsWithDepth(
         // depth = parent depth + 1
         const parentDepth =
           frontier.find(
-            (f) => f.id === child.reportingToId || f.id === child.teamLeadId
+            (f) => f.id === child.reportingToId || f.id === child.teamLeadId,
           )?.depth ?? 0;
         const entry = { id: child.id, depth: parentDepth + 1 };
         result.push(entry);
@@ -387,7 +387,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // Separate pipeline stages (in-progress) vs terminal stages (placed/achieved)
     const pipelineStages = allStages.filter(
-      (s) => s.pipeline === true && s.isTerminal === false
+      (s) => s.pipeline === true && s.isTerminal === false,
     );
     const terminalStages = allStages.filter((s) => s.isTerminal === true);
     const allTrackedIds = allStages.map((s) => s.id);
@@ -551,16 +551,16 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // Stage counts — split into pipeline vs terminal
     const pipelineStageCounts: Record<string, number> = Object.fromEntries(
-      pipelineStages.map((s) => [s.id, 0])
+      pipelineStages.map((s) => [s.id, 0]),
     );
     const terminalStageCounts: Record<string, number> = Object.fromEntries(
-      terminalStages.map((s) => [s.id, 0])
+      terminalStages.map((s) => [s.id, 0]),
     );
 
     const nearTerminalStageCounts: Record<string, number> = Object.fromEntries(
       allStages
         .filter((s) => s.isNearTerminal && !s.isTerminal)
-        .map((s) => [s.id, 0])
+        .map((s) => [s.id, 0]),
     );
     let inProgressCount = 0;
 
@@ -668,12 +668,12 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
       // Pipeline days
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       const candidateMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, l: any) => sum + (l.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAgeMins;
       totalPipelineMins += candidateMins;
 
@@ -712,10 +712,10 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           active: 0,
           dropped: 0,
           pipelineCounts: Object.fromEntries(
-            pipelineStages.map((s) => [s.id, 0])
+            pipelineStages.map((s) => [s.id, 0]),
           ),
           terminalCounts: Object.fromEntries(
-            terminalStages.map((s) => [s.id, 0])
+            terminalStages.map((s) => [s.id, 0]),
           ),
         };
       }
@@ -917,7 +917,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total
+      (a, b) => b.total - a.total,
     );
 
     const byDepartment = Object.values(deptAgg)
@@ -939,7 +939,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     // ── Near-terminal pipeline value ──────────────────────────────────────────
     const nearTerminalCount = Object.values(nearTerminalStageCounts).reduce(
       (a, b) => a + b,
-      0
+      0,
     );
     const reqMap = new Map(requirements.map((r) => [r.id, r]));
     let nearTerminalPipelineValue = 0;
@@ -1069,57 +1069,206 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 // File: reportsController.ts
 // Path: src/controllers/reports/reportsController.ts
 
+// export const getOverviewFilters = async (req: Request, res: Response) => {
+//   try {
+//     const [serviceLines, businessUnits, departments, clients, clientSpocs] =
+//       await Promise.all([
+//         prisma.serviceLine.findMany({
+//           where: { isActive: true },
+//           select: { id: true, name: true },
+//           orderBy: { name: "asc" },
+//         }),
+//         prisma.businessUnit.findMany({
+//           where: { isActive: true },
+//           select: { id: true, name: true },
+//           orderBy: { name: "asc" },
+//         }),
+//         prisma.department.findMany({
+//           where: { isActive: true },
+//           select: { id: true, name: true },
+//           orderBy: { name: "asc" },
+//         }),
+//         prisma.client.findMany({
+//           where: { status: "ACTIVE", deletedAt: null },
+//           select: { id: true, name: true },
+//           orderBy: { name: "asc" },
+//         }),
+//         prisma.clientSpoc.findMany({
+//           where: { isActive: true },
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//             designation: true,
+//             client: {
+//               select: { id: true, name: true },
+//             },
+//           },
+//           orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
+//         }),
+//       ]);
+
+//     // Normalise spoc shape → { id, name, clientId, clientName, designation }
+//     const spocs = clientSpocs.map((s) => ({
+//       id: s.id,
+//       name: `${s.firstName} ${s.lastName}`.trim(),
+//       designation: s.designation ?? null,
+//       clientId: s.client.id,
+//       clientName: s.client.name,
+//     }));
+
+//     return res.json({
+//       success: true,
+//       data: { serviceLines, businessUnits, departments, clients, spocs },
+//     });
+//   } catch (err) {
+//     console.error("getOverviewFilters:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch filter options" });
+//   }
+// };
+// File: reportsController.ts
+// Path: src/controllers/reports/reportsController.ts
+
 export const getOverviewFilters = async (req: Request, res: Response) => {
   try {
-    const [serviceLines, businessUnits, departments, clients, clientSpocs] =
-      await Promise.all([
-        prisma.serviceLine.findMany({
-          where: { isActive: true },
-          select: { id: true, name: true },
-          orderBy: { name: "asc" },
-        }),
-        prisma.businessUnit.findMany({
-          where: { isActive: true },
-          select: { id: true, name: true },
-          orderBy: { name: "asc" },
-        }),
-        prisma.department.findMany({
-          where: { isActive: true },
-          select: { id: true, name: true },
-          orderBy: { name: "asc" },
-        }),
-        prisma.client.findMany({
-          where: { status: "ACTIVE", deletedAt: null },
-          select: { id: true, name: true },
-          orderBy: { name: "asc" },
-        }),
-        prisma.clientSpoc.findMany({
-          where: { isActive: true },
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+
+    if (isSuperAdmin) {
+      const [serviceLines, businessUnits, departments, clients, clientSpocs] =
+        await Promise.all([
+          prisma.serviceLine.findMany({
+            where: { isActive: true },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" },
+          }),
+          prisma.businessUnit.findMany({
+            where: { isActive: true },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" },
+          }),
+          prisma.department.findMany({
+            where: { isActive: true },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" },
+          }),
+          prisma.client.findMany({
+            where: { status: "ACTIVE", deletedAt: null },
+            select: { id: true, name: true },
+            orderBy: { name: "asc" },
+          }),
+          prisma.clientSpoc.findMany({
+            where: { isActive: true },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              designation: true,
+              client: { select: { id: true, name: true } },
+            },
+            orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
+          }),
+        ]);
+
+      const spocs = clientSpocs.map((s) => ({
+        id: s.id,
+        name: `${s.firstName} ${s.lastName}`.trim(),
+        designation: s.designation ?? null,
+        clientId: s.client.id,
+        clientName: s.client.name,
+      }));
+
+      return res.json({
+        success: true,
+        data: { serviceLines, businessUnits, departments, clients, spocs },
+      });
+    }
+
+    // Non-superadmin — mirror exactly what getMyClients does
+    const myClients = await prisma.client.findMany({
+      where: {
+        deletedAt: null,
+        status: "ACTIVE",
+        spocs: { some: { handlerId: userId, isActive: true } },
+      },
+      select: {
+        id: true,
+        name: true,
+        businessUnit: { select: { id: true, name: true } },
+        spocs: {
+          where: { handlerId: userId, isActive: true },
           select: {
             id: true,
             firstName: true,
             lastName: true,
             designation: true,
-            client: {
-              select: { id: true, name: true },
-            },
+            serviceLine: { select: { id: true, name: true } },
           },
-          orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
-        }),
-      ]);
+        },
+      },
+      orderBy: { name: "asc" },
+    });
 
-    // Normalise spoc shape → { id, name, clientId, clientName, designation }
-    const spocs = clientSpocs.map((s) => ({
-      id: s.id,
-      name: `${s.firstName} ${s.lastName}`.trim(),
-      designation: s.designation ?? null,
-      clientId: s.client.id,
-      clientName: s.client.name,
-    }));
+    const clientMap = new Map<string, { id: string; name: string }>();
+    const buMap = new Map<string, { id: string; name: string }>();
+    const slMap = new Map<string, { id: string; name: string }>();
+    const spocs: {
+      id: string;
+      name: string;
+      designation: string | null;
+      clientId: string;
+      clientName: string;
+    }[] = [];
+
+    for (const c of myClients) {
+      clientMap.set(c.id, { id: c.id, name: c.name });
+
+      if (c.businessUnit) {
+        buMap.set(c.businessUnit.id, {
+          id: c.businessUnit.id,
+          name: c.businessUnit.name,
+        });
+      }
+
+      for (const s of c.spocs) {
+        slMap.set(s.serviceLine.id, {
+          id: s.serviceLine.id,
+          name: s.serviceLine.name,
+        });
+
+        spocs.push({
+          id: s.id,
+          name: `${s.firstName} ${s.lastName}`.trim(),
+          designation: s.designation ?? null,
+          clientId: c.id,
+          clientName: c.name,
+        });
+      }
+    }
+
+    const departments = await prisma.department.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
 
     return res.json({
       success: true,
-      data: { serviceLines, businessUnits, departments, clients, spocs },
+      data: {
+        serviceLines: [...slMap.values()].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        ),
+        businessUnits: [...buMap.values()].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        ),
+        departments,
+        clients: [...clientMap.values()].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        ),
+        spocs,
+      },
     });
   } catch (err) {
     console.error("getOverviewFilters:", err);
