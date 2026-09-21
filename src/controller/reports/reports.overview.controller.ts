@@ -236,11 +236,30 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // ── Build requirement filter ──────────────────────────────────────────────
     const reqWhere: Record<string, any> = { deletedAt: null };
-    if (q.clientId) reqWhere.clientId = q.clientId;
-    if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId; // ← ADD
-    if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
+    // if (q.clientId) reqWhere.clientId = q.clientId;
+    // if (q.clientSpocId) reqWhere.clientSpocId = q.clientSpocId; // ← ADD
+    // if (q.serviceLineId) reqWhere.serviceLineId = q.serviceLineId;
+    // fix — handle both single and array
+    const toArray = (v: any): string[] =>
+      !v ? [] : Array.isArray(v) ? v : [v];
+
+    const clientIds = toArray(q.clientId);
+    const spocIds = toArray(q.clientSpocId);
+    const slIds = toArray(q.serviceLineId);
+
+    if (clientIds.length)
+      reqWhere.clientId =
+        clientIds.length === 1 ? clientIds[0] : { in: clientIds };
+    if (spocIds.length)
+      reqWhere.clientSpocId =
+        spocIds.length === 1 ? spocIds[0] : { in: spocIds };
+    if (slIds.length)
+      reqWhere.serviceLineId = slIds.length === 1 ? slIds[0] : { in: slIds };
     if (q.businessUnitId) reqWhere.businessUnitId = q.businessUnitId;
-    if (q.status) reqWhere.status = q.status;
+    // if (q.status) reqWhere.status = q.status;
+    const statuses = toArray(q.status);
+    if (statuses.length)
+      reqWhere.status = statuses.length === 1 ? statuses[0] : { in: statuses };
     // if (win.gte || win.lte) {
     //   reqWhere.createdAt = {
     //     ...(win.gte ? { gte: win.gte } : {}),
@@ -323,11 +342,15 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // Department filter — resolve department members first
     if (q.departmentId) {
+      const deptIds = toArray(q.departmentId);
       const deptUsers = await prisma.user.findMany({
-        where: { departmentId: q.departmentId, isActive: true },
+        where: {
+          departmentId: deptIds.length === 1 ? deptIds[0] : { in: deptIds },
+          isActive: true,
+        },
         select: { id: true },
       });
-      const deptIds = deptUsers.map((u) => u.id);
+      // const deptIds = deptUsers.map((u) => u.id);
       // Intersect with scope if already scoped
       if (scopedUserIds !== null) {
         pipelineWhere.recruiterId = {
@@ -1140,32 +1163,33 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       const [serviceLines, businessUnits, departments, clients, clientSpocs] =
         await Promise.all([
           prisma.serviceLine.findMany({
-            where: { isActive: true },
-            select: { id: true, name: true },
+            // where: { isActive: true },
+            select: { id: true, name: true, isActive: true },
             orderBy: { name: "asc" },
           }),
           prisma.businessUnit.findMany({
-            where: { isActive: true },
-            select: { id: true, name: true },
+            // where: { isActive: true },
+            select: { id: true, name: true, isActive: true },
             orderBy: { name: "asc" },
           }),
           prisma.department.findMany({
-            where: { isActive: true },
-            select: { id: true, name: true },
+            // where: { isActive: true },
+            select: { id: true, name: true, isActive: true },
             orderBy: { name: "asc" },
           }),
           prisma.client.findMany({
-            where: { status: "ACTIVE", deletedAt: null },
-            select: { id: true, name: true },
+            // where: { status: "ACTIVE", deletedAt: null },
+            select: { id: true, name: true, status: true },
             orderBy: { name: "asc" },
           }),
           prisma.clientSpoc.findMany({
-            where: { isActive: true },
+            // where: { isActive: true },
             select: {
               id: true,
               firstName: true,
               lastName: true,
               designation: true,
+              isActive: true,
               client: { select: { id: true, name: true } },
             },
             orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
@@ -1178,6 +1202,7 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
         designation: s.designation ?? null,
         clientId: s.client.id,
         clientName: s.client.name,
+        isActive: s.isActive ?? true,
       }));
 
       return res.json({
@@ -1190,15 +1215,16 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
     const myClients = await prisma.client.findMany({
       where: {
         deletedAt: null,
-        status: "ACTIVE",
-        spocs: { some: { handlerId: userId, isActive: true } },
+        // status: "ACTIVE",
+        spocs: { some: { handlerId: userId } },
       },
       select: {
         id: true,
         name: true,
+        status: true,
         businessUnit: { select: { id: true, name: true } },
         spocs: {
-          where: { handlerId: userId, isActive: true },
+          where: { handlerId: userId },
           select: {
             id: true,
             firstName: true,
@@ -1211,7 +1237,10 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       orderBy: { name: "asc" },
     });
 
-    const clientMap = new Map<string, { id: string; name: string }>();
+    const clientMap = new Map<
+      string,
+      { id: string; name: string; status: string }
+    >();
     const buMap = new Map<string, { id: string; name: string }>();
     const slMap = new Map<string, { id: string; name: string }>();
     const spocs: {
@@ -1220,10 +1249,11 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       designation: string | null;
       clientId: string;
       clientName: string;
+      isActive: boolean;
     }[] = [];
 
     for (const c of myClients) {
-      clientMap.set(c.id, { id: c.id, name: c.name });
+      clientMap.set(c.id, { id: c.id, name: c.name, status: c.status });
 
       if (c.businessUnit) {
         buMap.set(c.businessUnit.id, {
@@ -1244,6 +1274,7 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
           designation: s.designation ?? null,
           clientId: c.id,
           clientName: c.name,
+          isActive: true,
         });
       }
     }
@@ -1277,6 +1308,7 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch filter options" });
   }
 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // EMPTY OVERVIEW SHAPE  (returned when no data matches filters)
 // ─────────────────────────────────────────────────────────────────────────────
