@@ -1,25 +1,47 @@
 // File: reports.requirements.controller.ts
-// Path: src/controllers/reports.requirements.controller.ts
-//
-// This is the REPORTS tab controller — handles GET /reports/requirements.
-// Completely separate from requirementsController.ts (which handles GET /requirements).
-//
-// Key difference: this controller:
-//  - Groups results by service line (for the LineTabs UI)
-//  - Computes computedSaleValue + saleValueBasis per row (via imported computeSaleValue)
-//  - Returns saleValueSummary at the top level (for RequirementStatsBar)
-//  - Does NOT paginate — bounded by date window
-//  - Scopes by org tree BFS (resolveOrgTreeDown) + optional createdById filter
+// Path: src/controller/reports/reports.requirements.controller.ts
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { resolveOrgTreeDown } from "./reports.controller";
-import { computeSaleValue } from "../requirementsController";
-// import { computeSaleValue } from "@/controllers/requirementsController";
-// import { resolveOrgTreeDown } from "@/services/orgTreeService";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DATE WINDOW — same pattern as overview controller
+// SALE VALUE — correct priority chain, no × openings on direct saleValue
+// saleValue field = already the total for that req (entered by CSM as lump sum)
+// band.value      = per-opening fee → × openings
+// salaryMin × pct = per-opening fee → × openings
+// ─────────────────────────────────────────────────────────────────────────────
+
+type SaleValueBasis = "SALE_VALUE" | "BAND" | "FIXED_PCT" | "NOT_FOUND";
+
+function computeSaleValue(r: {
+  saleValue: number | null;
+  totalOpenings: number;
+  salaryMin: number | null;
+  band: { value: any } | null;
+  client: { percentageValue: any } | null;
+}): { value: number | null; basis: SaleValueBasis } {
+  // Direct — already a total, never multiply again
+  if (r.saleValue != null && Number(r.saleValue) > 0) {
+    return { value: Number(r.saleValue), basis: "SALE_VALUE" };
+  }
+  // Band — per-opening fee
+  const bv = r.band?.value != null ? Number(r.band.value) : null;
+  if (bv != null && bv > 0) {
+    return { value: bv * r.totalOpenings, basis: "BAND" };
+  }
+  // Fixed % of salary — per-opening fee
+  const pct =
+    r.client?.percentageValue != null ? Number(r.client.percentageValue) : null;
+  const sm = r.salaryMin != null ? Number(r.salaryMin) : null;
+  if (pct != null && pct > 0 && sm != null && sm > 0) {
+    return { value: sm * (pct / 100) * r.totalOpenings, basis: "FIXED_PCT" };
+  }
+  return { value: null, basis: "NOT_FOUND" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DATE WINDOW
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveDateWindow(q: Record<string, string | string[] | undefined>): {
@@ -33,7 +55,7 @@ function resolveDateWindow(q: Record<string, string | string[] | undefined>): {
   const range = str(q.range);
   if (hours) {
     const h = parseInt(hours, 10);
-    return { gte: new Date(now.getTime() - h * 3600000) };
+    return { gte: new Date(now.getTime() - h * 3_600_000) };
   }
   if (fromDate || toDate) {
     return {
@@ -93,45 +115,35 @@ function windowLabel(q: Record<string, string | string[] | undefined>): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BASE REQ WHERE — shared filter builder (no date window — handled separately)
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// function buildReqWhere(q: Record<string, string>): Record<string, any> {
-//   const where: Record<string, any> = { deletedAt: null };
-//   if (q.status) where.status = q.status;
-//   if (q.clientId) where.clientId = q.clientId;
-//   if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
-//   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-//   if (q.clientSpocId) where.clientSpocId = q.clientSpocId; // ← add this
-//   return where;
-// }
-
-//new functions
 function prismaIn(v: string | string[] | undefined) {
   if (!v) return undefined;
   const arr = Array.isArray(v) ? v : [v];
   if (!arr.length) return undefined;
   return arr.length === 1 ? arr[0] : { in: arr };
 }
+
 function str(v: string | string[] | undefined): string | undefined {
   if (!v) return undefined;
   return Array.isArray(v) ? v[0] : v;
 }
 
 function buildReqWhere(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
   if (q.status) where.status = prismaIn(q.status);
   if (q.clientId) where.clientId = prismaIn(q.clientId);
   if (q.serviceLineId) where.serviceLineId = prismaIn(q.serviceLineId);
-  if (q.businessUnitId) where.businessUnitId = q.businessUnitId; // single only
+  if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
   if (q.clientSpocId) where.clientSpocId = prismaIn(q.clientSpocId);
   return where;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE FETCH — scoped by service line
+// STAGES
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchScopedStages(serviceLineId?: string | string[]) {
@@ -154,6 +166,8 @@ async function fetchScopedStages(serviceLineId?: string | string[]) {
       isStandard: true,
       isTerminal: true,
       isNearTerminal: true,
+      isSourced: true,
+      pipeline: true,
       serviceLineId: true,
       serviceLine: { select: { id: true, name: true } },
     },
@@ -174,7 +188,7 @@ function stageMetaOut(stages: FetchedStage[], standardOnly: boolean) {
       isNearTerminal: s.isNearTerminal,
       serviceLineId: s.serviceLineId,
       serviceLine: s.serviceLine,
-    }),
+    })
   );
 }
 
@@ -182,24 +196,12 @@ function stageMetaOut(stages: FetchedStage[], standardOnly: boolean) {
 // getRequirementReport
 // GET /reports/requirements
 //
-// Response shape:
-// {
-//   success: true,
-//   groups: [{
-//     serviceLine: { id, name } | null,
-//     stages: StageMeta[],
-//     data: RequirementRow[],   ← each row has computedSaleValue, saleValueBasis etc.
-//     total: number,
-//   }],
-//   saleValueSummary: {         ← used by RequirementStatsBar
-//     totalSaleValue: number,
-//     totalAchievedValue: number,
-//     includedCount: number,
-//     omittedCount: number,
-//     byBasis: { SALE_VALUE, BAND, FIXED_PCT, NOT_FOUND }
-//   },
-//   meta: { window, standardOnly, total, multiLine }
-// }
+// Per-row additions vs previous version:
+//   nearTerminalCount  — candidates where isNearTerminal = true (pipeline column)
+//   nearTerminalValue  — (nearTerminalCount / totalOpenings) × computedSaleValue
+//   terminalCount      — now flag-based via stageById (not stageIdSet filter bug)
+//   achievedValue      — (terminalCount / totalOpenings) × computedSaleValue
+//   computedSaleValue  — FIXED: saleValue no longer multiplied by openings
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getRequirementReport = async (req: Request, res: Response) => {
@@ -207,10 +209,10 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     const q = req.query as Record<string, string | string[] | undefined>;
     const standardOnly = q.standardOnly === "true";
 
-    // ── Scope: creator BFS tree ───────────────────────────────────────────────
+    // ── Scope ──────────────────────────────────────────────────────────────
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin,
+      req.user!.isSuperAdmin
     );
 
     const requestedCreatorId = str(q.createdById)?.trim() || null;
@@ -220,21 +222,13 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-          ? creatorIds.includes(requestedCreatorId)
-            ? [requestedCreatorId]
-            : []
-          : creatorIds;
+        ? creatorIds.includes(requestedCreatorId)
+          ? [requestedCreatorId]
+          : []
+        : creatorIds;
 
-    // const createdByWhere =
-    //   effectiveCreatorIds === null
-    //     ? {}
-    //     : { createdById: { in: effectiveCreatorIds } };
-
-    // WITH this — also pull in requirements assigned to anyone in the org tree:
     let createdByWhere: Record<string, any> = {};
-
     if (effectiveCreatorIds !== null) {
-      // Requirements assigned to anyone in the org tree
       const assignedReqRows = await prisma.requirementAssignment.findMany({
         where: {
           assignedToId: { in: effectiveCreatorIds },
@@ -245,8 +239,6 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       const assignedReqIds = [
         ...new Set(assignedReqRows.map((a) => a.requirementId)),
       ];
-
-      // Union: created by org tree OR assigned to org tree
       createdByWhere = {
         OR: [
           { createdById: { in: effectiveCreatorIds } },
@@ -257,49 +249,48 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       };
     }
 
-    // ── Date window — activity-based filter ──────────────────────────────────
+    // ── Date window ────────────────────────────────────────────────────────
     const win = resolveDateWindow(q);
-    const activityWindow =
-      win.gte || win.lte
-        ? {
-            ...(win.gte ? { gte: win.gte } : {}),
-            ...(win.lte ? { lte: win.lte } : {}),
-          }
-        : null;
+    const dateFilterMode = str(q.dateFilterMode) ?? "activity";
 
-    const activityFilter = activityWindow
-      ? {
+    let activityFilter: Record<string, any> = {};
+    let createdAtFilter: Record<string, any> = {};
+
+    if (win.gte || win.lte) {
+      const window = {
+        ...(win.gte ? { gte: win.gte } : {}),
+        ...(win.lte ? { lte: win.lte } : {}),
+      };
+      if (dateFilterMode === "createdAt") {
+        createdAtFilter = { createdAt: window };
+      } else {
+        activityFilter = {
           pipelines: {
             some: {
               OR: [
-                { createdAt: activityWindow },
-                { updatedAt: activityWindow },
-                { stageHistory: { some: { createdAt: activityWindow } } },
+                { createdAt: window },
+                { updatedAt: window },
+                { stageHistory: { some: { createdAt: window } } },
               ],
             },
           },
-        }
-      : {};
+        };
+      }
+    }
 
-    // ── Optional team filter (from TeamTreePicker) ────────────────────────────
-    // userIds = comma-separated list from the tree picker
-    // When present, scope to requirements created by OR assigned to those users
+    // ── Team filter ────────────────────────────────────────────────────────
     let teamReqIdFilter: { id: { in: string[] } } | Record<string, never> = {};
     if (q.userIds) {
       const rawUserIds = str(q.userIds) ?? "";
-
       const teamIds = rawUserIds
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-
       if (teamIds.length > 0) {
-        // Narrow: only IDs in both effectiveCreatorIds (RBAC) and teamIds
         const allowed =
           effectiveCreatorIds === null
             ? teamIds
             : teamIds.filter((id) => effectiveCreatorIds.includes(id));
-
         if (allowed.length > 0) {
           const [assignedRows, createdRows] = await Promise.all([
             prisma.requirementAssignment.findMany({
@@ -317,39 +308,26 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           ]);
           teamReqIdFilter = { id: { in: [...uniqueIds] } };
         } else {
-          // Team filter completely outside RBAC scope → return empty
           teamReqIdFilter = { id: { in: [] } };
         }
       }
     }
 
-    // ── Sort params ───────────────────────────────────────────────────────────
-    // Frontend sends: sortBy=aging|openings|salaryMin|salaryMax|computedSaleValue
-    //                          |achievedValue|bandValue|totalCandidates|createdAt
-    //                 sortDir=asc|desc
-    //
-    // Computed fields (computedSaleValue, achievedValue, bandValue) don't exist
-    // in the DB — we fetch unsorted and sort in-memory after enrichment.
+    // ── Sort ───────────────────────────────────────────────────────────────
     const rawSortBy = str(q.sortBy) ?? null;
     const rawSortDir = str(q.sortDir) === "asc" ? "asc" : "desc";
 
-    // Fields that need in-memory sort (computed after DB fetch)
     const COMPUTED_SORT_KEYS = new Set([
       "computedSaleValue",
       "achievedValue",
       "bandValue",
+      "nearTerminalValue",
     ]);
-
     const isComputedSort =
       rawSortBy != null && COMPUTED_SORT_KEYS.has(rawSortBy);
 
-    // Map frontend sort keys → Prisma orderBy clauses
-    // aging is (now - createdAt), so asc aging = oldest first = asc createdAt...
-    // wait — oldest = smallest createdAt = furthest in the past → desc createdAt
-    // actually: aging asc = low days first = recent createdAt = desc createdAt
-    //           aging desc = high days first = old createdAt  = asc createdAt
     const DB_SORT_MAP: Record<string, object> = {
-      aging: { createdAt: rawSortDir === "asc" ? "desc" : "asc" }, // inverted
+      aging: { createdAt: rawSortDir === "asc" ? "desc" : "asc" },
       openings: { totalOpenings: rawSortDir },
       salaryMin: { salaryMin: rawSortDir },
       salaryMax: { salaryMax: rawSortDir },
@@ -357,7 +335,6 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       createdAt: { createdAt: rawSortDir },
     };
 
-    // For computed sorts → fall back to createdAt desc (in-memory handles it)
     const orderBy: object =
       rawSortBy && !isComputedSort && DB_SORT_MAP[rawSortBy]
         ? DB_SORT_MAP[rawSortBy]
@@ -366,20 +343,34 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     const reqWhere = {
       ...buildReqWhere(q),
       ...activityFilter,
+      ...createdAtFilter,
       ...createdByWhere,
       ...teamReqIdFilter,
     };
+    // ── Stages — fetch ALL flags, not just scoped ──────────────────────────
+    // We need isTerminal / isNearTerminal flags for every stage that appears
+    // in pipeline rows, regardless of serviceLineId filter.
+    // Scoped stages are still used for column display; full stage map for counts.
+    const [stages, allStagesForFlags] = await Promise.all([
+      fetchScopedStages(
+        Array.isArray(q.serviceLineId) ? q.serviceLineId : q.serviceLineId
+      ),
+      prisma.pipelineStage.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          isTerminal: true,
+          isNearTerminal: true,
+          isSourced: true,
+          pipeline: true,
+        },
+      }),
+    ]);
 
-    // ── Stages ────────────────────────────────────────────────────────────────
-    const stages = await fetchScopedStages(
-      Array.isArray(q.serviceLineId) ? q.serviceLineId : q.serviceLineId,
-    );
-    const stageIdSet = new Set(stages.map((s) => s.id));
-    const terminalStageIds = stages
-      .filter((s) => s.isTerminal)
-      .map((s) => s.id);
+    // stageById — flag lookup for count classification
+    const stageById = new Map(allStagesForFlags.map((s) => [s.id, s]));
 
-    // ── Requirements — full select including sale value fields ─────────────────
+    // ── Requirements ───────────────────────────────────────────────────────
     const requirements = await prisma.requirement.findMany({
       where: reqWhere,
       select: {
@@ -398,7 +389,6 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         isTurnaroundBreached: true,
         createdAt: true,
         deletedAt: true,
-        // Sale value fields
         saleValue: true,
         salaryMin: true,
         salaryMax: true,
@@ -416,15 +406,14 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         },
         _count: { select: { pipelines: true } },
       },
-      // orderBy: { createdAt: "desc" },
       orderBy,
-      take: 1000,
+      take: 1_000,
     });
 
-    // ── Empty response ────────────────────────────────────────────────────────
     const emptySummary = {
       totalSaleValue: 0,
       totalAchievedValue: 0,
+      totalNearTerminalValue: 0,
       includedCount: 0,
       omittedCount: 0,
       byBasis: {
@@ -450,22 +439,22 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const reqIds = requirements.map((r) => r.id);
 
-    // ── Stage counts — single groupBy across all stages ───────────────────────
+    // ── Stage counts — one groupBy, all reqs ───────────────────────────────
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
       where: { requirementId: { in: reqIds } },
       _count: { id: true },
     });
 
+    // Build: reqId → stageId → count (all stages, no filter)
     const countsByReq: Record<string, Record<string, number>> = {};
     for (const sc of stageCounts as any[]) {
-      if (!stageIdSet.has(sc.currentStageId)) continue;
       if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
       countsByReq[sc.requirementId][sc.currentStageId] =
         (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
     }
 
-    // ── Accumulate sale value summary ─────────────────────────────────────────
+    // ── Summary accumulators ───────────────────────────────────────────────
     const byBasis: Record<string, { count: number; total: number }> = {
       SALE_VALUE: { count: 0, total: 0 },
       BAND: { count: 0, total: 0 },
@@ -474,43 +463,52 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     };
     let totalSaleValue = 0;
     let totalAchievedValue = 0;
+    let totalNearTerminalValue = 0;
     let omittedCount = 0;
-    const now = Date.now(); // ← add once before .map(), or inside if you prefer
+    const now = Date.now();
 
-    // ── Build enriched rows ───────────────────────────────────────────────────
+    // ── Build rows ─────────────────────────────────────────────────────────
     const rows = requirements.map((r) => {
-      const counts = countsByReq[r.id] ?? {};
-      const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
+      const stageCts = countsByReq[r.id] ?? {};
+
+      // Flag-based counts — same loop as sales controller
+      let terminalCount = 0;
+      let nearTerminalCount = 0;
+      let totalCandidates = 0;
+
+      for (const [stageId, count] of Object.entries(stageCts)) {
+        const stage = stageById.get(stageId);
+        totalCandidates += count;
+        if (!stage) continue;
+        if (stage.isTerminal) terminalCount += count;
+        else if (stage.isNearTerminal) nearTerminalCount += count;
+        // sourced / dropped / active — not needed for display, counted in total
+      }
 
       const aging = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86_400_000,
-      ); // ← add
-
-      // Sale value
-      const { computedSaleValue, saleValueBasis } = computeSaleValue({
-        saleValue: r.saleValue,
-        totalOpenings: r.totalOpenings,
-        salaryMin: r.salaryMin,
-        band: r.band
-          ? { value: r.band.value != null ? Number(r.band.value) : null }
-          : null,
-        client: r.client
-          ? {
-              percentageValue:
-                r.client.percentageValue != null
-                  ? Number(r.client.percentageValue)
-                  : null,
-            }
-          : null,
-      });
-
-      // Terminal count (candidates in any terminal stage for this req)
-      const terminalCount = terminalStageIds.reduce(
-        (sum, sid) => sum + (counts[sid] ?? 0),
-        0,
+        (now - new Date(r.createdAt).getTime()) / 86_400_000
       );
 
-      // Achieved value
+      // Sale value — correct computation
+      const { value: computedSaleValue, basis: saleValueBasis } =
+        computeSaleValue({
+          saleValue: r.saleValue != null ? Number(r.saleValue) : null,
+          totalOpenings: r.totalOpenings,
+          salaryMin: r.salaryMin != null ? Number(r.salaryMin) : null,
+          band: r.band
+            ? { value: r.band.value != null ? Number(r.band.value) : null }
+            : null,
+          client: r.client
+            ? {
+                percentageValue:
+                  r.client.percentageValue != null
+                    ? Number(r.client.percentageValue)
+                    : null,
+              }
+            : null,
+        });
+
+      // Achieved — terminals / openings × sale value
       const achievedValue =
         computedSaleValue != null && r.totalOpenings > 0
           ? (terminalCount / r.totalOpenings) * computedSaleValue
@@ -520,23 +518,38 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         r.totalOpenings > 0
           ? Math.min(
               100,
-              Math.round((terminalCount / r.totalOpenings) * 1000) / 10,
+              Math.round((terminalCount / r.totalOpenings) * 1_000) / 10
             )
           : 0;
 
-      // Accumulate for summary
+      // Pipeline (near terminal) — nearTerminals / openings × sale value
+      const nearTerminalValue =
+        computedSaleValue != null && r.totalOpenings > 0
+          ? (nearTerminalCount / r.totalOpenings) * computedSaleValue
+          : null;
+
+      const nearTerminalPct =
+        r.totalOpenings > 0
+          ? Math.min(
+              100,
+              Math.round((nearTerminalCount / r.totalOpenings) * 1_000) / 10
+            )
+          : 0;
+
+      // Accumulate summary
       if (computedSaleValue != null) {
         totalSaleValue += computedSaleValue;
         byBasis[saleValueBasis].count++;
         byBasis[saleValueBasis].total += computedSaleValue;
         if (achievedValue != null) totalAchievedValue += achievedValue;
+        if (nearTerminalValue != null)
+          totalNearTerminalValue += nearTerminalValue;
       } else {
         omittedCount++;
         byBasis["NOT_FOUND"].count++;
       }
 
       return {
-        // Core fields
         id: r.id,
         reqCode: r.reqCode,
         title: r.title,
@@ -554,15 +567,13 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         deletedAt: r.deletedAt,
         aging,
 
-        // Salary (normalised from Decimal)
         salaryMin: r.salaryMin != null ? Number(r.salaryMin) : null,
         salaryMax: r.salaryMax != null ? Number(r.salaryMax) : null,
         saleValue: r.saleValue != null ? Number(r.saleValue) : null,
 
-        // Sale value enrichment
+        // Sale value enrichment — FIXED
         computedSaleValue,
-        saleValueBasis:
-          computedSaleValue != null ? saleValueBasis : "NOT_FOUND",
+        saleValueBasis,
         bandCode: r.band?.code ?? null,
         bandName: r.band?.name ?? null,
         bandValue: r.band?.value != null ? Number(r.band.value) : null,
@@ -571,14 +582,16 @@ export const getRequirementReport = async (req: Request, res: Response) => {
             ? Number(r.client.percentageValue)
             : null,
 
-        // Pipeline stats
+        // Pipeline stats — flag-based
         totalCandidates,
-        stageCounts: counts,
+        stageCounts: stageCts, // stageId → count (for stage columns)
         terminalCount,
         achievedValue,
         achievedPct,
+        nearTerminalCount, // "Pipeline" column count
+        nearTerminalValue, // "Pipeline" column value
+        nearTerminalPct,
 
-        // Relations (strip sensitive client fields)
         client: r.client ? { id: r.client.id, name: r.client.name } : null,
         clientSpoc: r.clientSpoc,
         businessUnit: r.businessUnit,
@@ -586,14 +599,16 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         createdBy: r.createdBy,
       };
     });
-    // ── In-memory sort for computed fields ────────────────────────────────────
-    // Only runs when frontend sent sortBy=computedSaleValue|achievedValue|bandValue
+
+    // ── In-memory sort for computed fields ─────────────────────────────────
     if (isComputedSort && rawSortBy) {
       const getVal = (r: (typeof rows)[0]): number => {
         if (rawSortBy === "computedSaleValue")
           return r.computedSaleValue ?? -Infinity;
         if (rawSortBy === "achievedValue") return r.achievedValue ?? -Infinity;
         if (rawSortBy === "bandValue") return r.bandValue ?? -Infinity;
+        if (rawSortBy === "nearTerminalValue")
+          return r.nearTerminalValue ?? -Infinity;
         return 0;
       };
       rows.sort((a, b) => {
@@ -601,10 +616,11 @@ export const getRequirementReport = async (req: Request, res: Response) => {
         return rawSortDir === "asc" ? diff : -diff;
       });
     }
-    // ── Group by service line ─────────────────────────────────────────────────
+
+    // ── Group by service line ──────────────────────────────────────────────
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId
       );
 
     const byLine = new Map<string, any[]>();
@@ -637,6 +653,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       saleValueSummary: {
         totalSaleValue,
         totalAchievedValue,
+        totalNearTerminalValue,
         includedCount: requirements.length - omittedCount,
         omittedCount,
         byBasis,

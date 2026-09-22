@@ -54,6 +54,7 @@ import {
   exportCandidates,
   getCandidateExportColumns,
 } from "@/controller/reports/reports.candidates.export.controller";
+import { getFunnelStats } from "@/controller/reports/reports.funnel.stats.controller";
 
 const router = Router();
 const auth = authenticateUser;
@@ -108,6 +109,7 @@ router.get("/recruiters", auth, scope, getRecruiterReport);
 // the literal string "export" as requirementId and call the wrong handler.
 router.get("/requirements", auth, scope, getRequirementReport);
 router.get("/requirements/export", auth, scope, exportRequirementReport);
+router.get("/requirements/funnel-stats", auth, scope, getFunnelStats);
 router.get(
   "/requirements/:requirementId/candidates",
   auth,
