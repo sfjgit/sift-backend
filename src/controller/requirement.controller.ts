@@ -1684,6 +1684,7 @@ export const getRequirementById = async (req: Request, res: Response) => {
         // interviewsScheduled: true,
         // offersRolledOut: true,
         startDate: true,
+        targetDate: true,
         // endDate: true,
         respondBy: true,
         turnaroundDays: true,
