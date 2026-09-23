@@ -26,6 +26,7 @@ import ticketRoutes from "./ticket.routes";
 import publicRoutes from "./public.routes";
 import requirementCategoryRoutes from "./requirementCategory.routes";
 import internalPoolRoutes from "./internalPool.routes";
+import portalRecruitRoutes from "./portalRecruit.routes";
 
 const router = Router();
 
@@ -56,5 +57,5 @@ router.use("/pipeline-stages", pipelineStageRoutes);
 router.use("/assignments", assignmentRoutes);
 router.use("/candidates", candidateRoutes); // ← new, clean, no nesting
 router.use("/public", publicRoutes); // ← new, clean, no nesting
-
+router.use("/portal-recruit", authenticateUser, portalRecruitRoutes);
 export default router;
