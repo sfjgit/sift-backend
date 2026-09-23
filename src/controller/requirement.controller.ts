@@ -2748,12 +2748,12 @@ export const updateRequirement = async (req: Request, res: Response) => {
         .json({ success: false, message: "Requirement not found" });
     }
 
-    if (["CLOSED", "CANCELLED"].includes(existing.status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot edit a closed or cancelled requirement",
-      });
-    }
+    // if (["CLOSED", "CANCELLED"].includes(existing.status)) {
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "Cannot edit a closed or cancelled requirement",
+    //   });
+    // }
 
     // ── SPOC / client change — derive related IDs from the new SPOC ─────────
     //

@@ -44,7 +44,7 @@ function str(v: string | string[] | undefined): string | undefined {
 }
 
 function resolveDateWindow(
-  q: Record<string, string | string[] | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): DateWindow {
   const now = new Date();
   const hours = str(q.hours);
@@ -165,7 +165,7 @@ function mojMonthToLabel(mojMonth: string): string | null {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildReqWhere(
-  q: Record<string, string | string[] | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
 
@@ -196,7 +196,7 @@ function buildReqWhere(
 
 function buildPipelineWhere(
   q: Record<string, string | string[] | undefined>,
-  effectiveUserIds: string[] | null
+  effectiveUserIds: string[] | null,
 ): Record<string, any> {
   const where: Record<string, any> = {};
 
@@ -264,11 +264,11 @@ function buildPipelineWhere(
 
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | string[] | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): string[] | null {
   const scopedIds = resolveScopedUserIds(req);
   const teamIds = parseIds(
-    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds
+    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds,
   );
 
   if (!teamIds) return scopedIds;
@@ -296,7 +296,7 @@ function classify(
     isNearTerminal: boolean;
     isSourced: boolean;
     pipeline: boolean;
-  } | null
+  } | null,
 ): Bucket {
   if (!stage) return "inPipeline";
   if (stage.isTerminal) return "placed";
@@ -430,7 +430,11 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
             priority: q.priority ?? null,
             createdById: q.createdById ?? null,
             disposition: q.disposition ?? null,
-            mojMonth: str(q.mojMonth) ?? null,
+            mojMonths: Array.isArray(q.mojMonth)
+              ? q.mojMonth
+              : q.mojMonth
+                ? [q.mojMonth]
+                : [],
             mojYear: str(q.mojYear) ?? null,
           },
         },
@@ -546,7 +550,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       .sort((a, b) => b.sourced - a.sourced);
 
     const byServiceLine = [...slMap.values()].sort(
-      (a, b) => b.sourced - a.sourced
+      (a, b) => b.sourced - a.sourced,
     );
 
     const totalSourced = pipelines.length;

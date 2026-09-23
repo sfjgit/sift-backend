@@ -34,21 +34,18 @@ function mojMonthToLabel(mojMonth: string): string | null {
 }
 
 function buildMojWhere(
-  q: Record<string, string | string[] | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): Record<string, any> | null {
-  const mojMonth = Array.isArray(q.mojMonth) ? q.mojMonth[0] : q.mojMonth;
-  const mojYear = Array.isArray(q.mojYear) ? q.mojYear[0] : q.mojYear;
-
-  if (mojMonth) {
-    const label = mojMonthToLabel(mojMonth);
-    if (label) return { monthOfJoining: label };
-    return null;
-  }
-
-  if (mojYear) {
-    return { monthOfJoining: { contains: mojYear } };
-  }
-
+  const rawMoj = q.mojMonth;
+  const mojMonths: string[] = Array.isArray(rawMoj)
+    ? rawMoj
+    : rawMoj
+      ? [rawMoj]
+      : [];
+  const mojYear = Array.isArray(q.mojYear) ? q.mojYear[0] : (q.mojYear ?? null);
+  if (mojMonths.length === 1) return { monthOfJoining: mojMonths[0] };
+  if (mojMonths.length > 1) return { monthOfJoining: { in: mojMonths } };
+  if (mojYear) return { monthOfJoining: { startsWith: mojYear } };
   return null;
 }
 
@@ -164,7 +161,7 @@ function resolveScopedUserIds(req: Request): string[] | null {
 
 export async function resolveOrgTreeDown(
   userId: string,
-  isSuperAdmin: boolean
+  isSuperAdmin: boolean,
 ): Promise<string[] | null> {
   if (isSuperAdmin) return null;
   const visited = new Set<string>([userId]);
@@ -193,10 +190,10 @@ export async function resolveOrgTreeDown(
 }
 
 function toSingleQ(
-  q: Record<string, string | string[] | undefined>
+  q: Record<string, string | string[] | undefined>,
 ): Record<string, string | undefined> {
   return Object.fromEntries(
-    Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v])
+    Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
   );
 }
 
@@ -210,7 +207,7 @@ function toArray(val: string | string[] | undefined): string[] {
 }
 
 function toPrismaFilter(
-  val: string | string[] | undefined
+  val: string | string[] | undefined,
 ): string | { in: string[] } | undefined {
   const arr = toArray(val);
   if (arr.length === 0) return undefined;
@@ -224,7 +221,7 @@ function toPrismaFilter(
 
 function buildReqWhere(
   q: Record<string, string | string[] | undefined>,
-  opts: { withDateWindow?: boolean } = {}
+  opts: { withDateWindow?: boolean } = {},
 ): Record<string, any> {
   const { withDateWindow = true } = opts;
   const where: Record<string, any> = { deletedAt: null };
@@ -257,7 +254,7 @@ function buildReqWhere(
 
   if (withDateWindow) {
     const singleQ = Object.fromEntries(
-      Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v])
+      Object.entries(q).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]),
     ) as Record<string, string | undefined>;
     const win = resolveDateWindow(singleQ);
     if (win.gte || win.lte) {
@@ -558,7 +555,7 @@ function buildCandidateSheet(
     stageIds?: string[];
     disposition?: string;
   } = {},
-  totalPipelineByReq: Record<string, number> = {}
+  totalPipelineByReq: Record<string, number> = {},
 ) {
   const hidden = opts.hiddenCols ?? new Set<CandidateColKey>();
   const activeCols = ALL_CANDIDATE_COLS.filter((c) => !hidden.has(c.key));
@@ -590,12 +587,12 @@ function buildCandidateSheet(
 
     const req = reqLookup[p.requirementId];
     const stageAgeMins = Math.floor(
-      (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
     );
     const totalMins =
       (p.stageHistory ?? []).reduce(
         (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-        0
+        0,
       ) + stageAgeMins;
     const pipelineDays = Math.floor(totalMins / 1440);
 
@@ -768,7 +765,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     const NONE = "__none__";
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0])
+      stages.map((s) => [s.id, 0]),
     );
     const dispositionCounts: Record<string, number> = {};
     const recruiterAgg: Record<
@@ -882,7 +879,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     const stageForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     const byServiceLine = Object.values(lineAgg)
@@ -905,7 +902,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total
+      (a, b) => b.total - a.total,
     );
     const timeSeries = Object.entries(series)
       .map(([bucket, count]) => ({ bucket, count }))
@@ -1032,8 +1029,8 @@ export function buildRecruiterRows(pipes: any[]) {
       r.submitTimeMins.push(
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0
-        )
+          0,
+        ),
       );
 
     const rq = p.requirement;
@@ -1206,19 +1203,22 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       standardOnly,
       // Echo active filters back to frontend
       filters: {
-        mojMonth: Array.isArray(q.mojMonth)
-          ? q.mojMonth[0]
-          : q.mojMonth ?? null,
-        mojYear: Array.isArray(q.mojYear) ? q.mojYear[0] : q.mojYear ?? null,
+        mojMonths: Array.isArray(q.mojMonth)
+          ? q.mojMonth
+          : q.mojMonth
+            ? [q.mojMonth]
+            : [],
+
+        mojYear: Array.isArray(q.mojYear) ? q.mojYear[0] : (q.mojYear ?? null),
         createdById: Array.isArray(q.createdById)
           ? q.createdById[0]
-          : q.createdById ?? null,
+          : (q.createdById ?? null),
       },
     };
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
 
     const recruiterIds = [...new Set(pipelines.map((p) => p.recruiterId))];
@@ -1307,7 +1307,7 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
       .sort(
         (a, b) =>
           b.data.reduce((s, r) => s + r.sourced, 0) -
-          a.data.reduce((s, r) => s + r.sourced, 0)
+          a.data.reduce((s, r) => s + r.sourced, 0),
       );
 
     return res.json({
@@ -1359,13 +1359,13 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     ).filter((s) => !hiddenStageIds.has(s.id));
 
     const terminalStageIds = new Set(
-      stages.filter((s) => s.isTerminal).map((s) => s.id)
+      stages.filter((s) => s.isTerminal).map((s) => s.id),
     );
     const nearTerminalStageIds = new Set(
-      stages.filter((s) => s.isNearTerminal && !s.isTerminal).map((s) => s.id)
+      stages.filter((s) => s.isNearTerminal && !s.isTerminal).map((s) => s.id),
     );
     const offPipelineStageIds = new Set(
-      stages.filter((s) => !s.pipeline).map((s) => s.id)
+      stages.filter((s) => !s.pipeline).map((s) => s.id),
     );
 
     // ── MOJ filter
@@ -1432,13 +1432,13 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         r.submitTimeMins.push(
           (p.stageHistory ?? []).reduce(
             (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-            0
-          )
+            0,
+          ),
         );
     }
 
     const summaryRows = Object.values(recruiterMap).sort(
-      (a, b) => b.sourced - a.sourced
+      (a, b) => b.sourced - a.sourced,
     );
 
     const grandStageCounts: Record<string, number> = {};
@@ -1572,7 +1572,7 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     }
 
     const hiddenCandidateCols = new Set(
-      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[],
     );
     const candidateStageIds =
       selectedStageIds ??
@@ -1587,20 +1587,20 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
         stageIds: candidateStageIds,
         disposition: q.disposition as string | undefined,
       },
-      totalPipelineByReq
+      totalPipelineByReq,
     );
 
     const dateStr = new Date().toISOString().split("T")[0];
     const scopeTag = selectedIds ? "selected" : "all";
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="recruiter-report-${scopeTag}-${windowLabel(
-        toSingleQ(q)
-      )}-${dateStr}.xlsx"`
+        toSingleQ(q),
+      )}-${dateStr}.xlsx"`,
     );
     await workbook.xlsx.write(res);
     res.end();
@@ -1623,7 +1623,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
     const requestedCreatorId = q.createdById?.trim() || null;
     const effectiveCreatorIds =
@@ -1632,10 +1632,10 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-        ? creatorIds.includes(requestedCreatorId)
-          ? [requestedCreatorId]
-          : []
-        : creatorIds;
+          ? creatorIds.includes(requestedCreatorId)
+            ? [requestedCreatorId]
+            : []
+          : creatorIds;
 
     const createdByWhere =
       effectiveCreatorIds === null
@@ -1738,7 +1738,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
 
     const stagesForLine = (lineId: string | null) =>
       stages.filter(
-        (s) => s.serviceLineId === null || s.serviceLineId === lineId
+        (s) => s.serviceLineId === null || s.serviceLineId === lineId,
       );
     const byLine = new Map<string, any[]>();
     const lineMeta = new Map<string, { id: string; name: string } | null>();
@@ -1810,7 +1810,7 @@ export const getCandidateReport = async (req: Request, res: Response) => {
     });
 
     const stageCounts: Record<string, number> = Object.fromEntries(
-      stages.map((s) => [s.id, 0])
+      stages.map((s) => [s.id, 0]),
     );
     const dispositionCounts: Record<string, number> = {};
     let totalAgingMins = 0;
@@ -1820,12 +1820,12 @@ export const getCandidateReport = async (req: Request, res: Response) => {
       dispositionCounts[p.disposition] =
         (dispositionCounts[p.disposition] ?? 0) + 1;
       const stageAge = Math.floor(
-        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000
+        (Date.now() - new Date(p.stageUpdatedAt).getTime()) / 60000,
       );
       totalAgingMins +=
         (p.stageHistory ?? []).reduce(
           (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-          0
+          0,
         ) + stageAge;
     }
 
@@ -1894,7 +1894,7 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     workbook.created = new Date();
 
     const reqLookup = Object.fromEntries(
-      pipelines.map((p) => [p.requirementId, (p as any).requirement])
+      pipelines.map((p) => [p.requirementId, (p as any).requirement]),
     );
 
     const totalPipelineByReq: Record<string, number> = {};
@@ -1904,7 +1904,7 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
     }
 
     const hiddenCandidateCols = new Set(
-      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[]
+      (parseIds(q.hiddenCandidateCols) ?? []) as CandidateColKey[],
     );
     buildCandidateSheet(
       workbook,
@@ -1915,19 +1915,19 @@ export const exportCandidateReport = async (req: Request, res: Response) => {
         stageIds: selectedStageIds ?? undefined,
         disposition: q.disposition as string | undefined,
       },
-      totalPipelineByReq
+      totalPipelineByReq,
     );
 
     const dateStr = new Date().toISOString().split("T")[0];
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="candidate-report-${windowLabel(
-        toSingleQ(q)
-      )}-${dateStr}.xlsx"`
+        toSingleQ(q),
+      )}-${dateStr}.xlsx"`,
     );
     await workbook.xlsx.write(res);
     res.end();
