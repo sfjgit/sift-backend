@@ -289,6 +289,7 @@ model User {
   savedSearches        SavedSearch[]
   searchActivityLogs   SearchActivityLog[]
   sourcingActivityLogs SourcingActivityLog[]
+  portalRecruitLogs    PortalRecruitLog[] 
 
   @@index([email])
   @@index([isActive])
@@ -296,6 +297,24 @@ model User {
   @@index([departmentId])
   @@index([reportingToId])
   @@index([teamLeadId])
+}
+
+
+model PortalRecruitLog {
+  id            String   @id @default(uuid())
+  recruiterId   String
+  requirementId String
+  assignmentId  String
+  reqCode       String?
+  appName       String // 'NAUKRI', 'LINKEDIN', etc.
+  reason        String
+
+  createdAt     DateTime @default(now())
+
+  recruiter User @relation(fields: [recruiterId], references: [id])
+
+  @@index([requirementId, recruiterId, appName])
+  @@index([recruiterId, createdAt])
 }
 
 enum AuthLogType {

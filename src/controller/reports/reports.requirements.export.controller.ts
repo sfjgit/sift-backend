@@ -200,15 +200,49 @@ async function fetchScopedStages(serviceLineId?: string) {
 // buildReqWhere — re-usable base requirement where clause (no date window)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildReqWhere(
-  q: Record<string, string>,
-  opts: { withDateWindow: boolean } = { withDateWindow: false }
-): Record<string, any> {
+function buildReqWhere(q: Record<string, string>): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
-  if (q.status) where.status = q.status;
-  if (q.clientId) where.clientId = q.clientId;
-  if (q.serviceLineId) where.serviceLineId = q.serviceLineId;
+
+  // multi-value params — frontend sends repeated keys e.g. status=ACTIVE&status=CLOSED
+  const statuses = q.status
+    ? Array.isArray((q as any).status)
+      ? (q as any).status
+      : [q.status]
+    : null;
+  if (statuses?.length) {
+    where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
+  }
+
+  const clientIds = q.clientId
+    ? Array.isArray((q as any).clientId)
+      ? (q as any).clientId
+      : [q.clientId]
+    : null;
+  if (clientIds?.length) {
+    where.clientId = clientIds.length === 1 ? clientIds[0] : { in: clientIds };
+  }
+
+  const serviceLineIds = q.serviceLineId
+    ? Array.isArray((q as any).serviceLineId)
+      ? (q as any).serviceLineId
+      : [q.serviceLineId]
+    : null;
+  if (serviceLineIds?.length) {
+    where.serviceLineId =
+      serviceLineIds.length === 1 ? serviceLineIds[0] : { in: serviceLineIds };
+  }
+
   if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
+
+  const spocIds = q.clientSpocId
+    ? Array.isArray((q as any).clientSpocId)
+      ? (q as any).clientSpocId
+      : [q.clientSpocId]
+    : null;
+  if (spocIds?.length) {
+    where.clientSpocId = spocIds.length === 1 ? spocIds[0] : { in: spocIds };
+  }
+
   return where;
 }
 
@@ -268,10 +302,34 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
             },
           }
         : {};
-      baseWhere =
-        creatorIds !== null
-          ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
-          : { ...reqFilter, ...activityFilter };
+      // baseWhere =
+      //   creatorIds !== null
+      //     ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
+      //     : { ...reqFilter, ...activityFilter };
+
+      if (creatorIds !== null) {
+        const assignedReqRows = await prisma.requirementAssignment.findMany({
+          where: { assignedToId: { in: creatorIds }, status: "ACTIVE" },
+          select: { requirementId: true },
+        });
+        const assignedReqIds = [
+          ...new Set(assignedReqRows.map((a) => a.requirementId)),
+        ];
+
+        baseWhere = {
+          ...reqFilter,
+          ...activityFilter,
+          OR: [
+            { createdById: { in: creatorIds } },
+            ...(assignedReqIds.length > 0
+              ? [{ id: { in: assignedReqIds } }]
+              : []),
+          ],
+        };
+      } else {
+        baseWhere = { ...reqFilter, ...activityFilter };
+      }
+
       if (selectedIds) {
         baseWhere.id = { in: selectedIds };
         delete baseWhere.pipelines;
