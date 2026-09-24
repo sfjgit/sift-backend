@@ -33,7 +33,7 @@ function mojMonthToLabel(mojMonth: string): string | null {
   return `${MONTH_NAMES[monthIdx]} ${year}`;
 }
 
-function buildMojWhere(
+export function buildMojWhere(
   q: Record<string, string | string[] | undefined>,
 ): Record<string, any> | null {
   const rawMoj = q.mojMonth;
@@ -44,7 +44,10 @@ function buildMojWhere(
       : [];
   const mojYear = Array.isArray(q.mojYear) ? q.mojYear[0] : (q.mojYear ?? null);
   if (mojMonths.length === 1) return { monthOfJoining: mojMonths[0] };
-  if (mojMonths.length > 1) return { monthOfJoining: { in: mojMonths } };
+  if (mojMonths.length > 1)
+    return {
+      OR: mojMonths.map((m) => ({ monthOfJoining: { startsWith: m } })),
+    };
   if (mojYear) return { monthOfJoining: { startsWith: mojYear } };
   return null;
 }
@@ -1161,23 +1164,45 @@ export const getRecruiterReport = async (req: Request, res: Response) => {
         : null;
 
     // ── MOJ filter — scope pipeline rows to candidates joining in selected month
-    const mojWhere = buildMojWhere(q);
+    const rawMoj = q.mojMonth;
+    const mojMonths: string[] = Array.isArray(rawMoj)
+      ? rawMoj
+      : rawMoj
+        ? [rawMoj]
+        : [];
+    const mojYear = Array.isArray(q.mojYear)
+      ? q.mojYear[0]
+      : (q.mojYear ?? null);
 
+    let mojWhere: Record<string, any> | null = null;
+    if (mojMonths.length === 1) {
+      const label = mojMonthToLabel(mojMonths[0]);
+      if (label) mojWhere = { monthOfJoining: label };
+    } else if (mojMonths.length > 1) {
+      const labels = mojMonths.map((m) => mojMonthToLabel(m)).filter(Boolean);
+      if (labels.length) mojWhere = { monthOfJoining: { in: labels } };
+    } else if (mojYear) {
+      mojWhere = { monthOfJoining: { contains: mojYear } };
+    }
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: {
-        requirement: { is: reqWhere },
-        ...recruiterFilter,
-        // MOJ: only candidates whose monthOfJoining matches — null = no filter
-        ...(mojWhere ?? {}),
-        ...(activityWindow
-          ? {
-              OR: [
-                { createdAt: activityWindow },
-                { updatedAt: activityWindow },
-                { stageHistory: { some: { createdAt: activityWindow } } },
-              ],
-            }
-          : {}),
+        AND: [
+          { requirement: { is: reqWhere } },
+          recruiterFilter,
+          // MOJ: only candidates whose monthOfJoining matches — null = no filter
+          ...(mojWhere ? [mojWhere] : []),
+          ...(activityWindow
+            ? [
+                {
+                  OR: [
+                    { createdAt: activityWindow },
+                    { updatedAt: activityWindow },
+                    { stageHistory: { some: { createdAt: activityWindow } } },
+                  ],
+                },
+              ]
+            : []),
+        ],
       },
       select: {
         ...PIPELINE_DETAIL_SELECT,
