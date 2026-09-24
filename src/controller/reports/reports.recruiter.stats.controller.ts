@@ -222,14 +222,21 @@ function buildPipelineWhere(
   //
   // monthOfJoining is indexed — this is just a WHERE on an indexed string column,
   // no reverse lookup into candidate service needed.
-  const mojMonth = str(q.mojMonth);
+  const rawMoj = q.mojMonth;
+  const mojMonths: string[] = Array.isArray(rawMoj)
+    ? rawMoj
+    : rawMoj
+      ? [rawMoj]
+      : [];
   const mojYear = str(q.mojYear);
 
-  if (mojMonth) {
-    const label = mojMonthToLabel(mojMonth);
+  if (mojMonths.length === 1) {
+    const label = mojMonthToLabel(mojMonths[0]);
     if (label) where.monthOfJoining = label;
+  } else if (mojMonths.length > 1) {
+    const labels = mojMonths.map((m) => mojMonthToLabel(m)).filter(Boolean);
+    if (labels.length) where.monthOfJoining = { in: labels };
   } else if (mojYear) {
-    // "contains year" — e.g. "September 2025" contains "2025"
     where.monthOfJoining = { contains: mojYear };
   }
 
@@ -317,7 +324,6 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
     const effectiveUserIds = resolveEffectiveUserIds(req, q);
 
     const pipelineWhere = buildPipelineWhere(q, effectiveUserIds);
-
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
       where: pipelineWhere,
       select: {
@@ -365,7 +371,26 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
         },
       },
     });
+    // ── Filters echo (shared by empty + main response) ───────────────────────
+    const mojMonthsEcho = (
+      Array.isArray(q.mojMonth) ? q.mojMonth : q.mojMonth ? [q.mojMonth] : []
+    )
+      .flatMap((m) => m.split(","))
+      .map((m) => m.trim())
+      .filter(Boolean);
 
+    const filtersEcho = {
+      clientId: q.clientId ?? null,
+      clientSpocId: q.clientSpocId ?? null,
+      serviceLineId: q.serviceLineId ?? null,
+      businessUnitId: q.businessUnitId ?? null,
+      status: q.status ?? null,
+      priority: q.priority ?? null,
+      createdById: q.createdById ?? null,
+      disposition: q.disposition ?? null,
+      mojMonths: mojMonthsEcho,
+      mojYear: str(q.mojYear) ?? null,
+    };
     // ── Stage metadata ────────────────────────────────────────────────────────
     const stageFilter: Record<string, any> = { isActive: true };
     if (q.serviceLineId) {
@@ -574,18 +599,19 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       meta: {
         window: windowLabel(q),
         scope: req.scopeFilter?.type ?? "ALL",
-        filters: {
-          clientId: q.clientId ?? null,
-          clientSpocId: q.clientSpocId ?? null,
-          serviceLineId: q.serviceLineId ?? null,
-          businessUnitId: q.businessUnitId ?? null,
-          status: q.status ?? null,
-          priority: q.priority ?? null,
-          createdById: q.createdById ?? null,
-          disposition: q.disposition ?? null,
-          mojMonth: str(q.mojMonth) ?? null,
-          mojYear: str(q.mojYear) ?? null,
-        },
+        // filters: {
+        //   clientId: q.clientId ?? null,
+        //   clientSpocId: q.clientSpocId ?? null,
+        //   serviceLineId: q.serviceLineId ?? null,
+        //   businessUnitId: q.businessUnitId ?? null,
+        //   status: q.status ?? null,
+        //   priority: q.priority ?? null,
+        //   createdById: q.createdById ?? null,
+        //   disposition: q.disposition ?? null,
+        //   mojMonth: str(q.mojMonth) ?? null,
+        //   mojYear: str(q.mojYear) ?? null,
+        // },
+        filetrs: filtersEcho,
       },
     });
   } catch (err) {
