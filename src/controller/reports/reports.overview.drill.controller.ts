@@ -114,7 +114,7 @@ function deriveJoiningDate(
   actualJoiningDate: Date | null,
   expectedJoiningDate: Date | null,
   lastWorkingDate: Date | null,
-  noticePeriod: string | null
+  noticePeriod: string | null,
 ): Date | null {
   if (actualJoiningDate) return actualJoiningDate;
   if (expectedJoiningDate) return expectedJoiningDate;
@@ -139,19 +139,19 @@ function deriveJoiningDate(
  */
 export function shapeDrillRow(p: any, now: number) {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
   );
   const totalPipelineMins =
     (p.stageHistory ?? []).reduce(
       (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-      0
+      0,
     ) + stageAgeMins;
 
   const derivedJoining = deriveJoiningDate(
     p.actualJoiningDate,
     p.expectedJoiningDate,
     p.lastWorkingDate,
-    p.noticePeriod
+    p.noticePeriod,
   );
 
   const req = p.requirement ?? {};
@@ -217,7 +217,7 @@ export function shapeDrillRow(p: any, now: number) {
     expYears: p.snapshot?.totalExpYears ?? null,
     topSkills: Array.isArray(p.snapshot?.topSkills)
       ? p.snapshot.topSkills.join(", ")
-      : p.snapshot?.topSkills ?? "",
+      : (p.snapshot?.topSkills ?? ""),
     resumeUrl: p.snapshot?.resumeUrl ?? null,
     recruiterId: p.recruiter?.id ?? "",
     recruiterName:
@@ -256,7 +256,7 @@ export function shapeDrillRow(p: any, now: number) {
 
 export async function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | undefined>
+  q: Record<string, string | undefined>,
 ): Promise<string[] | null> {
   if (req.user!.isSuperAdmin) return null;
 
@@ -538,29 +538,62 @@ export const getOverviewDrill = async (req: Request, res: Response) => {
 // No type-based filtering — just requirement + optional stageId.
 // Respects user scope (recruiterId).
 // ─────────────────────────────────────────────────────────────────────────────
+// Bucket → PipelineStage flag filter. Mirrors getFunnelStats classification exactly,
+// so the drill count always matches the funnel card count.
+const DRILL_BUCKET_STAGE_FILTER = {
+  nearTerminal: { isActive: true, isNearTerminal: true, isTerminal: false },
+  terminal: { isActive: true, isTerminal: true },
+} as const;
 
+type DrillBucket = keyof typeof DRILL_BUCKET_STAGE_FILTER;
+
+const isDrillBucket = (v: unknown): v is DrillBucket =>
+  typeof v === "string" && v in DRILL_BUCKET_STAGE_FILTER;
 export const getRequirementCandidateDrill = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { requirementId } = req.params;
     const q = req.query as Record<string, string | undefined>;
-    const scopedUserIds = await resolveEffectiveUserIds(req, q);
+    // const scopedUserIds = await resolveEffectiveUserIds(req, q);
 
     if (!requirementId) {
       return res
         .status(400)
         .json({ success: false, message: "requirementId is required" });
     }
+    if (q.bucket && !isDrillBucket(q.bucket)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid bucket. Allowed: ${Object.keys(
+          DRILL_BUCKET_STAGE_FILTER,
+        ).join(", ")}`,
+      });
+    }
 
+    const scopedUserIds = await resolveEffectiveUserIds(req, q);
     const pipelineWhere: Record<string, any> = {
       requirementId,
     };
 
     // Optional stage filter — if stageId provided, only show candidates in that stage
-    if (q.stageId) {
-      pipelineWhere.currentStageId = q.stageId;
+    // if (q.stageId) {
+    //   pipelineWhere.currentStageId = q.stageId;
+    // }
+    // ── Stage filter ───────────────────────────────────────────────────────
+    const stageIds = (q.stageId ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (stageIds.length > 0) {
+      pipelineWhere.currentStageId =
+        stageIds.length === 1 ? stageIds[0] : { in: stageIds };
+    } else if (isDrillBucket(q.bucket)) {
+      pipelineWhere.currentStage = {
+        is: DRILL_BUCKET_STAGE_FILTER[q.bucket],
+      };
     }
 
     // Scope — recruiters only see their own candidates unless elevated
@@ -580,9 +613,9 @@ export const getRequirementCandidateDrill = async (
 
     // ── Stage label for title ──────────────────────────────────────────────
     let stageLabel = q.stageLabel ?? null;
-    if (!stageLabel && q.stageId) {
+    if (!stageLabel && stageIds.length === 1) {
       const stage = await prisma.pipelineStage.findUnique({
-        where: { id: q.stageId },
+        where: { id: stageIds[0] },
         select: { label: true },
       });
       stageLabel = stage?.label ?? null;
@@ -600,7 +633,7 @@ export const getRequirementCandidateDrill = async (
           !r.isNearTerminal &&
           !r.isRejected &&
           !r.isWithdrawn &&
-          !r.isOnHold
+          !r.isOnHold,
       ).length,
       onHold: rows.filter((r) => r.isOnHold).length,
       rejected: rows.filter((r) => r.isRejected).length,

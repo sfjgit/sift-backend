@@ -4,6 +4,7 @@
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { resolveOrgTreeDown } from "./reports.controller";
+import { resolveEffectiveUserIds } from "./reports.overview.drill.controller";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -130,11 +131,16 @@ function computeSaleValue(r: {
 export const getFunnelStats = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
+    // if req have no candidate ot if candidate preste got transffered then the requirement will not show
 
+    const scopedRecruiterIds = await resolveEffectiveUserIds(
+      req,
+      q as Record<string, string | undefined>,
+    );
     // ── Scope ────────────────────────────────────────────────────────────────
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
 
     const requestedCreatorId = str(q.createdById)?.trim() || null;
@@ -144,10 +150,10 @@ export const getFunnelStats = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-        ? creatorIds.includes(requestedCreatorId)
-          ? [requestedCreatorId]
-          : []
-        : creatorIds;
+          ? creatorIds.includes(requestedCreatorId)
+            ? [requestedCreatorId]
+            : []
+          : creatorIds;
 
     let createdByWhere: Record<string, any> = {};
     if (effectiveCreatorIds !== null) {
@@ -185,6 +191,10 @@ export const getFunnelStats = async (req: Request, res: Response) => {
       ? {
           pipelines: {
             some: {
+              // if req have no candidate ot if candidate preste got transffered then the requirement will not show
+              ...(scopedRecruiterIds !== null
+                ? { recruiterId: { in: scopedRecruiterIds } }
+                : {}),
               OR: [
                 { createdAt: activityWindow },
                 { updatedAt: activityWindow },
@@ -296,6 +306,10 @@ export const getFunnelStats = async (req: Request, res: Response) => {
         currentStageId: {
           in: [...nearTerminalStageIds, ...terminalStageIds],
         },
+        // if req have no candidate ot if candidate preste got transffered then the requirement will not show
+        ...(scopedRecruiterIds !== null
+          ? { recruiterId: { in: scopedRecruiterIds } }
+          : {}),
       },
       _count: { id: true },
     });
