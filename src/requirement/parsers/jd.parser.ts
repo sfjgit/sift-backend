@@ -61,7 +61,10 @@ export type JDExtractError =
   | "TEXT_EXTRACTION_FAILED";
 
 export class JDExtractException extends Error {
-  constructor(public code: JDExtractError, message: string) {
+  constructor(
+    public code: JDExtractError,
+    message: string,
+  ) {
     super(message);
     this.name = "JDExtractException";
   }
@@ -74,7 +77,7 @@ export class JDExtractException extends Error {
 
 export async function extractTextFromJD(
   buffer: Buffer,
-  mimeType: string
+  mimeType: string,
 ): Promise<string> {
   log("info", "Extracting JD text", { mimeType, bufferSize: buffer.length });
 
@@ -111,7 +114,7 @@ export async function extractTextFromJD(
     log("warn", "Legacy DOC rejected");
     throw new JDExtractException(
       "DOC_NOT_SUPPORTED",
-      "Legacy .doc files are not supported. Please upload DOCX or PDF."
+      "Legacy .doc files are not supported. Please upload DOCX or PDF.",
     );
   }
 
@@ -119,7 +122,7 @@ export async function extractTextFromJD(
   else {
     throw new JDExtractException(
       "UNSUPPORTED_FILE_TYPE",
-      `Unsupported file type: ${mimeType}`
+      `Unsupported file type: ${mimeType}`,
     );
   }
 
@@ -132,7 +135,7 @@ export async function extractTextFromJD(
     });
     throw new JDExtractException(
       "TEXT_EXTRACTION_FAILED",
-      "Could not extract readable text. File may be scanned, empty, or corrupted."
+      "Could not extract readable text. File may be scanned, empty, or corrupted.",
     );
   }
 
@@ -153,19 +156,30 @@ You are a JD (Job Description) parser. You will receive raw text extracted from 
 
 You have two jobs on the SAME input:
 
-1. "description" — put the FULL job description text in here, cleaned up as Markdown.
-   - Preserve every section as written (About the Role, Key Responsibilities,
-     Eligibility, Required Skills, What We're Looking For, Performance
-     Expectations, Why Join Us, etc.)
+1. "description" — write a CONCISE, recruiter-useful summary of the role in Markdown.
+   - This is NOT the full JD. It will be shown to recruiters as a quick reference,
+     and is hard-capped at 5000 characters by the system — content beyond that
+     will be silently cut off, so stay well within the limit (aim for
+     1500–3000 characters for most JDs).
+   - Include only what helps a recruiter understand and pitch the role:
+     - A short "About the Role" summary (2-4 sentences)
+     - Key Responsibilities (top 5-8 as bullets, not every line from the JD)
+     - Must-have qualifications / eligibility (condensed)
+     - Anything unique or notable about the role (e.g. team, product, growth path)
+   - DROP boilerplate that adds no filtering/pitching value: generic company
+     "About Us" marketing copy, EEO/diversity statements, generic benefits
+     lists, legal disclaimers, repeated skill lists that are already captured
+     in primarySkills/keySkills below.
    - Use "## Heading" for section titles and "- " for bullet lists.
-   - Do NOT summarize, shorten, truncate, or drop content. There is no length
-     cap — if the source JD is long, "description" should be long too.
-   - Even if a detail is also pulled into a structured field below, it must
-     still appear in full inside "description".
+   - Rewrite and tighten sentences rather than copying long JD paragraphs verbatim.
+   - If the JD is already short (under ~2000 characters of substance), you may
+     keep it close to verbatim — condensing is only needed for long/bloated JDs.
 
 2. Separately extract the structured fields below FROM the same text, only
    when explicitly stated in the JD. These exist for filtering/search — they
-   supplement "description", they do not replace it.
+   supplement "description" and let you leave detail out of the description
+   itself when it's already captured here (e.g. skills, experience, salary,
+   location) since the UI displays those as separate fields.
 
 Return ONLY a valid JSON object with the fields below.
 No explanation, no markdown, no code fences wrapping the JSON itself (though
@@ -173,7 +187,7 @@ No explanation, no markdown, no code fences wrapping the JSON itself (though
 
 {
   "title":            string | null,
-  "description":      string | null,       // full markdown JD — never thin, no length cap
+  "description":      string | null,       // concise recruiter summary, markdown, MUST stay under 5000 characters
   "primarySkills":    string[],            // top 3-5 must-have skills only
   "keySkills":        string[],            // all other required skills
   "experienceMin":    number | null,       // years, decimal ok (e.g. 2.5)
@@ -200,6 +214,8 @@ Rules:
 - salaryMin/Max → strip currency symbols, LPA, "per annum" — number only
 - "8-12 LPA" → salaryMin=8, salaryMax=12, salaryType="ANNUAL"
 - experienceMin/Max in years as number
+- "description" must never exceed 5000 characters under any circumstances —
+  if in doubt, cut more rather than less
 `.trim();
 
 export async function parseJDWithGPT(extractedText: string): Promise<ParsedJD> {
