@@ -1394,8 +1394,28 @@ export const exportRecruiterReport = async (req: Request, res: Response) => {
     );
 
     // ── MOJ filter
-    const mojWhere = buildMojWhere(q);
+    // const mojWhere = buildMojWhere(q);
+    // ── MOJ filter — same label-based logic as getRecruiterReport
+    const rawMoj = q.mojMonth;
+    const mojMonths: string[] = Array.isArray(rawMoj)
+      ? rawMoj
+      : rawMoj
+        ? [rawMoj]
+        : [];
+    const mojYear = Array.isArray(q.mojYear)
+      ? q.mojYear[0]
+      : (q.mojYear ?? null);
 
+    let mojWhere: Record<string, any> | null = null;
+    if (mojMonths.length === 1) {
+      const label = mojMonthToLabel(mojMonths[0]);
+      if (label) mojWhere = { monthOfJoining: label };
+    } else if (mojMonths.length > 1) {
+      const labels = mojMonths.map((m) => mojMonthToLabel(m)).filter(Boolean);
+      if (labels.length) mojWhere = { monthOfJoining: { in: labels } };
+    } else if (mojYear) {
+      mojWhere = { monthOfJoining: { contains: mojYear } };
+    }
     const pipelineWhere: Record<string, any> = {
       requirement: reqWhere,
       ...recruiterFilter,
