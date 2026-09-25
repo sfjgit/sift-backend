@@ -2282,11 +2282,47 @@ export const getDuplicatePreview = async (req: Request, res: Response) => {
 // This bypasses all createRequirement validation (clientSpocId, jobType, etc.)
 // because nothing is sourced from req.body except the new title.
 // ─────────────────────────────────────────────────────────────────────────────
+
+const EDITABLE_FIELDS = [
+  "description",
+  "jobType",
+  "remoteType",
+  "priority",
+  "jobOpenFor",
+  "totalOpenings",
+  "primarySkills",
+  "keySkills",
+  "targetCompanies",
+  "noPoachCompanies",
+  "city",
+  "state",
+  "country",
+  "experienceMin",
+  "experienceMax",
+  "salaryMin",
+  "salaryMax",
+  "salaryType",
+  "salaryCurrency",
+  "bonusAmount",
+  "hideSalaryFromCandidate",
+  "showMedianSalary",
+  "education",
+  "functionalArea",
+  "shift",
+  "bandId",
+  "saleValue",
+  "requirementCategoryId",
+  "clientId",
+  "clientSpocId",
+  "businessUnitId",
+  "serviceLineId",
+  "targetDate",
+] as const;
 export const duplicateRequirement = async (req: Request, res: Response) => {
   try {
     const actorId = req.user!.id;
     const { id } = req.params;
-    const { title } = req.body;
+    const { title, ...body } = req.body;
 
     if (!title || typeof title !== "string" || title.trim().length < 3) {
       return res.status(400).json({
@@ -2310,70 +2346,91 @@ export const duplicateRequirement = async (req: Request, res: Response) => {
         .json({ success: false, message: "Requirement not found" });
     }
 
-    // ── Fresh reqCode ─────────────────────────────────────────────────────────
-    const clientName = original.client?.name ?? "CLNT";
-    const serviceLineName = original.serviceLine?.name ?? "SRVC";
-    const reqCode = await generateReqCode(clientName, serviceLineName);
+    // Body value if sent, else original
+    const fields: Record<string, any> = {};
+    for (const key of EDITABLE_FIELDS) {
+      fields[key] = body[key] !== undefined ? body[key] : original[key];
+    }
+    fields.targetDate = fields.targetDate ? new Date(fields.targetDate) : null;
 
-    // ── Recompute turnaroundDays (startDate = now) ────────────────────────────
+    // reqCode from the selected client / service line
+    const [client, serviceLine] = await Promise.all([
+      fields.clientId
+        ? prisma.client.findUnique({
+            where: { id: fields.clientId },
+            select: { name: true },
+          })
+        : null,
+      fields.serviceLineId
+        ? prisma.serviceLine.findUnique({
+            where: { id: fields.serviceLineId },
+            select: { name: true },
+          })
+        : null,
+    ]);
+    const reqCode = await generateReqCode(
+      client?.name ?? "CLNT",
+      serviceLine?.name ?? "SRVC",
+    );
+
     const startDate = new Date();
-    const targetDate = original.targetDate ?? null;
-    const turnaroundDays = targetDate
+    const turnaroundDays = fields.targetDate
       ? Math.ceil(
-          (targetDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+          (fields.targetDate.getTime() - startDate.getTime()) /
+            (1000 * 60 * 60 * 24),
         )
       : null;
-
     // ── Create duplicate ──────────────────────────────────────────────────────
     // Every field sourced from `original` — zero dependency on req.body beyond title.
     const duplicate = await prisma.requirement.create({
       data: {
+        ...fields,
         reqCode,
 
         // ── Only field from body ──────────────────────────────────────────────
         title: title.trim(),
 
         // ── Copied verbatim from original ─────────────────────────────────────
-        description: original.description,
-        jobType: original.jobType,
-        remoteType: original.remoteType,
-        priority: original.priority,
-        jobOpenFor: original.jobOpenFor,
-        totalOpenings: original.totalOpenings,
+        // description: original.description,
+        // jobType: original.jobType,
+        // remoteType: original.remoteType,
+        // priority: original.priority,
+        // jobOpenFor: original.jobOpenFor,
+        // totalOpenings: original.totalOpenings,
 
-        primarySkills: original.primarySkills,
-        keySkills: original.keySkills,
-        targetCompanies: original.targetCompanies,
-        noPoachCompanies: original.noPoachCompanies,
+        // primarySkills: original.primarySkills,
+        // keySkills: original.keySkills,
+        // targetCompanies: original.targetCompanies,
+        // noPoachCompanies: original.noPoachCompanies,
 
-        city: original.city,
-        state: original.state,
-        country: original.country,
+        // city: original.city,
+        // state: original.state,
+        // country: original.country,
 
-        experienceMin: original.experienceMin,
-        experienceMax: original.experienceMax,
+        // experienceMin: original.experienceMin,
+        // experienceMax: original.experienceMax,
 
-        salaryMin: original.salaryMin,
-        salaryMax: original.salaryMax,
-        salaryType: original.salaryType,
-        salaryCurrency: original.salaryCurrency ?? "INR",
-        bonusAmount: original.bonusAmount,
-        hideSalaryFromCandidate: original.hideSalaryFromCandidate,
-        showMedianSalary: original.showMedianSalary,
+        // salaryMin: original.salaryMin,
+        // salaryMax: original.salaryMax,
+        // salaryType: original.salaryType,
+        // salaryCurrency: original.salaryCurrency ?? "INR",
+        // bonusAmount: original.bonusAmount,
+        // hideSalaryFromCandidate: original.hideSalaryFromCandidate,
+        // showMedianSalary: original.showMedianSalary,
 
-        education: original.education,
-        functionalArea: original.functionalArea,
-        shift: original.shift,
+        // education: original.education,
+        // functionalArea: original.functionalArea,
+        // shift: original.shift,
 
-        bandId: original.bandId,
-        saleValue: original.saleValue,
-        requirementCategoryId: original.requirementCategoryId,
+        // bandId: original.bandId,
+        // saleValue: original.saleValue,
+        // requirementCategoryId: original.requirementCategoryId,
 
-        // ── Relations — all from original ─────────────────────────────────────
-        clientSpocId: original.clientSpocId,
-        clientId: original.clientId,
-        businessUnitId: original.businessUnitId,
-        serviceLineId: original.serviceLineId,
+        // // ── Relations — all from original ─────────────────────────────────────
+        // clientSpocId: original.clientSpocId,
+        // clientId: original.clientId,
+        // businessUnitId: original.businessUnitId,
+        // serviceLineId: original.serviceLineId,
 
         // ── JD — file ref copied, parse metadata reset ────────────────────────
         jdFileKey: original.jdFileKey,
@@ -2387,7 +2444,7 @@ export const duplicateRequirement = async (req: Request, res: Response) => {
 
         // ── Dates ─────────────────────────────────────────────────────────────
         startDate,
-        targetDate,
+        // targetDate,
         respondBy: null,
         turnaroundDays,
 
