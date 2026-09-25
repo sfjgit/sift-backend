@@ -131,16 +131,11 @@ function computeSaleValue(r: {
 export const getFunnelStats = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
-    // if req have no candidate ot if candidate preste got transffered then the requirement will not show
 
-    const scopedRecruiterIds = await resolveEffectiveUserIds(
-      req,
-      q as Record<string, string | undefined>,
-    );
     // ── Scope ────────────────────────────────────────────────────────────────
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin,
+      req.user!.isSuperAdmin
     );
 
     const requestedCreatorId = str(q.createdById)?.trim() || null;
@@ -150,10 +145,10 @@ export const getFunnelStats = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-          ? creatorIds.includes(requestedCreatorId)
-            ? [requestedCreatorId]
-            : []
-          : creatorIds;
+        ? creatorIds.includes(requestedCreatorId)
+          ? [requestedCreatorId]
+          : []
+        : creatorIds;
 
     let createdByWhere: Record<string, any> = {};
     if (effectiveCreatorIds !== null) {
@@ -191,10 +186,6 @@ export const getFunnelStats = async (req: Request, res: Response) => {
       ? {
           pipelines: {
             some: {
-              // if req have no candidate ot if candidate preste got transffered then the requirement will not show
-              ...(scopedRecruiterIds !== null
-                ? { recruiterId: { in: scopedRecruiterIds } }
-                : {}),
               OR: [
                 { createdAt: activityWindow },
                 { updatedAt: activityWindow },
@@ -306,10 +297,6 @@ export const getFunnelStats = async (req: Request, res: Response) => {
         currentStageId: {
           in: [...nearTerminalStageIds, ...terminalStageIds],
         },
-        // if req have no candidate ot if candidate preste got transffered then the requirement will not show
-        ...(scopedRecruiterIds !== null
-          ? { recruiterId: { in: scopedRecruiterIds } }
-          : {}),
       },
       _count: { id: true },
     });
@@ -426,3 +413,302 @@ export const getFunnelStats = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch funnel stats" });
   }
 };
+
+// export const getFunnelStats = async (req: Request, res: Response) => {
+//   try {
+//     const q = req.query as Record<string, string | string[] | undefined>;
+//     // if req have no candidate ot if candidate preste got transffered then the requirement will not show
+
+//     const scopedRecruiterIds = await resolveEffectiveUserIds(
+//       req,
+//       q as Record<string, string | undefined>,
+//     );
+//     // ── Scope ────────────────────────────────────────────────────────────────
+//     const creatorIds = await resolveOrgTreeDown(
+//       req.user!.id,
+//       req.user!.isSuperAdmin,
+//     );
+
+//     const requestedCreatorId = str(q.createdById)?.trim() || null;
+//     const effectiveCreatorIds =
+//       creatorIds === null
+//         ? requestedCreatorId
+//           ? [requestedCreatorId]
+//           : null
+//         : requestedCreatorId
+//           ? creatorIds.includes(requestedCreatorId)
+//             ? [requestedCreatorId]
+//             : []
+//           : creatorIds;
+
+//     let createdByWhere: Record<string, any> = {};
+//     if (effectiveCreatorIds !== null) {
+//       const assignedReqRows = await prisma.requirementAssignment.findMany({
+//         where: {
+//           assignedToId: { in: effectiveCreatorIds },
+//           status: "ACTIVE",
+//         },
+//         select: { requirementId: true },
+//       });
+//       const assignedReqIds = [
+//         ...new Set(assignedReqRows.map((a) => a.requirementId)),
+//       ];
+//       createdByWhere = {
+//         OR: [
+//           { createdById: { in: effectiveCreatorIds } },
+//           ...(assignedReqIds.length > 0
+//             ? [{ id: { in: assignedReqIds } }]
+//             : []),
+//         ],
+//       };
+//     }
+
+//     // ── Date window ──────────────────────────────────────────────────────────
+//     const win = resolveDateWindow(q);
+//     const activityWindow =
+//       win.gte || win.lte
+//         ? {
+//             ...(win.gte ? { gte: win.gte } : {}),
+//             ...(win.lte ? { lte: win.lte } : {}),
+//           }
+//         : null;
+
+//     const activityFilter = activityWindow
+//       ? {
+//           pipelines: {
+//             some: {
+//               // if req have no candidate ot if candidate preste got transffered then the requirement will not show
+//               ...(scopedRecruiterIds !== null
+//                 ? { recruiterId: { in: scopedRecruiterIds } }
+//                 : {}),
+//               OR: [
+//                 { createdAt: activityWindow },
+//                 { updatedAt: activityWindow },
+//                 { stageHistory: { some: { createdAt: activityWindow } } },
+//               ],
+//             },
+//           },
+//         }
+//       : {};
+
+//     // ── Req where ────────────────────────────────────────────────────────────
+//     const reqWhere: Record<string, any> = {
+//       deletedAt: null,
+//       ...activityFilter,
+//       ...createdByWhere,
+//     };
+
+//     if (q.status) reqWhere.status = prismaIn(q.status);
+//     if (q.clientId) reqWhere.clientId = prismaIn(q.clientId);
+//     if (q.serviceLineId) reqWhere.serviceLineId = prismaIn(q.serviceLineId);
+//     if (q.businessUnitId) reqWhere.businessUnitId = str(q.businessUnitId);
+//     if (q.clientSpocId) reqWhere.clientSpocId = prismaIn(q.clientSpocId);
+
+//     // Team filter
+//     if (q.userIds) {
+//       const teamIds = (str(q.userIds) ?? "")
+//         .split(",")
+//         .map((s) => s.trim())
+//         .filter(Boolean);
+//       if (teamIds.length > 0) {
+//         const allowed =
+//           effectiveCreatorIds === null
+//             ? teamIds
+//             : teamIds.filter((id) => effectiveCreatorIds.includes(id));
+//         if (allowed.length > 0) {
+//           const [assignedRows, createdRows] = await Promise.all([
+//             prisma.requirementAssignment.findMany({
+//               where: { assignedToId: { in: allowed }, status: "ACTIVE" },
+//               select: { requirementId: true },
+//             }),
+//             prisma.requirement.findMany({
+//               where: { createdById: { in: allowed }, deletedAt: null },
+//               select: { id: true },
+//             }),
+//           ]);
+//           const uniqueIds = new Set([
+//             ...assignedRows.map((a) => a.requirementId),
+//             ...createdRows.map((r) => r.id),
+//           ]);
+//           reqWhere.id = { in: [...uniqueIds] };
+//         } else {
+//           reqWhere.id = { in: [] };
+//         }
+//       }
+//     }
+
+//     // ── Fetch all active pipeline stages with flags ───────────────────────────
+//     const allStages = await prisma.pipelineStage.findMany({
+//       where: { isActive: true },
+//       select: { id: true, isTerminal: true, isNearTerminal: true },
+//     });
+//     const stageById = new Map(allStages.map((s) => [s.id, s]));
+
+//     const nearTerminalStageIds = allStages
+//       .filter((s) => s.isNearTerminal && !s.isTerminal)
+//       .map((s) => s.id);
+
+//     const terminalStageIds = allStages
+//       .filter((s) => s.isTerminal)
+//       .map((s) => s.id);
+
+//     // ── Requirements ─────────────────────────────────────────────────────────
+//     const requirements = await prisma.requirement.findMany({
+//       where: reqWhere,
+//       select: {
+//         id: true,
+//         reqCode: true,
+//         title: true,
+//         status: true,
+//         totalOpenings: true,
+//         saleValue: true,
+//         salaryMin: true,
+//         client: { select: { id: true, name: true, percentageValue: true } },
+//         serviceLine: { select: { id: true, name: true } },
+//         businessUnit: { select: { id: true, name: true } },
+//         createdBy: { select: { id: true, firstName: true, lastName: true } },
+//         band: { select: { value: true } },
+//       },
+//       orderBy: { createdAt: "desc" },
+//       take: 1_000,
+//     });
+
+//     if (!requirements.length) {
+//       return res.json({
+//         success: true,
+//         summary: { nearTerminalCandidates: 0, terminalCandidates: 0 },
+//         nearTerminal: { requirements: [] },
+//         terminal: { requirements: [] },
+//       });
+//     }
+
+//     const reqIds = requirements.map((r) => r.id);
+
+//     // ── Stage counts — one groupBy ────────────────────────────────────────────
+//     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
+//       by: ["requirementId", "currentStageId"],
+//       where: {
+//         requirementId: { in: reqIds },
+//         currentStageId: {
+//           in: [...nearTerminalStageIds, ...terminalStageIds],
+//         },
+//         // if req have no candidate ot if candidate preste got transffered then the requirement will not show
+//         ...(scopedRecruiterIds !== null
+//           ? { recruiterId: { in: scopedRecruiterIds } }
+//           : {}),
+//       },
+//       _count: { id: true },
+//     });
+
+//     // reqId → stageId → count
+//     const countsByReq: Record<string, Record<string, number>> = {};
+//     for (const sc of stageCounts as any[]) {
+//       if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
+//       countsByReq[sc.requirementId][sc.currentStageId] =
+//         (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
+//     }
+
+//     // ── Build per-req rows ────────────────────────────────────────────────────
+//     let totalNearTerminalCandidates = 0;
+//     let totalTerminalCandidates = 0;
+
+//     const nearTerminalRows: any[] = [];
+//     const terminalRows: any[] = [];
+
+//     for (const r of requirements) {
+//       const stageCts = countsByReq[r.id] ?? {};
+
+//       let nearTerminalCount = 0;
+//       let terminalCount = 0;
+
+//       for (const [stageId, count] of Object.entries(stageCts)) {
+//         const stage = stageById.get(stageId);
+//         if (!stage) continue;
+//         if (stage.isTerminal) terminalCount += count;
+//         else if (stage.isNearTerminal) nearTerminalCount += count;
+//       }
+
+//       // Skip reqs with zero in both — no point showing them
+//       if (nearTerminalCount === 0 && terminalCount === 0) continue;
+
+//       const { value: computedSaleValue, basis: saleValueBasis } =
+//         computeSaleValue({
+//           saleValue: r.saleValue != null ? Number(r.saleValue) : null,
+//           totalOpenings: r.totalOpenings,
+//           salaryMin: r.salaryMin != null ? Number(r.salaryMin) : null,
+//           band: r.band
+//             ? { value: r.band.value != null ? Number(r.band.value) : null }
+//             : null,
+//           client: r.client
+//             ? {
+//                 percentageValue:
+//                   r.client.percentageValue != null
+//                     ? Number(r.client.percentageValue)
+//                     : null,
+//               }
+//             : null,
+//         });
+
+//       const nearTerminalValue =
+//         computedSaleValue != null && r.totalOpenings > 0
+//           ? (nearTerminalCount / r.totalOpenings) * computedSaleValue
+//           : null;
+
+//       const achievedValue =
+//         computedSaleValue != null && r.totalOpenings > 0
+//           ? (terminalCount / r.totalOpenings) * computedSaleValue
+//           : null;
+
+//       const base = {
+//         id: r.id,
+//         reqCode: r.reqCode,
+//         title: r.title,
+//         status: r.status,
+//         totalOpenings: r.totalOpenings,
+//         client: r.client ? { id: r.client.id, name: r.client.name } : null,
+//         serviceLine: r.serviceLine ?? null,
+//         businessUnit: r.businessUnit ?? null,
+//         createdBy: r.createdBy,
+//         computedSaleValue,
+//         saleValueBasis,
+//       };
+
+//       if (nearTerminalCount > 0) {
+//         totalNearTerminalCandidates += nearTerminalCount;
+//         nearTerminalRows.push({
+//           ...base,
+//           nearTerminalCount,
+//           nearTerminalValue,
+//         });
+//       }
+
+//       if (terminalCount > 0) {
+//         totalTerminalCandidates += terminalCount;
+//         terminalRows.push({
+//           ...base,
+//           terminalCount,
+//           achievedValue,
+//         });
+//       }
+//     }
+
+//     // Sort — highest count first
+//     nearTerminalRows.sort((a, b) => b.nearTerminalCount - a.nearTerminalCount);
+//     terminalRows.sort((a, b) => b.terminalCount - a.terminalCount);
+
+//     return res.json({
+//       success: true,
+//       summary: {
+//         nearTerminalCandidates: totalNearTerminalCandidates,
+//         terminalCandidates: totalTerminalCandidates,
+//       },
+//       nearTerminal: { requirements: nearTerminalRows },
+//       terminal: { requirements: terminalRows },
+//     });
+//   } catch (err) {
+//     console.error("getFunnelStats:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch funnel stats" });
+//   }
+// };
