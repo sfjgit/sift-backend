@@ -135,7 +135,7 @@ export const getFunnelStats = async (req: Request, res: Response) => {
     // ── Scope ────────────────────────────────────────────────────────────────
     const creatorIds = await resolveOrgTreeDown(
       req.user!.id,
-      req.user!.isSuperAdmin
+      req.user!.isSuperAdmin,
     );
 
     const requestedCreatorId = str(q.createdById)?.trim() || null;
@@ -145,10 +145,10 @@ export const getFunnelStats = async (req: Request, res: Response) => {
           ? [requestedCreatorId]
           : null
         : requestedCreatorId
-        ? creatorIds.includes(requestedCreatorId)
-          ? [requestedCreatorId]
-          : []
-        : creatorIds;
+          ? creatorIds.includes(requestedCreatorId)
+            ? [requestedCreatorId]
+            : []
+          : creatorIds;
 
     let createdByWhere: Record<string, any> = {};
     if (effectiveCreatorIds !== null) {

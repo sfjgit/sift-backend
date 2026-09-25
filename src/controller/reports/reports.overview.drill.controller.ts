@@ -556,7 +556,6 @@ export const getRequirementCandidateDrill = async (
   try {
     const { requirementId } = req.params;
     const q = req.query as Record<string, string | undefined>;
-    // const scopedUserIds = await resolveEffectiveUserIds(req, q);
 
     if (!requirementId) {
       return res
@@ -572,7 +571,7 @@ export const getRequirementCandidateDrill = async (
       });
     }
 
-    const scopedUserIds = await resolveEffectiveUserIds(req, q);
+    // const scopedUserIds = await resolveEffectiveUserIds(req, q);
     const pipelineWhere: Record<string, any> = {
       requirementId,
     };
@@ -594,11 +593,6 @@ export const getRequirementCandidateDrill = async (
       pipelineWhere.currentStage = {
         is: DRILL_BUCKET_STAGE_FILTER[q.bucket],
       };
-    }
-
-    // Scope — recruiters only see their own candidates unless elevated
-    if (scopedUserIds !== null) {
-      pipelineWhere.recruiterId = { in: scopedUserIds };
     }
 
     const pipelines = await prisma.requirementCandidatePipeline.findMany({
