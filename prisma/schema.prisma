@@ -625,7 +625,6 @@ model Requirement {
   band   Band?   @relation(fields: [bandId], references: [id])
 
   // ── Sale value — manually entered float, hidden from RECRUITER role at API ──
-  saleValue Float?
 
   // ── Add index inside model Requirement @@index block ─────────────────────────
 
@@ -741,6 +740,18 @@ model Requirement {
   notes              RequirementNote[]
   documents          RequirementDocument[]
 
+  // saleValue Float?
+
+  saleValue          Decimal?        @db.Decimal(14, 2) // TOTAL = perOpeningValue × totalOpenings
+  perOpeningValue    Decimal?        @db.Decimal(14, 2) // source of truth
+  saleValueBasis     SaleValueBasis?
+  saleValueRate      Decimal?        @db.Decimal(14, 4) // band.value or client % actually used
+  // saleValueSalaryRef Decimal?        @db.Decimal(14, 2) // salary figure used for FIXED_PCT (annualised)
+  saleValueFrozenAt  DateTime?
+
+  // achievements RequirementAchievement[]
+
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -759,6 +770,71 @@ model Requirement {
   @@index([targetDate])
   @@index([requirementCategoryId])
 }
+
+enum SaleValueBasis {
+  DIRECT     // CSM entered the value manually
+  BAND       // band.value per opening
+  FIXED_PCT  // salary × client % per opening
+}
+
+// File: schema.prisma
+// Path: prisma/schema.prisma
+
+enum AchievementStatus {
+  ACTIVE
+  REVERSED // candidate left terminal / dropped after joining
+}
+
+// model RequirementAchievement {
+//   id String @id @default(uuid())
+
+//   // ── What triggered it
+//   pipelineId String
+//   pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id])
+//   stageLogId String?                      @unique // the transition that created this
+//   stageId    String
+//   stage      PipelineStage                @relation(fields: [stageId], references: [id])
+
+//   // ── Denormalised for report filters — no joins needed
+//   requirementId  String
+//   requirement    Requirement @relation(fields: [requirementId], references: [id])
+//   clientId       String
+//   serviceLineId  String?
+//   businessUnitId String?
+//   reqCreatedById String  // CSM — for createdBy / org-tree scope
+//   recruiterId    String
+//   assignmentId   String?
+
+//   // ── Money frozen at achievement time
+//   amount          Decimal        @db.Decimal(14, 2) // value credited for this placement
+//   perOpeningValue Decimal        @db.Decimal(14, 2) // snapshot from requirement
+//   basis           SaleValueBasis
+//   rate            Decimal?       @db.Decimal(14, 4)
+//   offeredCtc      Decimal?       @db.Decimal(14, 2)
+//   currency        String         @default("INR")
+//   exceedsOpenings Boolean        @default(false) // achieved > totalOpenings — flagged, not dropped
+
+//   // ── When
+//   achievedAt     DateTime @default(now())
+//   achievedById   String
+//   monthOfJoining String?  // "YYYY-MM"
+
+//   // ── Reversal
+//   status         AchievementStatus @default(ACTIVE)
+//   reversedAt     DateTime?
+//   reversedById   String?
+//   reversalReason String?
+
+//   createdAt DateTime @default(now())
+
+//   @@index([requirementId, status])
+//   @@index([recruiterId, status, achievedAt])
+//   @@index([reqCreatedById, status, achievedAt])
+//   @@index([clientId, status])
+//   @@index([serviceLineId, status])
+//   @@index([achievedAt])
+//   @@index([monthOfJoining])
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARSED JD LIBRARY
