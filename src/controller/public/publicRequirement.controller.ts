@@ -48,7 +48,102 @@ function withSalary(r: any) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LIST — GET /api/public/requirements
-// ─────────────────────────────────────────────────────────────────────────────
+// // ─────────────────────────────────────────────────────────────────────────────
+// export const getPublicRequirements = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       categorySlug,
+//       jobType,
+//       remoteType,
+//       city,
+//       page = "1",
+//       limit = "12",
+//       sortDir = "desc",
+//     } = req.query as Record<string, string>;
+
+//     const pageNum = Math.max(parseInt(page) || 1, 1);
+//     const take = Math.min(Math.max(parseInt(limit) || 12, 1), 50); // cap for public
+//     const skip = (pageNum - 1) * take;
+
+//     const where: Prisma.RequirementWhereInput = { ...PUBLIC_WHERE };
+
+//     if (categorySlug) {
+//       where.requirementCategory = { slug: categorySlug, isActive: true };
+//     }
+//     // validate enums so garbage input doesn't 500 the endpoint
+//     if (jobType && jobType in RequirementType)
+//       where.jobType = jobType as RequirementType;
+//     if (remoteType && remoteType in RemoteType)
+//       where.remoteType = remoteType as RemoteType;
+//     if (city) where.city = { contains: city, mode: "insensitive" };
+
+//     if (search) {
+//       where.OR = [
+//         { title: { contains: search, mode: "insensitive" } },
+//         { primarySkills: { has: search } },
+//         { keySkills: { has: search } },
+//         { city: { contains: search, mode: "insensitive" } },
+//       ];
+//     }
+
+//     const orderBy = {
+//       createdAt: (sortDir === "asc" ? "asc" : "desc") as "asc" | "desc",
+//     };
+
+//     const [total, rows] = await Promise.all([
+//       prisma.requirement.count({ where }),
+//       prisma.requirement.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           reqCode: true, // public job code — used in the apply URL
+//           title: true,
+//           description: true,
+//           jobType: true,
+//           remoteType: true,
+//           city: true,
+//           state: true,
+//           country: true,
+//           primarySkills: true,
+//           keySkills: true,
+//           experienceMin: true,
+//           experienceMax: true,
+//           totalOpenings: true,
+//           functionalArea: true,
+//           // salary pulled but conditionally stripped in withSalary()
+//           salaryMin: true,
+//           salaryMax: true,
+//           salaryType: true,
+//           salaryCurrency: true,
+//           hideSalaryFromCandidate: true,
+//           showMedianSalary: true,
+//           requirementCategory: { select: { name: true, slug: true } },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
+
+//     return res.json({
+//       success: true,
+//       data: rows.map(withSalary),
+//       meta: {
+//         total,
+//         page: pageNum,
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getPublicRequirements:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch openings" });
+//   }
+// };
+
 export const getPublicRequirements = async (req: Request, res: Response) => {
   try {
     const {
@@ -63,15 +158,20 @@ export const getPublicRequirements = async (req: Request, res: Response) => {
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const take = Math.min(Math.max(parseInt(limit) || 12, 1), 50); // cap for public
+    const take = Math.min(Math.max(parseInt(limit) || 12, 1), 50);
     const skip = (pageNum - 1) * take;
 
-    const where: Prisma.RequirementWhereInput = { ...PUBLIC_WHERE };
+    // Minimal safety net for a public, unauthenticated endpoint:
+    // only show requirements that are actually open and meant for
+    // external candidates. Adjust/remove these two lines if you
+    // genuinely want internal and closed reqs visible too.
+    const where: Prisma.RequirementWhereInput = {
+      status: "ACTIVE",
+    };
 
     if (categorySlug) {
       where.requirementCategory = { slug: categorySlug, isActive: true };
     }
-    // validate enums so garbage input doesn't 500 the endpoint
     if (jobType && jobType in RequirementType)
       where.jobType = jobType as RequirementType;
     if (remoteType && remoteType in RemoteType)
@@ -97,7 +197,7 @@ export const getPublicRequirements = async (req: Request, res: Response) => {
         where,
         select: {
           id: true,
-          reqCode: true, // public job code — used in the apply URL
+          reqCode: true,
           title: true,
           description: true,
           jobType: true,
@@ -111,7 +211,6 @@ export const getPublicRequirements = async (req: Request, res: Response) => {
           experienceMax: true,
           totalOpenings: true,
           functionalArea: true,
-          // salary pulled but conditionally stripped in withSalary()
           salaryMin: true,
           salaryMax: true,
           salaryType: true,
@@ -152,7 +251,7 @@ export const getPublicRequirements = async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getPublicRequirementDetail = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { reqCode } = req.params;
