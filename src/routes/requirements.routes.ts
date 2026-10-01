@@ -152,6 +152,7 @@ router.post(
   validate.body(createRequirementSchema),
   createRequirement,
 );
+router.get("/:id/duplicate-preview", authenticateUser, getDuplicatePreview);
 router.post(
   "/:id/duplicate",
   authenticateUser,
@@ -160,8 +161,6 @@ router.post(
   validate.body(duplicateRequirementSchema),
   duplicateRequirement,
 );
-
-router.get("/:id/duplicate-preview", authenticateUser, getDuplicatePreview);
 
 //bulk-requirement upload
 //requirements/bulk-upload

@@ -2337,6 +2337,7 @@ export const duplicateRequirement = async (req: Request, res: Response) => {
       include: {
         client: { select: { name: true } },
         serviceLine: { select: { name: true } },
+        clientSpoc: { select: { firstName: true, lastName: true } },
       },
     });
 
@@ -2461,12 +2462,17 @@ export const duplicateRequirement = async (req: Request, res: Response) => {
         approvedAt: null,
         closedById: null,
       },
-      select: {
-        id: true,
-        reqCode: true,
-        title: true,
-        status: true,
-        createdAt: true,
+      // select: {
+      //   id: true,
+      //   reqCode: true,
+      //   title: true,
+      //   status: true,
+      //   createdAt: true,
+      // },
+      include: {
+        client: { select: { name: true } },
+        serviceLine: { select: { name: true } },
+        clientSpoc: { select: { firstName: true, lastName: true } },
       },
     });
 
@@ -2483,7 +2489,7 @@ export const duplicateRequirement = async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       message: "Requirement duplicated successfully",
-      data: duplicate,
+      data: { duplicate, original },
     });
   } catch (err) {
     console.error("duplicateRequirement:", err);

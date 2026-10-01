@@ -210,12 +210,12 @@ const PIPELINE_SELECT = {
 
 function buildRow(p: any, now: number): Record<string, any> {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
   );
   const totalMins =
     (p.stageHistory ?? []).reduce(
       (s: number, l: any) => s + (l.timeInPrevStageMins ?? 0),
-      0
+      0,
     ) + stageAgeMins;
   const rq = p.requirement;
 
@@ -292,7 +292,7 @@ function buildRow(p: any, now: number): Record<string, any> {
 
 function buildDrillPipelineWhere(
   q: Record<string, string>,
-  effectiveIds: string[] | null
+  effectiveIds: string[] | null,
 ): Record<string, any> {
   const pipelineWhere: Record<string, any> = {};
 
@@ -353,7 +353,13 @@ function buildDrillPipelineWhere(
 
 export const getRecruiterDrill = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
+    // const q = req.query as Record<string, string>;
+    const q = Object.fromEntries(
+      Object.entries(req.query).map(([k, v]) => [
+        k,
+        String(Array.isArray(v) ? v[v.length - 1] : v),
+      ]),
+    ) as Record<string, string>;
 
     // ── Scope ────────────────────────────────────────────────────────────────
     const scopedIds = resolveScopedUserIds(req);
@@ -433,7 +439,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
             (p: any) =>
               p.isRejected ||
               p.isWithdrawn ||
-              p.currentStage?.pipeline === false
+              p.currentStage?.pipeline === false,
           )
         : pipelines;
 
@@ -451,7 +457,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
           !r.isNearTerminal &&
           !r.isRejected &&
           !r.isWithdrawn &&
-          !r.isOnHold
+          !r.isOnHold,
       ).length,
       onHold: rows.filter((r: any) => r.isOnHold).length,
       rejected: rows.filter((r: any) => r.isRejected).length,
@@ -491,7 +497,7 @@ export const getRecruiterDrill = async (req: Request, res: Response) => {
 
 export const getRecruiterDrillMojOptions = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const q = req.query as Record<string, string>;
