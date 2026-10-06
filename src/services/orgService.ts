@@ -72,7 +72,7 @@ export async function getReportingLineIds(userId: string): Promise<string[]> {
     visited.add(current);
 
     const children = await prisma.user.findMany({
-      where: { reportingToId: current, isActive: true },
+      where: { reportingToId: current },
       select: { id: true },
     });
     children.forEach((c) => queue.push(c.id));
