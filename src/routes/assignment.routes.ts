@@ -24,6 +24,7 @@ import {
   updateAssignment,
   removeAssignment,
   getAssignmentPipeline,
+  getAssignmentFilterOptions,
 } from "@/controller/assignment.controller";
 
 const router = Router();
@@ -38,6 +39,7 @@ router.get("/my", auth, getMyAssignments);
 // Assignable targets for the assign dialog — no canAdd check, just auth
 router.get("/assignable-targets", auth, scope, getAssignableTargets);
 
+router.get("/filter-options", auth, scope, getAssignmentFilterOptions);
 // All assignments for one requirement (full tree)
 router.get(
   "/requirement/:requirementId",
