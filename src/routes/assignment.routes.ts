@@ -24,6 +24,7 @@ import {
   updateAssignment,
   removeAssignment,
   getAssignmentPipeline,
+  getAssignmentFilterOptions,
 } from "@/controller/assignment.controller";
 
 const router = Router();
@@ -38,12 +39,13 @@ router.get("/my", auth, getMyAssignments);
 // Assignable targets for the assign dialog — no canAdd check, just auth
 router.get("/assignable-targets", auth, scope, getAssignableTargets);
 
+router.get("/filter-options", auth, scope, getAssignmentFilterOptions);
 // All assignments for one requirement (full tree)
 router.get(
   "/requirement/:requirementId",
   auth,
   scope,
-  getAssignmentsByRequirement
+  getAssignmentsByRequirement,
 );
 
 // ── Collection ────────────────────────────────────────────────────────────────
@@ -56,7 +58,7 @@ router.post(
   scope,
   checkPermission("canAdd"),
   validate.body(createAssignmentSchema),
-  createAssignment
+  createAssignment,
 );
 
 // ── Single — :id routes last ──────────────────────────────────────────────────
@@ -69,7 +71,7 @@ router.patch(
   scope,
   checkPermission("canEdit"),
   validate.body(updateAssignmentSchema),
-  updateAssignment
+  updateAssignment,
 );
 
 router.delete(
@@ -77,7 +79,7 @@ router.delete(
   auth,
   scope,
   checkPermission("canDelete"),
-  removeAssignment
+  removeAssignment,
 );
 
 // Sub-assign (DM → TL/Recruiter)
@@ -87,7 +89,7 @@ router.post(
   scope,
   checkPermission("canAdd"),
   validate.body(subAssignSchema),
-  subAssign
+  subAssign,
 );
 
 // Paginated candidate rows under a specific assignment

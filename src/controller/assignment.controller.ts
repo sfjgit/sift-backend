@@ -566,6 +566,9 @@ export const getAssignments = async (req: Request, res: Response) => {
       assignedToId,
       status,
       depth,
+      assignedById,
+      dateFrom,
+      dateTo,
       buId,
       page = "1",
       limit = "50",
@@ -606,6 +609,24 @@ export const getAssignments = async (req: Request, res: Response) => {
 
     if (requirementId) filterWhere.requirementId = requirementId;
     if (assignedToId) filterWhere.assignedToId = assignedToId;
+    if (assignedById) filterWhere.assignedById = assignedById;
+
+    if (dateFrom || dateTo) {
+      const range: { gte?: Date; lte?: Date } = {};
+      if (dateFrom) range.gte = new Date(`${dateFrom}T00:00:00+05:30`);
+      if (dateTo) range.lte = new Date(`${dateTo}T23:59:59.999+05:30`);
+
+      if (
+        (range.gte && isNaN(range.gte.getTime())) ||
+        (range.lte && isNaN(range.lte.getTime()))
+      ) {
+        res
+          .status(400)
+          .json({ success: false, message: "Invalid date filter" });
+        return;
+      }
+      filterWhere.assignedAt = range;
+    }
     if (status) filterWhere.status = status;
     if (depth !== undefined) filterWhere.depth = parseInt(depth);
 
@@ -1556,5 +1577,139 @@ export const getAssignmentPipeline = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch pipeline" });
+  }
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /assignments/filter-options?type=requirement|assignedTo|assignedBy&search=&limit=20
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getAssignmentFilterOptions = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { type, search, limit = "20" } = req.query as Record<string, string>;
+    const take = Math.min(parseInt(limit) || 20, 50);
+    const q = search?.trim();
+    const scope = assignmentScopeWhere(req.scopeFilter!);
+    const contains = (v: string) => ({
+      contains: v,
+      mode: "insensitive" as const,
+    });
+
+    // ── Requirement dropdown ──
+    if (type === "requirement") {
+      const grouped = await prisma.requirementAssignment.groupBy({
+        by: ["requirementId"],
+        where: {
+          AND: [
+            scope,
+            q
+              ? {
+                  requirement: {
+                    OR: [
+                      { title: contains(q) },
+                      { reqCode: contains(q) },
+                      { client: { name: contains(q) } },
+                    ],
+                  },
+                }
+              : {},
+          ],
+        },
+        _max: { assignedAt: true },
+        orderBy: { _max: { assignedAt: "desc" } },
+        take,
+      });
+
+      const ids = grouped.map((g) => g.requirementId);
+      const reqs = ids.length
+        ? await prisma.requirement.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true,
+              reqCode: true,
+              title: true,
+              client: { select: { name: true } },
+            },
+          })
+        : [];
+      const byId = new Map(reqs.map((r) => [r.id, r]));
+
+      res.json({
+        success: true,
+        data: ids
+          .map((id) => byId.get(id))
+          .filter(Boolean)
+          .map((r: any) => ({
+            id: r.id,
+            reqCode: r.reqCode,
+            title: r.title?.trim() ?? "",
+            client: r.client?.name ?? null,
+          })),
+      });
+      return;
+    }
+
+    // ── Assigned To / Assigned By dropdown ──
+    if (type === "assignedTo" || type === "assignedBy") {
+      const idField = type === "assignedTo" ? "assignedToId" : "assignedById";
+
+      const userSearch = q
+        ? {
+            [type]: {
+              OR: [
+                { firstName: contains(q) },
+                { lastName: contains(q) },
+                { employeeId: contains(q) },
+              ],
+            },
+          }
+        : {};
+
+      const grouped = await prisma.requirementAssignment.groupBy({
+        by: [idField] as any,
+        where: { AND: [scope, userSearch] },
+        _max: { assignedAt: true },
+        orderBy: { _max: { assignedAt: "desc" } },
+        take,
+      } as any);
+
+      const ids = (grouped as any[]).map((g) => g[idField]).filter(Boolean);
+      const users = ids.length
+        ? await prisma.user.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              role: { select: { name: true } },
+            },
+          })
+        : [];
+      const byId = new Map(users.map((u) => [u.id, u]));
+
+      res.json({
+        success: true,
+        data: ids
+          .map((id) => byId.get(id))
+          .filter(Boolean)
+          .map((u: any) => ({
+            id: u.id,
+            name: `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim(),
+            employeeId: u.employeeId?.trim() ?? null,
+            role: u.role?.name ?? null,
+          })),
+      });
+      return;
+    }
+
+    res.status(400).json({ success: false, message: "Invalid type" });
+  } catch (err) {
+    console.error("getAssignmentFilterOptions:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch filter options" });
   }
 };

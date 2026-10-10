@@ -14,7 +14,10 @@ import {
   Prisma,
 } from "@prisma/client";
 import { getReportingLineIds } from "@/services/orgService";
-
+// Service lines where notice period is NOT mandatory for "Submitted to Client"
+const NOTICE_PERIOD_EXEMPT_SERVICE_LINE_IDS = [
+  "e28deb3f-480f-4887-8c46-f385f433ee9a", // Knowledge as a Service
+];
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -693,8 +696,29 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
       return;
     }
 
+    // const isSubmittedToClient = targetStage.canonicalStage === "SUBMMITED";
+    // if (isSubmittedToClient && !noticePeriod?.trim()) {
+    //   res.status(422).json({
+    //   success: false,
+    //  code: "NOTICE_PERIOD_REQUIRED",
+    // message: "Notice period is required when moving to Submitted to Client",
+    //  });
+    // return;
+    //}
     const isSubmittedToClient = targetStage.canonicalStage === "SUBMMITED";
-    if (isSubmittedToClient && !noticePeriod?.trim()) {
+
+    // Notice period is mandatory for every service line except the exempt ones
+    const requirement = await prisma.requirement.findUnique({
+      where: { id: pipeline.requirementId },
+      select: { serviceLineId: true },
+    });
+    const noticePeriodRequired =
+      !requirement?.serviceLineId ||
+      !NOTICE_PERIOD_EXEMPT_SERVICE_LINE_IDS.includes(
+        requirement.serviceLineId,
+      );
+
+    if (isSubmittedToClient && noticePeriodRequired && !noticePeriod?.trim()) {
       res.status(422).json({
         success: false,
         code: "NOTICE_PERIOD_REQUIRED",
@@ -748,7 +772,10 @@ export const moveCandidateStage = async (req: Request, res: Response) => {
           isOnHold: false,
           onHoldAt: null,
           onHoldReason: null,
-          ...(isSubmittedToClient ? { noticePeriod: noticePeriod.trim() } : {}),
+          // ...(isSubmittedToClient ? { noticePeriod: noticePeriod.trim() } : {}),
+          ...(isSubmittedToClient && noticePeriod?.trim()
+            ? { noticePeriod: noticePeriod.trim() }
+            : {}),
         },
       });
 
