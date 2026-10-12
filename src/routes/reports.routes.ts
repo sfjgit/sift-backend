@@ -38,7 +38,10 @@ import {
 import { getRequirementReport } from "@/controller/reports/reports.requirements.controller";
 import { exportRequirementReport } from "@/controller/reports/reports.requirements.export.controller";
 
-import { getRecruiterStats } from "@/controller/reports/reports.recruiter.stats.controller";
+import {
+  getRecruiterSaleSummary,
+  getRecruiterStats,
+} from "@/controller/reports/reports.recruiter.stats.controller";
 import {
   getRecruiterDrill,
   getRecruiterDrillMojOptions,
@@ -79,6 +82,8 @@ router.get(
   scope,
   getRecruiterActivityDrill
 );
+
+router.get("/recruiters/sale-summary", getRecruiterSaleSummary);
 
 router.get(
   "/recruiters/drill/moj-options",

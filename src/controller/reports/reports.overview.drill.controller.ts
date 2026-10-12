@@ -5,6 +5,7 @@ import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { format, addDays, addMonths } from "date-fns";
 import { resolveOrgTreeDown } from "./reports.controller";
+import { resolvePipelineScope } from "./helpers/pipelineScope";
 // import { resolveOrgTreeDown } from "@/services/orgTreeService";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ function deriveJoiningDate(
   actualJoiningDate: Date | null,
   expectedJoiningDate: Date | null,
   lastWorkingDate: Date | null,
-  noticePeriod: string | null,
+  noticePeriod: string | null
 ): Date | null {
   if (actualJoiningDate) return actualJoiningDate;
   if (expectedJoiningDate) return expectedJoiningDate;
@@ -139,19 +140,19 @@ function deriveJoiningDate(
  */
 export function shapeDrillRow(p: any, now: number) {
   const stageAgeMins = Math.floor(
-    (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+    (now - new Date(p.stageUpdatedAt).getTime()) / 60000
   );
   const totalPipelineMins =
     (p.stageHistory ?? []).reduce(
       (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-      0,
+      0
     ) + stageAgeMins;
 
   const derivedJoining = deriveJoiningDate(
     p.actualJoiningDate,
     p.expectedJoiningDate,
     p.lastWorkingDate,
-    p.noticePeriod,
+    p.noticePeriod
   );
 
   const req = p.requirement ?? {};
@@ -217,7 +218,7 @@ export function shapeDrillRow(p: any, now: number) {
     expYears: p.snapshot?.totalExpYears ?? null,
     topSkills: Array.isArray(p.snapshot?.topSkills)
       ? p.snapshot.topSkills.join(", ")
-      : (p.snapshot?.topSkills ?? ""),
+      : p.snapshot?.topSkills ?? "",
     resumeUrl: p.snapshot?.resumeUrl ?? null,
     recruiterId: p.recruiter?.id ?? "",
     recruiterName:
@@ -256,7 +257,7 @@ export function shapeDrillRow(p: any, now: number) {
 
 export async function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | undefined>,
+  q: Record<string, string | undefined>
 ): Promise<string[] | null> {
   if (req.user!.isSuperAdmin) return null;
 
@@ -551,7 +552,7 @@ const isDrillBucket = (v: unknown): v is DrillBucket =>
   typeof v === "string" && v in DRILL_BUCKET_STAGE_FILTER;
 export const getRequirementCandidateDrill = async (
   req: Request,
-  res: Response,
+  res: Response
 ) => {
   try {
     const { requirementId } = req.params;
@@ -566,14 +567,15 @@ export const getRequirementCandidateDrill = async (
       return res.status(400).json({
         success: false,
         message: `Invalid bucket. Allowed: ${Object.keys(
-          DRILL_BUCKET_STAGE_FILTER,
+          DRILL_BUCKET_STAGE_FILTER
         ).join(", ")}`,
       });
     }
 
-    // const scopedUserIds = await resolveEffectiveUserIds(req, q);
+    const { pipelineOwnerWhere } = await resolvePipelineScope(req, q);
     const pipelineWhere: Record<string, any> = {
       requirementId,
+      ...pipelineOwnerWhere,
     };
 
     // Optional stage filter — if stageId provided, only show candidates in that stage
@@ -627,7 +629,7 @@ export const getRequirementCandidateDrill = async (
           !r.isNearTerminal &&
           !r.isRejected &&
           !r.isWithdrawn &&
-          !r.isOnHold,
+          !r.isOnHold
       ).length,
       onHold: rows.filter((r) => r.isOnHold).length,
       rejected: rows.filter((r) => r.isRejected).length,
