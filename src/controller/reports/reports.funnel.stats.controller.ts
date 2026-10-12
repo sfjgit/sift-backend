@@ -5,6 +5,7 @@ import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import { resolveOrgTreeDown } from "./reports.controller";
 import { resolveEffectiveUserIds } from "./reports.overview.drill.controller";
+import { resolvePipelineScope } from "./helpers/pipelineScope";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -132,23 +133,27 @@ export const getFunnelStats = async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | string[] | undefined>;
 
-    // ── Scope ────────────────────────────────────────────────────────────────
-    const creatorIds = await resolveOrgTreeDown(
-      req.user!.id,
-      req.user!.isSuperAdmin,
-    );
+    // // ── Scope ────────────────────────────────────────────────────────────────
+    // const creatorIds = await resolveOrgTreeDown(
+    //   req.user!.id,
+    //   req.user!.isSuperAdmin
+    // );
 
-    const requestedCreatorId = str(q.createdById)?.trim() || null;
-    const effectiveCreatorIds =
-      creatorIds === null
-        ? requestedCreatorId
-          ? [requestedCreatorId]
-          : null
-        : requestedCreatorId
-          ? creatorIds.includes(requestedCreatorId)
-            ? [requestedCreatorId]
-            : []
-          : creatorIds;
+    // const requestedCreatorId = str(q.createdById)?.trim() || null;
+    // const effectiveCreatorIds =
+    //   creatorIds === null
+    //     ? requestedCreatorId
+    //       ? [requestedCreatorId]
+    //       : null
+    //     : requestedCreatorId
+    //     ? creatorIds.includes(requestedCreatorId)
+    //       ? [requestedCreatorId]
+    //       : []
+    //     : creatorIds;
+
+    // ── Scope — shared with requirement report + drill ───────────────────────
+    const { effectiveCreatorIds, pipelineOwnerWhere } =
+      await resolvePipelineScope(req, q);
 
     let createdByWhere: Record<string, any> = {};
     if (effectiveCreatorIds !== null) {
@@ -172,34 +177,41 @@ export const getFunnelStats = async (req: Request, res: Response) => {
       };
     }
 
-    // ── Date window ──────────────────────────────────────────────────────────
+    // ── Date window — same modes as getRequirementReport ─────────────────────
     const win = resolveDateWindow(q);
-    const activityWindow =
-      win.gte || win.lte
-        ? {
-            ...(win.gte ? { gte: win.gte } : {}),
-            ...(win.lte ? { lte: win.lte } : {}),
-          }
-        : null;
+    const dateFilterMode = str(q.dateFilterMode) ?? "activity";
 
-    const activityFilter = activityWindow
-      ? {
+    let activityFilter: Record<string, any> = {};
+    let createdAtFilter: Record<string, any> = {};
+
+    if (win.gte || win.lte) {
+      const window = {
+        ...(win.gte ? { gte: win.gte } : {}),
+        ...(win.lte ? { lte: win.lte } : {}),
+      };
+      if (dateFilterMode === "createdAt") {
+        createdAtFilter = { createdAt: window };
+      } else {
+        activityFilter = {
           pipelines: {
             some: {
+              ...pipelineOwnerWhere,
               OR: [
-                { createdAt: activityWindow },
-                { updatedAt: activityWindow },
-                { stageHistory: { some: { createdAt: activityWindow } } },
+                { createdAt: window },
+                { updatedAt: window },
+                { stageHistory: { some: { createdAt: window } } },
               ],
             },
           },
-        }
-      : {};
+        };
+      }
+    }
 
     // ── Req where ────────────────────────────────────────────────────────────
     const reqWhere: Record<string, any> = {
       deletedAt: null,
       ...activityFilter,
+      ...createdAtFilter,
       ...createdByWhere,
     };
 
@@ -294,6 +306,7 @@ export const getFunnelStats = async (req: Request, res: Response) => {
       by: ["requirementId", "currentStageId"],
       where: {
         requirementId: { in: reqIds },
+        ...pipelineOwnerWhere,
         currentStageId: {
           in: [...nearTerminalStageIds, ...terminalStageIds],
         },

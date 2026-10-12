@@ -3,6 +3,7 @@
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
+import { computeSaleValue } from "../requirement.controller";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE WINDOW
@@ -44,7 +45,7 @@ function str(v: string | string[] | undefined): string | undefined {
 }
 
 function resolveDateWindow(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): DateWindow {
   const now = new Date();
   const hours = str(q.hours);
@@ -165,7 +166,7 @@ function mojMonthToLabel(mojMonth: string): string | null {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildReqWhere(
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): Record<string, any> {
   const where: Record<string, any> = { deletedAt: null };
 
@@ -196,7 +197,7 @@ function buildReqWhere(
 
 function buildPipelineWhere(
   q: Record<string, string | string[] | undefined>,
-  effectiveUserIds: string[] | null,
+  effectiveUserIds: string[] | null
 ): Record<string, any> {
   const where: Record<string, any> = {};
 
@@ -226,8 +227,8 @@ function buildPipelineWhere(
   const mojMonths: string[] = Array.isArray(rawMoj)
     ? rawMoj
     : rawMoj
-      ? [rawMoj]
-      : [];
+    ? [rawMoj]
+    : [];
   const mojYear = str(q.mojYear);
 
   if (mojMonths.length === 1) {
@@ -271,11 +272,11 @@ function buildPipelineWhere(
 
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | string[] | undefined>,
+  q: Record<string, string | string[] | undefined>
 ): string[] | null {
   const scopedIds = resolveScopedUserIds(req);
   const teamIds = parseIds(
-    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds,
+    Array.isArray(q.userIds) ? q.userIds.join(",") : q.userIds
   );
 
   if (!teamIds) return scopedIds;
@@ -303,7 +304,7 @@ function classify(
     isNearTerminal: boolean;
     isSourced: boolean;
     pipeline: boolean;
-  } | null,
+  } | null
 ): Bucket {
   if (!stage) return "inPipeline";
   if (stage.isTerminal) return "placed";
@@ -458,8 +459,8 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
             mojMonths: Array.isArray(q.mojMonth)
               ? q.mojMonth
               : q.mojMonth
-                ? [q.mojMonth]
-                : [],
+              ? [q.mojMonth]
+              : [],
             mojYear: str(q.mojYear) ?? null,
           },
         },
@@ -575,7 +576,7 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
       .sort((a, b) => b.sourced - a.sourced);
 
     const byServiceLine = [...slMap.values()].sort(
-      (a, b) => b.sourced - a.sourced,
+      (a, b) => b.sourced - a.sourced
     );
 
     const totalSourced = pipelines.length;
@@ -619,5 +620,185 @@ export const getRecruiterStats = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to fetch recruiter stats" });
+  }
+};
+
+// File: reports.recruiters.saleSummary.ts
+// Path: src/controller/reports/  →  ADD this function to the SAME file as getRecruiterStats
+//       (it reuses resolveEffectiveUserIds + buildPipelineWhere from that file)
+//
+// Route:  router.get('/recruiters/sale-summary', getRecruiterSaleSummary);
+//         Register it BEFORE any '/recruiters/:param' route so it isn't swallowed.
+//
+// Also:   in reports.requirements.controller.ts change
+//           function computeSaleValue(...)   →   export function computeSaleValue(...)
+//         and import it here:
+//           import { computeSaleValue } from './reports.requirements.controller';
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /reports/recruiters/sale-summary
+//
+// Same scope as GET /reports/recruiters/stats (RBAC, team picker, MOJ, window,
+// client/SL/BU/status filters, requirementId) — so the strip and the table
+// below it always describe the same candidates.
+//
+// Recruiter SHARE, not full requirement value:
+//   each candidate in a near-terminal stage adds  saleValue ÷ openings  to Pipeline value
+//   each candidate in a terminal stage      adds  saleValue ÷ openings  to Achieved value
+// Summed over all recruiters this equals the Requirements tab's
+//   (count ÷ openings) × saleValue  — so the two tabs reconcile, no double counting.
+//
+// Total sale value = full computed value of each DISTINCT requirement these
+// candidates sit on ("requirements worked"), counted once.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const getRecruiterSaleSummary = async (req: Request, res: Response) => {
+  try {
+    const q = req.query as Record<string, string | string[] | undefined>;
+    const effectiveUserIds = resolveEffectiveUserIds(req, q);
+    const pipelineWhere = buildPipelineWhere(q, effectiveUserIds);
+
+    const pipelines = await prisma.requirementCandidatePipeline.findMany({
+      where: pipelineWhere,
+      select: {
+        recruiterId: true,
+        requirementId: true,
+        currentStage: { select: { isTerminal: true, isNearTerminal: true } },
+        requirement: {
+          select: {
+            totalOpenings: true,
+            saleValue: true,
+            salaryMin: true,
+            band: { select: { value: true } },
+            client: { select: { percentageValue: true } },
+          },
+        },
+      },
+    });
+
+    const byBasis: Record<string, { count: number; total: number }> = {
+      SALE_VALUE: { count: 0, total: 0 },
+      BAND: { count: 0, total: 0 },
+      FIXED_PCT: { count: 0, total: 0 },
+      NOT_FOUND: { count: 0, total: 0 },
+    };
+
+    // requirementId → computed value + openings (computed once per requirement)
+    const reqSale = new Map<
+      string,
+      { value: number | null; openings: number }
+    >();
+
+    let totalSaleValue = 0;
+    let totalAchievedValue = 0;
+    let totalNearTerminalValue = 0;
+    let omittedCount = 0;
+    let nearTerminalCandidates = 0;
+    let terminalCandidates = 0;
+
+    const byRecruiter: Record<
+      string,
+      {
+        nearTerminal: number;
+        terminal: number;
+        nearTerminalValue: number;
+        achievedValue: number;
+      }
+    > = {};
+
+    for (const p of pipelines) {
+      // ── Requirement value, once per requirement ──────────────────────────
+      let sale = reqSale.get(p.requirementId);
+      if (!sale) {
+        const r = p.requirement;
+        const { value, basis } = computeSaleValue({
+          saleValue: r.saleValue != null ? Number(r.saleValue) : null,
+          totalOpenings: r.totalOpenings,
+          salaryMin: r.salaryMin != null ? Number(r.salaryMin) : null,
+          band: r.band
+            ? { value: r.band.value != null ? Number(r.band.value) : null }
+            : null,
+          client: r.client
+            ? {
+                percentageValue:
+                  r.client.percentageValue != null
+                    ? Number(r.client.percentageValue)
+                    : null,
+              }
+            : null,
+        });
+        sale = { value, openings: r.totalOpenings };
+        reqSale.set(p.requirementId, sale);
+
+        if (value != null) {
+          totalSaleValue += value;
+          byBasis[basis].count++;
+          byBasis[basis].total += value;
+        } else {
+          omittedCount++;
+          byBasis.NOT_FOUND.count++;
+        }
+      }
+
+      // ── Candidate bucket — terminal wins over near-terminal ──────────────
+      const isTerminal = !!p.currentStage?.isTerminal;
+      const isNearTerminal = !isTerminal && !!p.currentStage?.isNearTerminal;
+      if (!isTerminal && !isNearTerminal) continue;
+
+      const share =
+        sale.value != null && sale.openings > 0
+          ? sale.value / sale.openings
+          : 0;
+
+      const recKey = p.recruiterId ?? "__none__";
+      if (!byRecruiter[recKey]) {
+        byRecruiter[recKey] = {
+          nearTerminal: 0,
+          terminal: 0,
+          nearTerminalValue: 0,
+          achievedValue: 0,
+        };
+      }
+      const rec = byRecruiter[recKey];
+
+      if (isTerminal) {
+        terminalCandidates++;
+        totalAchievedValue += share;
+        rec.terminal++;
+        rec.achievedValue += share;
+      } else {
+        nearTerminalCandidates++;
+        totalNearTerminalValue += share;
+        rec.nearTerminal++;
+        rec.nearTerminalValue += share;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        summary: {
+          totalSaleValue,
+          totalAchievedValue,
+          totalNearTerminalValue,
+          includedCount: reqSale.size - omittedCount,
+          omittedCount,
+          byBasis,
+        },
+        nearTerminalCandidates,
+        terminalCandidates,
+        requirementCount: reqSale.size,
+        byRecruiter,
+      },
+      meta: { window: windowLabel(q) },
+    });
+  } catch (err) {
+    console.error("getRecruiterSaleSummary:", err);
+    return res
+      .status(500)
+      .json({
+        success: false,
+        message: "Failed to fetch recruiter sale summary",
+      });
   }
 };

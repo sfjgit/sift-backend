@@ -279,7 +279,9 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     }
 
     // ── Team filter ────────────────────────────────────────────────────────
+    // let teamReqIdFilter: { id: { in: string[] } } | Record<string, never> = {};
     let teamReqIdFilter: { id: { in: string[] } } | Record<string, never> = {};
+    let teamUserIds: string[] | null = null;
     if (q.userIds) {
       const rawUserIds = str(q.userIds) ?? "";
       const teamIds = rawUserIds
@@ -291,6 +293,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           effectiveCreatorIds === null
             ? teamIds
             : teamIds.filter((id) => effectiveCreatorIds.includes(id));
+        teamUserIds = allowed;
         if (allowed.length > 0) {
           const [assignedRows, createdRows] = await Promise.all([
             prisma.requirementAssignment.findMany({
@@ -311,6 +314,20 @@ export const getRequirementReport = async (req: Request, res: Response) => {
           teamReqIdFilter = { id: { in: [] } };
         }
       }
+    }
+
+    // ── Pipeline ownership — counts must only include the scoped users' candidates ──
+    // null = super admin with no team filter → no restriction
+    const pipelineUserIds: string[] | null = teamUserIds ?? effectiveCreatorIds;
+    const pipelineOwnerWhere: Record<string, any> =
+      pipelineUserIds === null ? {} : { recruiterId: { in: pipelineUserIds } };
+
+    if (activityFilter.pipelines) {
+      activityFilter = {
+        pipelines: {
+          some: { ...activityFilter.pipelines.some, ...pipelineOwnerWhere },
+        },
+      };
     }
 
     // ── Sort ───────────────────────────────────────────────────────────────
@@ -442,7 +459,7 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     // ── Stage counts — one groupBy, all reqs ───────────────────────────────
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
-      where: { requirementId: { in: reqIds } },
+      where: { requirementId: { in: reqIds }, ...pipelineOwnerWhere },
       _count: { id: true },
     });
 

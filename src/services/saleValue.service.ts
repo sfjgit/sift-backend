@@ -1,17 +1,62 @@
 // File: saleValue.service.ts
 // Path: src/services/saleValue.service.ts
 
-import { Prisma, SaleValueBasis } from "@prisma/client";
+import { Prisma, SaleValueBasis, SalaryType } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
+import {
+  DEFAULT_SALARY_TYPE,
+  SALARY_TO_ANNUAL_MULTIPLIER,
+} from "@/config/saleValue.config";
 
 type Db = Prisma.TransactionClient | typeof prisma;
 type Num = Prisma.Decimal | number | string | null | undefined;
 
 const D = Prisma.Decimal;
-const toDec = (v: Num): Prisma.Decimal | null =>
-  v === null || v === undefined || v === "" ? null : new D(v);
+
+// Never throws — garbage input ("abc", "1,50,000", NaN, Infinity) → null
+const toDec = (v: Num): Prisma.Decimal | null => {
+  if (v === null || v === undefined || v === "") return null;
+  try {
+    const d = new D(v as Prisma.Decimal.Value);
+    return d.isFinite() ? d : null;
+  } catch {
+    return null;
+  }
+};
+
 const isPositive = (d: Prisma.Decimal | null): d is Prisma.Decimal =>
   d !== null && d.gt(0);
+
+/**
+ * Was this requirement's saleValue typed by a CSM (vs derived from band / %)?
+ *
+ *   basis DIRECT                → yes
+ *   basis null + saleValue > 0  → yes — legacy row from before freezing existed;
+ *                                 the old code only ever stored CSM input in saleValue
+ *   anything else               → no
+ *
+ * Safe to keep after backfill: resolveSaleValue always writes basis and
+ * saleValue together, so "null basis + positive value" only exists on legacy rows.
+ */
+export function isManualSaleValue(
+  basis: SaleValueBasis | null | undefined,
+  saleValue: Num
+): boolean {
+  if (basis === SaleValueBasis.DIRECT) return true;
+  if (basis == null) return isPositive(toDec(saleValue));
+  return false;
+}
+
+/** salaryMin in its own unit → annual figure. Unknown / null type → DEFAULT_SALARY_TYPE. */
+export function annualiseSalary(
+  salary: Prisma.Decimal | null,
+  salaryType: SalaryType | null | undefined
+): Prisma.Decimal | null {
+  if (salary === null) return null;
+  const multiplier =
+    SALARY_TO_ANNUAL_MULTIPLIER[salaryType ?? DEFAULT_SALARY_TYPE] ?? 1;
+  return salary.mul(multiplier);
+}
 
 export interface SaleValueInput {
   manualSaleValue: Num; // CSM-entered TOTAL — null when not provided
@@ -19,6 +64,7 @@ export interface SaleValueInput {
   bandValue: Num;
   clientPct: Num;
   salaryMin: Num;
+  salaryType: SalaryType | null | undefined; // null → treated as ANNUAL
 }
 
 export interface FrozenSaleValue {
@@ -32,9 +78,10 @@ export interface FrozenSaleValue {
 /**
  * Pure — no DB. Priority: DIRECT → BAND → FIXED_PCT → null.
  * DIRECT is already the total and is never multiplied by openings.
+ * FIXED_PCT uses the ANNUALISED salaryMin (MONTHLY × 12 etc. — see saleValue.config).
  */
 export function resolveSaleValue(input: SaleValueInput): FrozenSaleValue {
-  const openings = Math.max(1, input.totalOpenings || 1);
+  const openings = Math.max(1, Math.floor(input.totalOpenings || 1));
   const frozenAt = new Date();
 
   const manual = toDec(input.manualSaleValue);
@@ -60,7 +107,7 @@ export function resolveSaleValue(input: SaleValueInput): FrozenSaleValue {
   }
 
   const pct = toDec(input.clientPct);
-  const salary = toDec(input.salaryMin);
+  const salary = annualiseSalary(toDec(input.salaryMin), input.salaryType);
   if (isPositive(pct) && isPositive(salary)) {
     const perOpening = salary.mul(pct).div(100);
     return {
@@ -86,7 +133,7 @@ export function resolveSaleValue(input: SaleValueInput): FrozenSaleValue {
  * Call inside the same transaction as the create / update.
  *
  * manualSaleValue:
- *   undefined → keep existing manual value (only if basis was DIRECT)
+ *   undefined → keep existing manual value (DIRECT or legacy manual)
  *   null      → CSM cleared it → fall back to band / %
  *   number    → new manual total
  */
@@ -102,6 +149,7 @@ export async function freezeSaleValue(
       saleValueBasis: true,
       totalOpenings: true,
       salaryMin: true,
+      salaryType: true,
       band: { select: { value: true } },
       client: { select: { percentageValue: true } },
     },
@@ -110,7 +158,7 @@ export async function freezeSaleValue(
   const manual =
     manualSaleValue !== undefined
       ? manualSaleValue
-      : r.saleValueBasis === SaleValueBasis.DIRECT
+      : isManualSaleValue(r.saleValueBasis, r.saleValue)
       ? r.saleValue
       : null;
 
@@ -120,6 +168,7 @@ export async function freezeSaleValue(
     bandValue: r.band?.value,
     clientPct: r.client?.percentageValue,
     salaryMin: r.salaryMin,
+    salaryType: r.salaryType,
   });
 
   await db.requirement.update({ where: { id: requirementId }, data: frozen });
