@@ -33,6 +33,7 @@ import {
   getMySubordinates,
   adminResetPassword,
   getHierarchyFilters,
+  getUserFilterOptions,
 } from "@/controller/user.controller";
 import {
   getAssignableTo,
@@ -58,8 +59,10 @@ router.post(
   "/",
   checkPermission("canAdd"),
   validate.body(createUserBody),
-  createUser
+  createUser,
 );
+
+router.get("/filter-options", getUserFilterOptions);
 
 // GET /users/subordinates dsdsdsdsdsd
 router.get("/subordinates", getMySubordinates);
@@ -138,43 +141,43 @@ router.put(
   "/:id",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: updateUserBody }),
-  updateUser
+  updateUser,
 );
 
 router.patch(
   "/:id/reset-password",
   checkPermission("canEdit"),
-  adminResetPassword
+  adminResetPassword,
 );
 router.patch(
   "/:id/toggle",
   checkPermission("canEdit"),
   validate.params(userIdParams),
-  toggleUser
+  toggleUser,
 );
 router.patch(
   "/:id/reporting",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignReportingBody }),
-  assignReporting
+  assignReporting,
 );
 router.patch(
   "/:id/teamlead",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignTeamLeadBody }),
-  assignTeamLead
+  assignTeamLead,
 );
 router.patch(
   "/:id/department",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignDepartmentBody }),
-  assignDepartment
+  assignDepartment,
 );
 router.patch(
   "/:id/role",
   checkPermission("canEdit"),
   validate.request({ params: userIdParams, body: assignRoleBody }),
-  assignRole
+  assignRole,
 );
 
 // ── Assignable-to (extended DM tagging) ─────────────────────────────────────
@@ -189,7 +192,7 @@ router.post("/:id/assignable-to", checkPermission("canEdit"), addAssignableTo);
 router.delete(
   "/:id/assignable-to/:targetId",
   checkPermission("canEdit"),
-  removeAssignableTo
+  removeAssignableTo,
 );
 
 export default router;

@@ -71,35 +71,71 @@ export const listUsers = async (req: Request, res: Response) => {
       buUserIds = [...ids];
     }
 
-    const where: any = {};
+    // const where: any = {};
 
-    if (visibleUserIds) {
-      where.id = { in: visibleUserIds };
+    // if (visibleUserIds) {
+    //   where.id = { in: visibleUserIds };
+    // }
+
+    // if (buUserIds !== null) {
+    //   if (where.id) {
+    //     const scopeSet = new Set(where.id.in as string[]);
+    //     where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
+    //   } else {
+    //     where.id = { in: buUserIds };
+    //   }
+    // }
+
+    // if (isActive !== undefined) where.isActive = isActive === "true";
+    // if (roleId) where.roleId = roleId;
+    // if (departmentId) where.departmentId = departmentId;
+    // if (reportingToId) where.reportingToId = reportingToId;
+
+    // if (teamId) where.teamLeadId = teamId;
+
+    // if (teamRole) {
+    //   if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
+    //     where.teamMembers = { some: { isActive: true } };
+    //   } else if (teamRole === "MEMBER") {
+    //     where.teamLeadId = { not: null };
+    //   }
+    // }
+
+    // Reporting-to = full subtree under selected manager (direct + indirect)
+    let reportingUserIds: string[] | null = null;
+    if (reportingToId) {
+      reportingUserIds = await getSubordinateIds(reportingToId);
     }
 
-    if (buUserIds !== null) {
-      if (where.id) {
-        const scopeSet = new Set(where.id.in as string[]);
-        where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
-      } else {
-        where.id = { in: buUserIds };
-      }
+    // Intersect every active id-scope: RBAC ∩ BU ∩ reporting subtree
+    const idScopes = [visibleUserIds, buUserIds, reportingUserIds].filter(
+      (s): s is string[] => s !== null,
+    );
+
+    const where: any = {};
+    const AND: any[] = [];
+
+    if (idScopes.length) {
+      const [first, ...others] = idScopes;
+      const sets = others.map((s) => new Set(s));
+      where.id = { in: first.filter((id) => sets.every((s) => s.has(id))) };
     }
 
     if (isActive !== undefined) where.isActive = isActive === "true";
     if (roleId) where.roleId = roleId;
     if (departmentId) where.departmentId = departmentId;
-    if (reportingToId) where.reportingToId = reportingToId;
 
-    if (teamId) where.teamLeadId = teamId;
+    if (teamId) AND.push({ teamLeadId: teamId });
 
     if (teamRole) {
       if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
         where.teamMembers = { some: { isActive: true } };
       } else if (teamRole === "MEMBER") {
-        where.teamLeadId = { not: null };
+        AND.push({ teamLeadId: { not: null } });
       }
     }
+
+    if (AND.length) where.AND = AND;
 
     if (isClientHandler === "true") {
       where.spocsHandled = { some: { isActive: true } };
@@ -1631,5 +1667,113 @@ export const getMySubordinates = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ success: false, message: "Failed to fetch subordinates" });
+  }
+};
+
+// Single source for team-role filter options — keep in sync with the teamRole branch in listUsers
+const TEAM_ROLE_FILTERS = [
+  { value: "LEAD", label: "Lead" },
+  { value: "CO_LEAD", label: "Co-Lead" },
+  { value: "MEMBER", label: "Member" },
+] as const;
+
+// ─────────────────────────────────────────
+// GET /users/filter-options?reportingToId=
+// ─────────────────────────────────────────
+
+export const getUserFilterOptions = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const isSuperAdmin = req.user!.isSuperAdmin;
+    const { reportingToId } = req.query as Record<string, string | undefined>;
+
+    // RBAC scope — null = everyone (super admin)
+    let visibleIds: string[] | null = null;
+    if (!isSuperAdmin) {
+      const subs = await getSubordinateIds(userId);
+      visibleIds = [userId, ...subs];
+    }
+    const visibleSet = visibleIds ? new Set(visibleIds) : null;
+    const scope: any = visibleIds ? { id: { in: visibleIds } } : {};
+
+    // Non-admin can't pivot onto a manager outside their own tree
+    if (reportingToId && visibleSet && !visibleSet.has(reportingToId)) {
+      return res.status(403).json({ success: false, message: "Not allowed" });
+    }
+
+    // Team leads narrow to the selected manager's subtree (manager included)
+    let leadScope: any = scope;
+    if (reportingToId) {
+      const subtree = [
+        reportingToId,
+        ...(await getSubordinateIds(reportingToId)),
+      ];
+      leadScope = {
+        id: {
+          in: visibleSet ? subtree.filter((id) => visibleSet.has(id)) : subtree,
+        },
+      };
+    }
+
+    const PERSON = {
+      id: true,
+      firstName: true,
+      lastName: true,
+      employeeId: true,
+    } as const;
+
+    const [deptRows, roleRows, reportingTo, teamLeads] = await Promise.all([
+      prisma.user.findMany({
+        where: { ...scope, departmentId: { not: null } },
+        select: { department: { select: { id: true, name: true } } },
+        distinct: ["departmentId"],
+      }),
+      prisma.user.findMany({
+        where: scope,
+        select: { role: { select: { id: true, name: true } } },
+        distinct: ["roleId"],
+      }),
+      // Managers = anyone in scope who has at least one subordinate
+      prisma.user.findMany({
+        where: { ...scope, isActive: true, subordinates: { some: {} } },
+        select: PERSON,
+        orderBy: { firstName: "asc" },
+      }),
+      // Team leads = anyone in lead-scope with active team members
+      prisma.user.findMany({
+        where: {
+          ...leadScope,
+          isActive: true,
+          teamMembers: { some: { isActive: true } },
+        },
+        select: PERSON,
+        orderBy: { firstName: "asc" },
+      }),
+    ]);
+
+    const byName = (a: { name: string }, b: { name: string }) =>
+      a.name.localeCompare(b.name);
+
+    res.json({
+      success: true,
+      data: {
+        departments: deptRows
+          .map((r) => r.department)
+          .filter((d): d is { id: string; name: string } => !!d)
+          .sort(byName),
+        roles: roleRows
+          .map((r) => r.role)
+          .filter((r): r is { id: string; name: string } => !!r)
+          .sort(byName),
+        reportingTo,
+        teamLeads,
+        teamRoles: TEAM_ROLE_FILTERS,
+      },
+    });
+  } catch (err) {
+    console.error("getUserFilterOptions:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch filter options" });
   }
 };
