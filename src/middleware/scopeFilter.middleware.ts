@@ -313,3 +313,25 @@ export function authLogScopeWhere(scope: ScopeFilter): any {
       return { userId: scope.userId };
   }
 }
+
+/** Portal recruit logs scope — filters PortalRecruitLog by recruiterId */
+export function portalRecruitScopeWhere(scope: ScopeFilter): any {
+  switch (scope.type) {
+    case "ALL":
+      return {};
+    case "OWN":
+      return { recruiterId: scope.userId };
+    case "TEAM":
+      return { recruiterId: { in: scope.teamMemberIds ?? [scope.userId] } };
+    case "REPORTING":
+      return { recruiterId: { in: scope.subordinateIds ?? [scope.userId] } };
+    case "REPORTING_LINE":
+      return { recruiterId: { in: scope.reportingLineIds ?? [scope.userId] } };
+    case "DEPARTMENT":
+      return { recruiter: { departmentId: scope.departmentId } };
+    case "BU":
+      return { recruiterId: { in: scope.subordinateIds ?? [scope.userId] } };
+    default:
+      return { recruiterId: scope.userId };
+  }
+}
