@@ -237,6 +237,7 @@ const ASSIGNMENT_SELECT = {
       jdParsedFields: true,
       parsedJDId: true,
       createdAt: true,
+      createdBy: { select: { id: true, firstName: true, lastName: true } },
       updatedAt: true,
       approvedAt: true,
       client: { select: { id: true, name: true, industry: true } },
