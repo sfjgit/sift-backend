@@ -1,37 +1,38 @@
-// File: exportRequirementReport.ts
-// Path: src/controllers/reports.requirements.export.controller.ts
-// (Drop this function into your reports requirements controller — replaces exportRequirementReport)
+// File: reports.requirements.export.controller.ts
+// Path: src/controller/reports/reports.requirements.export.controller.ts
 
 import ExcelJS from "exceljs";
-import { addDays, addMonths, format } from "date-fns";
-import prisma from "@/utils/prisma/client";
+import { addDays, addMonths, format, parse } from "date-fns";
+import { CandidateDisposition, Prisma } from "@prisma/client";
 import { Request, Response } from "express";
-import { computeSaleValue } from "../requirementsController";
-import { resolveOrgTreeDown } from "./reports.controller";
-// import { computeSaleValue } from "./requirementsController";
-// import { resolveOrgTreeDown } from "@/services/orgTreeService";
+import prisma from "@/utils/prisma/client";
+import {
+  Q,
+  str,
+  toArr,
+  personName,
+  enumIn,
+  REPORT_ASSIGNMENT_STATUSES,
+  computeSaleValue,
+  SaleValueBasis,
+  shareOf,
+  pctOf,
+  windowLabel,
+  fetchScopedStages,
+  fetchStageFlagMap,
+  classifyStageCounts,
+  resolveRequirementScope,
+  buildRequirementWhere,
+  buildActivityPipelineWhere,
+  monthKey,
+  monthLabel,
+  buildCreatedMonthBreakdown,
+  ScopedStage,
+} from "./reports.requirements.shared";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOCAL HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-
-function parseIds(val: string | undefined): string[] | null {
-  if (!val?.trim()) return null;
-  const ids = val
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return ids.length > 0 ? ids : null;
-}
-
-type CandidateColKey = string;
-
-function spocName(
-  spoc: { firstName: string; lastName: string } | null | undefined
-): string {
-  if (!spoc) return "";
-  return [spoc.firstName, spoc.lastName].filter(Boolean).join(" ");
-}
 
 function formatAging(mins: number): string {
   if (mins < 60) return `${mins}m`;
@@ -41,10 +42,7 @@ function formatAging(mins: number): string {
   return `${Math.floor(mins / 43800)}mo`;
 }
 
-/**
- * Derive expected joining date from available fields.
- * Priority: actualJoiningDate → expectedJoiningDate → lastWorkingDate → noticePeriod from today
- */
+/** Priority: actual → expected → LWD → noticePeriod from today */
 function deriveJoiningDate(
   actualJoiningDate: Date | null,
   expectedJoiningDate: Date | null,
@@ -53,23 +51,22 @@ function deriveJoiningDate(
 ): Date | null {
   if (actualJoiningDate) return actualJoiningDate;
   if (expectedJoiningDate) return expectedJoiningDate;
-  if (lastWorkingDate) return lastWorkingDate; // LWD is effectively the joining anchor
-
+  if (lastWorkingDate) return lastWorkingDate;
   if (noticePeriod) {
     const lower = noticePeriod.toLowerCase().trim();
-    const numMatch = lower.match(/^(\d+)/);
-    const num = numMatch ? parseInt(numMatch[1], 10) : null;
-    if (num != null) {
-      const base = new Date();
-      if (lower.includes("month")) return addMonths(base, num);
-      return addDays(base, num);
+    const m = lower.match(/^(\d+)/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return lower.includes("month")
+        ? addMonths(new Date(), n)
+        : addDays(new Date(), n);
     }
   }
   return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STYLE HELPERS
+// STYLE
 // ─────────────────────────────────────────────────────────────────────────────
 
 const mkFill = (argb: string): ExcelJS.Fill => ({
@@ -78,41 +75,28 @@ const mkFill = (argb: string): ExcelJS.Fill => ({
   fgColor: { argb },
 });
 
-const styleHdr = (row: ExcelJS.Row, fill?: ExcelJS.Fill) => {
-  const f = fill ?? mkFill("FF1E3A5F");
-  row.eachCell((cell) => {
-    cell.fill = f;
-    cell.font = { color: { argb: "FFFFFFFF" }, bold: true, size: 10 };
-    cell.alignment = {
-      vertical: "middle",
-      horizontal: "center",
-      wrapText: true,
-    };
-    cell.border = { bottom: { style: "thin", color: { argb: "FF4A90D9" } } };
-  });
-  row.height = 26;
+const FILLS = {
+  header: mkFill("FF1E3A5F"),
+  sub: mkFill("FF2D5986"),
+  sale: mkFill("FF1A5C2A"),
+  near: mkFill("FF8B5E0A"),
+  achieved: mkFill("FF4A148C"),
+  totals: mkFill("FFF0F4FF"),
 };
-
-const styleTotalsRow = (row: ExcelJS.Row) => {
-  row.eachCell((cell) => {
-    cell.font = { bold: true };
-    cell.fill = mkFill("FFF0F4FF");
-    cell.border = { top: { style: "medium", color: { argb: "FF4F46E5" } } };
-  });
-  row.height = 22;
-};
-
-const SUB_FILL = mkFill("FF2D5986");
-const SALE_FILL = mkFill("FF1A5C2A");
-const ACHIEVED_FILL = mkFill("FF4A148C");
-const NEAR_FILL = mkFill("FF8B5E0A");
 
 const LIGHT = {
   green: mkFill("FFE2EFDA"),
   red: mkFill("FFFCE4D6"),
-  purple: mkFill("FFEDE7F6"),
   amber: mkFill("FFFFF3CD"),
-  blue: mkFill("FFE8F0FE"),
+};
+
+const COLORS = {
+  white: "FFFFFFFF",
+  green: "FF1A5C2A",
+  red: "FFDE350B",
+  grey: "FF9E9E9E",
+  border: "FF4A90D9",
+  totalsBorder: "FF4F46E5",
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -124,237 +108,118 @@ const STATUS_COLORS: Record<string, string> = {
   CANCELLED: "FF5E6C84",
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE DETAIL SELECT — what we fetch for each pipeline row
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PIPELINE_DETAIL_SELECT = {
-  id: true,
-  requirementId: true,
-  stageUpdatedAt: true,
-  isRejected: true,
-  isWithdrawn: true,
-  isOnHold: true,
-  submittedAt: true,
-  offerStatus: true,
-  offeredCtc: true,
-  currentCtc: true,
-  expectedCtc: true,
-  negotiatedCtc: true,
-  expectedJoiningDate: true,
-  actualJoiningDate: true,
-  lastWorkingDate: true,
-  noticePeriod: true,
-  createdAt: true,
-  currentStage: {
-    select: {
-      code: true,
-      label: true,
-      isTerminal: true,
-      isNearTerminal: true,
-      isSourced: true,
-    },
-  },
-  recruiter: { select: { firstName: true, lastName: true } },
-  snapshot: {
-    select: {
-      fullName: true,
-      email: true,
-      phone: true,
-      currentTitle: true,
-      currentCompany: true,
-      totalExpYears: true,
-      topSkills: true,
-    },
-  },
-  stageHistory: { select: { timeInPrevStageMins: true } },
+const CANDIDATE_STATUS = {
+  PLACED: "Placed",
+  REJECTED: "Rejected",
+  WITHDRAWN: "Withdrawn",
+  ON_HOLD: "On Hold",
+  NEAR_CLOSE: "Near Close",
+  ACTIVE: "Active",
 } as const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// fetchScopedStages — fetch pipeline stages visible for this service line
-// ─────────────────────────────────────────────────────────────────────────────
+const FMT = {
+  date: "dd-mmm-yyyy",
+  dateTime: "dd-mmm-yyyy hh:mm",
+  money: "#,##0.00",
+};
 
-async function fetchScopedStages(serviceLineId?: string) {
-  return prisma.pipelineStage.findMany({
-    where: {
-      isActive: true,
-      ...(serviceLineId
-        ? { OR: [{ serviceLineId: null }, { serviceLineId }] }
-        : {}),
-    },
-    select: {
-      id: true,
-      label: true,
-      order: true,
-      isStandard: true,
-      isTerminal: true,
-      isNearTerminal: true,
-      serviceLineId: true,
-      serviceLine: { select: { name: true } },
-    },
-    orderBy: { order: "asc" },
-  });
+/** Filters echoed into the Summary sheet so you can verify what was applied */
+const FILTER_LABELS: Record<string, string> = {
+  status: "Status",
+  priority: "Priority",
+  jobType: "Job Type",
+  remoteType: "Remote Type",
+  clientId: "Client",
+  clientSpocId: "Client SPOC",
+  serviceLineId: "Service Line",
+  businessUnitId: "Business Unit",
+  createdById: "Created By",
+  assignedToId: "Assigned To",
+  assignedById: "Assigned By",
+  recruiterId: "Recruiter",
+  userIds: "Team",
+  disposition: "Disposition",
+  stageIds: "Stages (candidates)",
+  hiddenStageIds: "Hidden Stages",
+  ids: "Selected Requirements",
+  bucket: "Summary Slice",
+};
+const USER_FILTER_KEYS = [
+  "createdById",
+  "assignedToId",
+  "assignedById",
+  "recruiterId",
+  "userIds",
+];
+
+function styleHeaderCell(cell: ExcelJS.Cell, fill: ExcelJS.Fill) {
+  cell.fill = fill;
+  cell.font = { color: { argb: COLORS.white }, bold: true, size: 10 };
+  cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  cell.border = { bottom: { style: "thin", color: { argb: COLORS.border } } };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// buildReqWhere — re-usable base requirement where clause (no date window)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildReqWhere(q: Record<string, string>): Record<string, any> {
-  const where: Record<string, any> = { deletedAt: null };
-
-  // multi-value params — frontend sends repeated keys e.g. status=ACTIVE&status=CLOSED
-  const statuses = q.status
-    ? Array.isArray((q as any).status)
-      ? (q as any).status
-      : [q.status]
-    : null;
-  if (statuses?.length) {
-    where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
-  }
-
-  const clientIds = q.clientId
-    ? Array.isArray((q as any).clientId)
-      ? (q as any).clientId
-      : [q.clientId]
-    : null;
-  if (clientIds?.length) {
-    where.clientId = clientIds.length === 1 ? clientIds[0] : { in: clientIds };
-  }
-
-  const serviceLineIds = q.serviceLineId
-    ? Array.isArray((q as any).serviceLineId)
-      ? (q as any).serviceLineId
-      : [q.serviceLineId]
-    : null;
-  if (serviceLineIds?.length) {
-    where.serviceLineId =
-      serviceLineIds.length === 1 ? serviceLineIds[0] : { in: serviceLineIds };
-  }
-
-  if (q.businessUnitId) where.businessUnitId = q.businessUnitId;
-
-  const spocIds = q.clientSpocId
-    ? Array.isArray((q as any).clientSpocId)
-      ? (q as any).clientSpocId
-      : [q.clientSpocId]
-    : null;
-  if (spocIds?.length) {
-    where.clientSpocId = spocIds.length === 1 ? spocIds[0] : { in: spocIds };
-  }
-
-  return where;
+/** Styles every column 1..colCount (eachCell skips empty/merged cells) */
+function styleHeaderRow(
+  row: ExcelJS.Row,
+  colCount: number,
+  fill: ExcelJS.Fill
+) {
+  for (let c = 1; c <= colCount; c++) styleHeaderCell(row.getCell(c), fill);
+  row.height = 26;
 }
+
+function styleTotalsRow(row: ExcelJS.Row, colCount: number) {
+  for (let c = 1; c <= colCount; c++) {
+    const cell = row.getCell(c);
+    cell.font = { bold: true };
+    cell.fill = FILLS.totals;
+    cell.border = {
+      top: { style: "medium", color: { argb: COLORS.totalsBorder } },
+    };
+  }
+  row.height = 22;
+}
+
+type ColDef = { header: string; key: string; width: number };
+
+const stageCol = (s: ScopedStage, grand: Record<string, number>): ColDef => ({
+  header: `${s.label} (${grand[s.id] ?? 0})`,
+  key: `stage_${s.id}`,
+  width: Math.max(s.label.length + 6, 14),
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // exportRequirementReport
-// GET /reports/requirements/export    — all / selected
-// GET /reports/requirements/:id/export — single requirement
+// GET /reports/requirements/export      — all / selected (?ids=)
+// GET /reports/requirements/:id/export  — single requirement
 //
-// Changes from previous version:
-//  ✅ Requirements sheet: adds salaryMin, salaryMax, computedSaleValue,
-//     saleValueBasis, bandCode, bandName, bandValue, clientPct columns
-//  ✅ isNearTerminal stages get their own section header
-//  ✅ Candidates sheet: adds Month of Joining, Days to Join derived from
-//     lastWorkingDate (priority: actual → expected → LWD → noticePeriod)
-//  ✅ Candidates sheet: adds currentCtc, expectedCtc, negotiatedCtc, offeredCtc,
-//     noticePeriod, lastWorkingDate, derivedJoiningDate
-//  ✅ All existing columns preserved
+// Same scope + filters as GET /reports/requirements (shared helper).
+// Candidate rows and counts are ALWAYS restricted to the caller's hierarchy.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const exportRequirementReport = async (req: Request, res: Response) => {
   try {
-    const q = req.query as Record<string, string>;
-    const singleId = (req.params as any).id ?? null;
-    const selectedIds = parseIds(q.ids);
-    const selectedStageIds = parseIds(q.stageIds);
-    const hiddenStageIds = new Set(parseIds(q.hiddenStageIds) ?? []);
-    const standardOnly = q.standardOnly === "true";
-
-    // ── Build where ──────────────────────────────────────────────────────────
-    let baseWhere: Record<string, any>;
-    if (singleId) {
-      baseWhere = { id: singleId, deletedAt: null };
-    } else {
-      const creatorIds = await resolveOrgTreeDown(
-        req.user!.id,
-        req.user!.isSuperAdmin
-      );
-      const reqFilter = buildReqWhere(q);
-      const win = resolveDateWindow(q);
-      const activityWindow =
-        win.gte || win.lte
-          ? {
-              ...(win.gte ? { gte: win.gte } : {}),
-              ...(win.lte ? { lte: win.lte } : {}),
-            }
-          : null;
-      const activityFilter = activityWindow
-        ? {
-            pipelines: {
-              some: {
-                OR: [
-                  { createdAt: activityWindow },
-                  { updatedAt: activityWindow },
-                  { stageHistory: { some: { createdAt: activityWindow } } },
-                ],
-              },
-            },
-          }
-        : {};
-      // baseWhere =
-      //   creatorIds !== null
-      //     ? { ...reqFilter, ...activityFilter, createdById: { in: creatorIds } }
-      //     : { ...reqFilter, ...activityFilter };
-
-      if (creatorIds !== null) {
-        const assignedReqRows = await prisma.requirementAssignment.findMany({
-          where: { assignedToId: { in: creatorIds }, status: "ACTIVE" },
-          select: { requirementId: true },
-        });
-        const assignedReqIds = [
-          ...new Set(assignedReqRows.map((a) => a.requirementId)),
-        ];
-
-        baseWhere = {
-          ...reqFilter,
-          ...activityFilter,
-          OR: [
-            { createdById: { in: creatorIds } },
-            ...(assignedReqIds.length > 0
-              ? [{ id: { in: assignedReqIds } }]
-              : []),
-          ],
-        };
-      } else {
-        baseWhere = { ...reqFilter, ...activityFilter };
-      }
-
-      if (selectedIds) {
-        baseWhere.id = { in: selectedIds };
-        delete baseWhere.pipelines;
-      }
-    }
-
-    // ── Stages ───────────────────────────────────────────────────────────────
-    const stages = await fetchScopedStages(q.serviceLineId);
-    const activeStages = (
-      standardOnly ? stages.filter((s) => s.isStandard) : stages
-    ).filter((s) => !hiddenStageIds.has(s.id));
-    const stageIdSet = new Set(stages.map((s) => s.id));
-
-    // Separate stage groups
-    const terminalStages = activeStages.filter((s) => s.isTerminal);
-    const nearTerminalStages = activeStages.filter(
-      (s) => s.isNearTerminal && !s.isTerminal
-    );
-    const pipelineStages = activeStages.filter(
-      (s) => !s.isTerminal && !s.isNearTerminal
+    const q = req.query as Q;
+    const singleId = str((req.params as { id?: string }).id) ?? null;
+    const selectedIds = toArr(q.ids);
+    const selectedStageIds = toArr(q.stageIds);
+    const hiddenStageIds = new Set(toArr(q.hiddenStageIds));
+    const standardOnly = str(q.standardOnly) === "true";
+    const dispositionIn = enumIn(
+      q.disposition,
+      Object.values(CandidateDisposition)
     );
 
-    // ── Requirements ─────────────────────────────────────────────────────────
+    // ── 1. Scope + where (identical to the on-screen report) ─────────────
+    const scope = await resolveRequirementScope(req, q);
+    const reqWhere = await buildRequirementWhere(q, scope, {
+      singleId,
+      selectedIds: selectedIds.length ? selectedIds : null,
+    });
+
     const requirements = await prisma.requirement.findMany({
-      where: baseWhere,
+      where: reqWhere,
       select: {
         id: true,
         reqCode: true,
@@ -365,47 +230,28 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         remoteType: true,
         totalOpenings: true,
         city: true,
-        state: true,
         country: true,
         respondBy: true,
         isRespondByBreached: true,
         isTurnaroundBreached: true,
         createdAt: true,
         deletedAt: true,
-        // Sale value fields
         saleValue: true,
+        perOpeningValue: true,
+        saleValueBasis: true,
         salaryMin: true,
         salaryMax: true,
-        band: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            value: true,
-          },
-        },
-        client: {
-          select: {
-            id: true,
-            name: true,
-            percentageValue: true,
-          },
-        },
+        band: { select: { id: true, code: true, name: true, value: true } },
+        client: { select: { id: true, name: true, percentageValue: true } },
         clientSpoc: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            designation: true,
-          },
+          select: { id: true, firstName: true, lastName: true, email: true },
         },
         businessUnit: { select: { id: true, name: true } },
         serviceLine: { select: { id: true, name: true } },
-        createdBy: { select: { firstName: true, lastName: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
       },
       orderBy: { createdAt: "desc" },
-      take: 1000,
+      take: 1_000,
     });
 
     if (!requirements.length)
@@ -415,60 +261,213 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
     const reqIds = requirements.map((r) => r.id);
 
-    // ── Stage counts ─────────────────────────────────────────────────────────
+    // ── 2. Stages ────────────────────────────────────────────────────────
+    const slFilter = toArr(q.serviceLineId);
+    const stageSlIds = slFilter.length
+      ? slFilter
+      : singleId && requirements[0].serviceLine
+      ? [requirements[0].serviceLine.id]
+      : [];
+
+    const [scopedStages, stageById] = await Promise.all([
+      fetchScopedStages(stageSlIds),
+      fetchStageFlagMap(),
+    ]);
+
+    const visibleStages = scopedStages.filter(
+      (s) => (!standardOnly || s.isStandard) && !hiddenStageIds.has(s.id)
+    );
+    const terminalStages = visibleStages.filter((s) => s.isTerminal);
+    const nearStages = visibleStages.filter(
+      (s) => s.isNearTerminal && !s.isTerminal
+    );
+    const pipelineStages = visibleStages.filter(
+      (s) => !s.isTerminal && !s.isNearTerminal
+    );
+
+    // ── 3. Pipeline where — ownership ALWAYS applied ─────────────────────
+    const pipelineBaseWhere: Prisma.RequirementCandidatePipelineWhereInput = {
+      requirementId: { in: reqIds },
+      ...scope.pipelineOwnerWhere,
+      ...buildActivityPipelineWhere(q), // activity date → counts + candidate rows
+      ...(dispositionIn ? { disposition: dispositionIn } : {}),
+    };
+    const candidateWhere: Prisma.RequirementCandidatePipelineWhereInput = {
+      ...pipelineBaseWhere,
+      ...(selectedStageIds.length
+        ? { currentStageId: { in: selectedStageIds } }
+        : hiddenStageIds.size
+        ? { currentStageId: { notIn: [...hiddenStageIds] } }
+        : {}),
+    };
+
     const stageCounts = await prisma.requirementCandidatePipeline.groupBy({
       by: ["requirementId", "currentStageId"],
-      where: { requirementId: { in: reqIds } },
+      where: pipelineBaseWhere,
       _count: { id: true },
     });
+
+    const [pipelines, assignments] = await Promise.all([
+      prisma.requirementCandidatePipeline.findMany({
+        where: candidateWhere,
+        select: {
+          id: true,
+          requirementId: true,
+          currentStageId: true,
+          disposition: true,
+          stageUpdatedAt: true,
+          isRejected: true,
+          isWithdrawn: true,
+          isOnHold: true,
+          submittedAt: true,
+          offerStatus: true,
+          offeredCtc: true,
+          currentCtc: true,
+          expectedCtc: true,
+          negotiatedCtc: true,
+          expectedJoiningDate: true,
+          actualJoiningDate: true,
+          lastWorkingDate: true,
+          noticePeriod: true,
+          monthOfJoining: true,
+          createdAt: true,
+          currentStage: {
+            select: { label: true, isTerminal: true, isNearTerminal: true },
+          },
+          recruiter: { select: { firstName: true, lastName: true } },
+          snapshot: {
+            select: {
+              fullName: true,
+              email: true,
+              phone: true,
+              currentTitle: true,
+              currentCompany: true,
+              totalExpYears: true,
+              topSkills: true,
+            },
+          },
+          stageHistory: { select: { timeInPrevStageMins: true } },
+        },
+        orderBy: [{ requirementId: "asc" }, { createdAt: "asc" }],
+      }),
+      prisma.requirementAssignment.findMany({
+        where: {
+          requirementId: { in: reqIds },
+          status: { in: REPORT_ASSIGNMENT_STATUSES },
+        },
+        select: { requirementId: true, assignedToId: true, assignedById: true },
+      }),
+    ]);
+
+    // ── 4. Name lookups (assignees + filter echo) ────────────────────────
+    const filterUserIds = USER_FILTER_KEYS.flatMap((k) => toArr(q[k]));
+    const lookupIds = [
+      ...new Set(
+        [
+          ...assignments.flatMap((a) => [a.assignedToId, a.assignedById]),
+          ...filterUserIds,
+        ].filter((x): x is string => !!x)
+      ),
+    ];
+    const lookupUsers = lookupIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: lookupIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [];
+    const userName = new Map(lookupUsers.map((u) => [u.id, personName(u)]));
+
+    const assigneesByReq: Record<string, { to: Set<string>; by: Set<string> }> =
+      {};
+    for (const a of assignments) {
+      const b = (assigneesByReq[a.requirementId] ??= {
+        to: new Set(),
+        by: new Set(),
+      });
+      if (a.assignedToId) b.to.add(userName.get(a.assignedToId) ?? "");
+      if (a.assignedById) b.by.add(userName.get(a.assignedById) ?? "");
+    }
+    const joinNames = (s?: Set<string>) =>
+      s ? [...s].filter(Boolean).join(", ") : "";
+
+    // ── 5. Per-requirement calculations (computed ONCE) ──────────────────
     const countsByReq: Record<string, Record<string, number>> = {};
     for (const sc of stageCounts as any[]) {
-      if (!stageIdSet.has(sc.currentStageId)) continue;
-      if (!countsByReq[sc.requirementId]) countsByReq[sc.requirementId] = {};
-      countsByReq[sc.requirementId][sc.currentStageId] =
-        (countsByReq[sc.requirementId][sc.currentStageId] ?? 0) + sc._count.id;
+      const bucket = (countsByReq[sc.requirementId] ??= {});
+      bucket[sc.currentStageId] =
+        (bucket[sc.currentStageId] ?? 0) + sc._count.id;
     }
 
-    // ── Grand stage totals for column headers ────────────────────────────────
+    // ── Summary-bar slice — same rule the screen uses on its rows ────────
+    const bucket = str(q.bucket);
+    if (bucket) {
+      const keep = requirements.filter((r) => {
+        const { terminal, nearTerminal } = classifyStageCounts(
+          countsByReq[r.id] ?? {},
+          stageById
+        );
+        return bucket === "terminal"
+          ? terminal > 0
+          : bucket === "nearTerminal"
+          ? nearTerminal > 0
+          : true;
+      });
+      if (!keep.length)
+        return res
+          .status(404)
+          .json({ success: false, message: "No requirements in this slice" });
+      requirements.splice(0, requirements.length, ...keep);
+    }
+
+    type ReqCalc = {
+      counts: Record<string, number>;
+      total: number;
+      terminal: number;
+      near: number;
+      saleValue: number | null;
+      basis: SaleValueBasis;
+      achievedValue: number | null;
+      nearValue: number | null;
+    };
+    const calcByReq = new Map<string, ReqCalc>();
     const grandStageCounts: Record<string, number> = {};
+
     for (const r of requirements) {
       const counts = countsByReq[r.id] ?? {};
-      for (const s of activeStages) {
+      const { total, terminal, nearTerminal } = classifyStageCounts(
+        counts,
+        stageById
+      );
+      const { value, basis } = computeSaleValue(r);
+      calcByReq.set(r.id, {
+        counts,
+        total,
+        terminal,
+        near: nearTerminal,
+        saleValue: value,
+        basis,
+        achievedValue: shareOf(terminal, r.totalOpenings, value),
+        nearValue: shareOf(nearTerminal, r.totalOpenings, value),
+      });
+      for (const s of visibleStages)
         grandStageCounts[s.id] =
           (grandStageCounts[s.id] ?? 0) + (counts[s.id] ?? 0);
-      }
     }
 
-    // ── Pipeline rows ────────────────────────────────────────────────────────
-    const pipelineWhere: Record<string, any> = {
-      requirementId: { in: reqIds },
-    };
-    if (q.disposition) pipelineWhere.disposition = q.disposition as any;
-    // Stage filter from export options
-    if (selectedStageIds) {
-      pipelineWhere.currentStageId = { in: selectedStageIds };
-    }
-
-    const pipelines = await prisma.requirementCandidatePipeline.findMany({
-      where: pipelineWhere,
-      select: PIPELINE_DETAIL_SELECT as any,
-      orderBy: { createdAt: "asc" },
-    });
-
-    // ── Build workbook ───────────────────────────────────────────────────────
+    // ── Workbook ─────────────────────────────────────────────────────────
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "TalentOS";
     workbook.created = new Date();
+    const now = Date.now();
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SHEET 1: Requirements
-    // ════════════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════════
+    // SHEET 1: Requirements (row 1 = group headers, row 2 = column headers)
+    // ════════════════════════════════════════════════════════════════════
     const sheet1 = workbook.addWorksheet("Requirements", {
-      views: [{ state: "frozen", ySplit: 2 }],
+      views: [{ state: "frozen", ySplit: 2, xSplit: 2 }],
     });
 
-    // Fixed columns — always shown
-    const fixedCols = [
+    const fixedCols: ColDef[] = [
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Title", key: "title", width: 38 },
       { header: "Status", key: "status", width: 16 },
@@ -484,175 +483,124 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Remote", key: "remote", width: 12 },
       { header: "Total Openings", key: "openings", width: 14 },
       { header: "Created By", key: "createdBy", width: 22 },
+      { header: "Assigned To", key: "assignedTo", width: 28 },
+      { header: "Assigned By", key: "assignedBy", width: 22 },
       { header: "Created Date", key: "createdAt", width: 18 },
-      { header: "Deleted Date", key: "deletedAt", width: 18 },
+      { header: "Created Month", key: "createdMonth", width: 14 },
       { header: "Days Open", key: "daysOpen", width: 12 },
-      { header: "Respond By", key: "respondBy", width: 18 },
+      { header: "Respond By", key: "respondBy", width: 16 },
       { header: "SLA Breached?", key: "breached", width: 14 },
       { header: "Total Candidates", key: "total", width: 16 },
     ];
 
-    // Sale value columns — NEW: all computation details
-    const saleValueCols = [
+    const saleCols: ColDef[] = [
       { header: "Salary Min", key: "salaryMin", width: 14 },
       { header: "Salary Max", key: "salaryMax", width: 14 },
       { header: "Band Code", key: "bandCode", width: 12 },
       { header: "Band Name", key: "bandName", width: 20 },
       { header: "Band Value", key: "bandValue", width: 14 },
-      { header: "Client %", key: "clientPct", width: 12 },
+      { header: "Client %", key: "clientPct", width: 10 },
       { header: "Req Sale Value", key: "reqSaleValue", width: 16 },
-      { header: "Computed Sale Value", key: "computedSaleValue", width: 22 },
-      { header: "Sale Basis", key: "saleValueBasis", width: 18 },
+      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+      { header: "Sale Basis", key: "saleValueBasis", width: 14 },
+      { header: "Achieved Count", key: "achievedCount", width: 14 },
+      { header: "Achieved Value", key: "achievedValue", width: 16 },
+      { header: "Achieved %", key: "achievedPct", width: 12 },
+      { header: "Near Close Count", key: "nearCount", width: 14 },
+      { header: "Near Close Value", key: "nearValue", width: 16 },
+      { header: "Near Close %", key: "nearPct", width: 12 },
+    ];
+    const MONEY_KEYS = [
+      "salaryMin",
+      "salaryMax",
+      "bandValue",
+      "reqSaleValue",
+      "computedSaleValue",
+      "achievedValue",
+      "nearValue",
     ];
 
-    // Pipeline stage columns — split into groups
-    const pipelineStageCols = pipelineStages.map((s) => ({
-      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
-      key: `stage_${s.id}`,
-      width: Math.max(s.label.length + 6, 14),
-    }));
-    const nearTermStageCols = nearTerminalStages.map((s) => ({
-      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
-      key: `stage_${s.id}`,
-      width: Math.max(s.label.length + 6, 14),
-    }));
-    const terminalStageCols = terminalStages.map((s) => ({
-      header: `${s.label} (${grandStageCounts[s.id] ?? 0})`,
-      key: `stage_${s.id}`,
-      width: Math.max(s.label.length + 6, 14),
-    }));
+    const pipelineCols = pipelineStages.map((s) =>
+      stageCol(s, grandStageCounts)
+    );
+    const nearCols = nearStages.map((s) => stageCol(s, grandStageCounts));
+    const terminalCols = terminalStages.map((s) =>
+      stageCol(s, grandStageCounts)
+    );
 
-    sheet1.columns = [
-      ...fixedCols,
-      ...saleValueCols,
-      ...pipelineStageCols,
-      ...nearTermStageCols,
-      ...terminalStageCols,
-    ];
+    const colGroups = [
+      { label: "Requirement Details", cols: fixedCols, fill: FILLS.header },
+      { label: "Sale Value", cols: saleCols, fill: FILLS.sale },
+      { label: "Pipeline Stages", cols: pipelineCols, fill: FILLS.sub },
+      { label: "Near Close", cols: nearCols, fill: FILLS.near },
+      { label: "Achieved / Placed", cols: terminalCols, fill: FILLS.achieved },
+    ].filter((g) => g.cols.length > 0);
 
-    // ── Group header row (row 1) ─────────────────────────────────────────────
-    const nFixed = fixedCols.length;
-    const nSale = saleValueCols.length;
-    const nPipeline = pipelineStageCols.length;
-    const nNear = nearTermStageCols.length;
-    const nTerminal = terminalStageCols.length;
+    const allCols = colGroups.flatMap((g) => g.cols);
 
+    // NOTE: no `header` here — otherwise ExcelJS writes headers into row 1
+    // underneath the merged group headers (that was the "messed up" sheet).
+    sheet1.columns = allCols.map(({ key, width }) => ({ key, width }));
+
+    // Row 1 — group headers
     const groupRow = sheet1.getRow(1);
-    let colCursor = 1;
-
-    // Fixed group
-    groupRow.getCell(colCursor).value = "Requirement Details";
-    if (nFixed > 1) sheet1.mergeCells(1, colCursor, 1, colCursor + nFixed - 1);
-    colCursor += nFixed;
-
-    // Sale value group
-    groupRow.getCell(colCursor).value = "Sale Value";
-    if (nSale > 1) sheet1.mergeCells(1, colCursor, 1, colCursor + nSale - 1);
-    colCursor += nSale;
-
-    // Pipeline stages group
-    if (nPipeline > 0) {
-      groupRow.getCell(colCursor).value = "Pipeline Stages";
-      if (nPipeline > 1)
-        sheet1.mergeCells(1, colCursor, 1, colCursor + nPipeline - 1);
-      colCursor += nPipeline;
+    let cursor = 1;
+    for (const g of colGroups) {
+      const start = cursor;
+      const end = cursor + g.cols.length - 1;
+      groupRow.getCell(start).value = g.label;
+      if (end > start) sheet1.mergeCells(1, start, 1, end);
+      for (let c = start; c <= end; c++)
+        styleHeaderCell(groupRow.getCell(c), g.fill);
+      cursor = end + 1;
     }
+    groupRow.height = 26;
 
-    // Near-terminal group
-    if (nNear > 0) {
-      groupRow.getCell(colCursor).value = "Near Close";
-      if (nNear > 1) sheet1.mergeCells(1, colCursor, 1, colCursor + nNear - 1);
-      colCursor += nNear;
-    }
-
-    // Terminal / Achieved group
-    if (nTerminal > 0) {
-      groupRow.getCell(colCursor).value = "Achieved / Placed";
-      if (nTerminal > 1)
-        sheet1.mergeCells(1, colCursor, 1, colCursor + nTerminal - 1);
-    }
-
-    styleHdr(groupRow);
-    // Colour each group header differently
-    groupRow.getCell(nFixed + 1).fill = SALE_FILL;
-    if (nPipeline > 0) groupRow.getCell(nFixed + nSale + 1).fill = SUB_FILL;
-    if (nNear > 0)
-      groupRow.getCell(nFixed + nSale + nPipeline + 1).fill = NEAR_FILL;
-    if (nTerminal > 0)
-      groupRow.getCell(nFixed + nSale + nPipeline + nNear + 1).fill =
-        ACHIEVED_FILL;
-
-    // ── Column header row (row 2) ────────────────────────────────────────────
-    const allColDefs = [
-      ...fixedCols,
-      ...saleValueCols,
-      ...pipelineStageCols,
-      ...nearTermStageCols,
-      ...terminalStageCols,
-    ];
+    // Row 2 — column headers
     const colHdr = sheet1.getRow(2);
-    allColDefs.forEach((col, i) => {
-      colHdr.getCell(i + 1).value = col.header;
-    });
-    styleHdr(colHdr, SUB_FILL);
+    allCols.forEach((col, i) => (colHdr.getCell(i + 1).value = col.header));
+    styleHeaderRow(colHdr, allCols.length, FILLS.sub);
 
-    // ── Data rows ─────────────────────────────────────────────────────────────
-    const now = Date.now();
-    let grandTotal = 0;
-    let grandDaysOpen = 0;
-    let grandSaleValueSum = 0;
-    let grandAchievedSum = 0;
-    let omittedCount = 0;
+    // Data rows
+    const totals = {
+      openings: 0,
+      candidates: 0,
+      daysOpen: 0,
+      sale: 0,
+      achievedCount: 0,
+      achievedValue: 0,
+      nearCount: 0,
+      nearValue: 0,
+      omitted: 0,
+    };
 
     for (const r of requirements) {
-      const counts = countsByReq[r.id] ?? {};
-      const totalCandidates = Object.values(counts).reduce((s, n) => s + n, 0);
+      const c = calcByReq.get(r.id)!;
       const daysOpen = Math.floor(
-        (now - new Date(r.createdAt).getTime()) / 86400000
+        (now - new Date(r.createdAt).getTime()) / 86_400_000
       );
-      grandTotal += totalCandidates;
-      grandDaysOpen += daysOpen;
+      const breached = r.isRespondByBreached || r.isTurnaroundBreached;
 
-      // Sale value computation
-      const { computedSaleValue, saleValueBasis } = computeSaleValue({
-        saleValue: r.saleValue,
-        totalOpenings: r.totalOpenings,
-        salaryMin: r.salaryMin,
-        band: r.band
-          ? { value: r.band.value != null ? Number(r.band.value) : null }
-          : null,
-        client: r.client
-          ? {
-              percentageValue:
-                r.client.percentageValue != null
-                  ? Number(r.client.percentageValue)
-                  : null,
-            }
-          : null,
-      });
-
-      if (computedSaleValue != null) {
-        grandSaleValueSum += computedSaleValue;
-        // Achieved value: terminal stage counts / openings × computedSaleValue
-        const terminalCount = terminalStages.reduce(
-          (sum, s) => sum + (counts[s.id] ?? 0),
-          0
-        );
-        if (r.totalOpenings > 0) {
-          grandAchievedSum +=
-            (terminalCount / r.totalOpenings) * computedSaleValue;
-        }
+      totals.openings += r.totalOpenings;
+      totals.candidates += c.total;
+      totals.daysOpen += daysOpen;
+      totals.achievedCount += c.terminal;
+      totals.nearCount += c.near;
+      if (c.saleValue != null) {
+        totals.sale += c.saleValue;
+        totals.achievedValue += c.achievedValue ?? 0;
+        totals.nearValue += c.nearValue ?? 0;
       } else {
-        omittedCount++;
+        totals.omitted++;
       }
 
-      const rowData: Record<string, any> = {
+      const rowData: Record<string, unknown> = {
         reqCode: r.reqCode,
         title: r.title,
         status: r.status,
         priority: r.priority,
         client: r.client?.name ?? "",
-        spoc: spocName(r.clientSpoc),
+        spoc: personName(r.clientSpoc),
         spocEmail: r.clientSpoc?.email ?? "",
         bu: r.businessUnit?.name ?? "",
         sl: r.serviceLine?.name ?? "",
@@ -661,17 +609,15 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         jobType: r.jobType,
         remote: r.remoteType,
         openings: r.totalOpenings,
-        createdBy: [r.createdBy.firstName, r.createdBy.lastName]
-          .filter(Boolean)
-          .join(" "),
+        createdBy: personName(r.createdBy),
+        assignedTo: joinNames(assigneesByReq[r.id]?.to),
+        assignedBy: joinNames(assigneesByReq[r.id]?.by),
         createdAt: new Date(r.createdAt),
-        deletedAt: r.deletedAt ? new Date(r.deletedAt) : "",
+        createdMonth: monthLabel(monthKey(r.createdAt)),
         daysOpen,
         respondBy: r.respondBy ? new Date(r.respondBy) : "",
-        breached:
-          r.isRespondByBreached || r.isTurnaroundBreached ? "Yes" : "No",
-        total: totalCandidates,
-        // Sale value
+        breached: breached ? "Yes" : "No",
+        total: c.total,
         salaryMin: r.salaryMin != null ? Number(r.salaryMin) : "",
         salaryMax: r.salaryMax != null ? Number(r.salaryMax) : "",
         bandCode: r.band?.code ?? "",
@@ -682,153 +628,183 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
             ? Number(r.client.percentageValue)
             : "",
         reqSaleValue: r.saleValue != null ? Number(r.saleValue) : "",
-        computedSaleValue: computedSaleValue ?? "",
-        saleValueBasis:
-          computedSaleValue != null ? saleValueBasis : "NOT_FOUND",
+        computedSaleValue: c.saleValue ?? "No Data",
+        saleValueBasis: c.basis,
+        achievedCount: c.terminal,
+        achievedValue: c.achievedValue ?? "",
+        achievedPct: pctOf(c.terminal, r.totalOpenings),
+        nearCount: c.near,
+        nearValue: c.nearValue ?? "",
+        nearPct: pctOf(c.near, r.totalOpenings),
       };
+      for (const s of visibleStages)
+        rowData[`stage_${s.id}`] = c.counts[s.id] ?? 0;
 
-      // Stage count cells
-      for (const s of activeStages) {
-        rowData[`stage_${s.id}`] = counts[s.id] ?? 0;
-      }
+      const row = sheet1.addRow(rowData);
+      row.height = 20;
+      row.getCell("createdAt").numFmt = FMT.dateTime;
+      if (r.respondBy) row.getCell("respondBy").numFmt = FMT.date;
+      for (const k of MONEY_KEYS) row.getCell(k).numFmt = FMT.money;
 
-      const dataRow = sheet1.addRow(rowData);
-      dataRow.height = 20;
-      dataRow.getCell("createdAt").numFmt = "dd-mmm-yyyy hh:mm";
-      if (r.deletedAt)
-        dataRow.getCell("deletedAt").numFmt = "dd-mmm-yyyy hh:mm";
-      if (r.respondBy) dataRow.getCell("respondBy").numFmt = "dd-mmm-yyyy";
-
-      // Status colour
       const sc = STATUS_COLORS[r.status];
       if (sc) {
-        dataRow.getCell("status").fill = mkFill(sc);
-        dataRow.getCell("status").font = {
-          color: { argb: "FFFFFFFF" },
+        row.getCell("status").fill = mkFill(sc);
+        row.getCell("status").font = {
+          color: { argb: COLORS.white },
+          bold: true,
+        };
+      }
+      if (breached) {
+        row.getCell("breached").fill = mkFill(COLORS.red);
+        row.getCell("breached").font = {
+          color: { argb: COLORS.white },
           bold: true,
         };
       }
 
-      // Breach highlight
-      if (r.isRespondByBreached || r.isTurnaroundBreached) {
-        dataRow.getCell("breached").fill = mkFill("FFDE350B");
-        dataRow.getCell("breached").font = {
-          color: { argb: "FFFFFFFF" },
-          bold: true,
-        };
-      }
-
-      // Computed sale value styling
-      if (computedSaleValue != null) {
-        dataRow.getCell("computedSaleValue").fill = LIGHT.green;
-        dataRow.getCell("computedSaleValue").font = { bold: true };
-        dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+      const svCell = row.getCell("computedSaleValue");
+      if (c.saleValue != null) {
+        svCell.fill = LIGHT.green;
+        svCell.font = { bold: true };
       } else {
-        dataRow.getCell("computedSaleValue").fill = LIGHT.red;
-        dataRow.getCell("computedSaleValue").font = {
-          color: { argb: "FFDE350B" },
-        };
-        dataRow.getCell("computedSaleValue").value = "No Data";
+        svCell.fill = LIGHT.red;
+        svCell.font = { color: { argb: COLORS.red } };
       }
 
-      // Near-terminal stage cells — amber tint
-      for (const s of nearTerminalStages) {
-        if ((counts[s.id] ?? 0) > 0) {
-          dataRow.getCell(`stage_${s.id}`).fill = LIGHT.amber;
-          dataRow.getCell(`stage_${s.id}`).font = { bold: true };
+      for (const s of nearStages) {
+        if ((c.counts[s.id] ?? 0) > 0) {
+          row.getCell(`stage_${s.id}`).fill = LIGHT.amber;
+          row.getCell(`stage_${s.id}`).font = { bold: true };
         }
       }
-
-      // Terminal stage cells — green tint
       for (const s of terminalStages) {
-        if ((counts[s.id] ?? 0) > 0) {
-          dataRow.getCell(`stage_${s.id}`).fill = LIGHT.green;
-          dataRow.getCell(`stage_${s.id}`).font = {
+        if ((c.counts[s.id] ?? 0) > 0) {
+          row.getCell(`stage_${s.id}`).fill = LIGHT.green;
+          row.getCell(`stage_${s.id}`).font = {
             bold: true,
-            color: { argb: "FF1A5C2A" },
+            color: { argb: COLORS.green },
           };
         }
       }
     }
 
-    // ── Totals row ─────────────────────────────────────────────────────────
+    // Totals row
     const grandStageData: Record<string, number> = {};
-    for (const s of activeStages) {
+    for (const s of visibleStages)
       grandStageData[`stage_${s.id}`] = grandStageCounts[s.id] ?? 0;
-    }
 
     const totalsRow = sheet1.addRow({
-      reqCode: `TOTAL: ${requirements.length} requirements (${omittedCount} no sale data)`,
-      title: "",
-      status: "",
-      priority: "",
-      client: "",
-      spoc: "",
-      spocEmail: "",
-      bu: "",
-      sl: "",
-      city: "",
-      country: "",
-      jobType: "",
-      remote: "",
-      openings: requirements.reduce((s, r) => s + r.totalOpenings, 0),
-      createdBy: "",
-      createdAt: "",
-      deletedAt: "",
-      daysOpen:
-        requirements.length > 0
-          ? Math.round(grandDaysOpen / requirements.length)
-          : 0,
-      respondBy: "",
-      breached: "",
-      total: grandTotal,
-      salaryMin: "",
-      salaryMax: "",
-      bandCode: "",
-      bandName: "",
-      bandValue: "",
-      clientPct: "",
-      reqSaleValue: "",
-      computedSaleValue: grandSaleValueSum,
-      saleValueBasis: "",
+      reqCode: `TOTAL: ${requirements.length} requirements (${totals.omitted} without sale data)`,
+      openings: totals.openings,
+      daysOpen: Math.round(totals.daysOpen / requirements.length),
+      total: totals.candidates,
+      computedSaleValue: totals.sale,
+      achievedCount: totals.achievedCount,
+      achievedValue: totals.achievedValue,
+      nearCount: totals.nearCount,
+      nearValue: totals.nearValue,
       ...grandStageData,
     });
-    styleTotalsRow(totalsRow);
-    totalsRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+    styleTotalsRow(totalsRow, allCols.length);
+    for (const k of MONEY_KEYS) totalsRow.getCell(k).numFmt = FMT.money;
     totalsRow.getCell("computedSaleValue").font = {
       bold: true,
-      color: { argb: "FF1A5C2A" },
+      color: { argb: COLORS.green },
     };
     sheet1.mergeCells(totalsRow.number, 1, totalsRow.number, 4);
 
     sheet1.autoFilter = {
       from: { row: 2, column: 1 },
-      to: { row: 2, column: allColDefs.length },
+      to: { row: 2, column: allCols.length },
     };
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SHEET 2: Candidates
-    // ════════════════════════════════════════════════════════════════════════
-    const reqLookup = Object.fromEntries(requirements.map((r) => [r.id, r]));
-    const totalPipelineByReq: Record<string, number> = {};
-    for (const p of pipelines) {
-      totalPipelineByReq[p.requirementId] =
-        (totalPipelineByReq[p.requirementId] ?? 0) + 1;
-    }
+    // ════════════════════════════════════════════════════════════════════
+    // SHEET 2: Candidates (scoped to caller's hierarchy)
+    // ════════════════════════════════════════════════════════════════════
+    const reqLookup = new Map(requirements.map((r) => [r.id, r]));
+    const rowsPerReq: Record<string, number> = {};
+    for (const p of pipelines)
+      rowsPerReq[p.requirementId] = (rowsPerReq[p.requirementId] ?? 0) + 1;
 
-    const sheet2 = workbook.addWorksheet("Candidates", {
+    // ════════════════════════════════════════════════════════════════════
+    // SHEET: By Created Month — where the requirements in this export come from
+    // ════════════════════════════════════════════════════════════════════
+    const createdMonths = buildCreatedMonthBreakdown(
+      requirements.map((r) => {
+        const c = calcByReq.get(r.id)!;
+        return {
+          createdAt: r.createdAt,
+          totalOpenings: r.totalOpenings,
+          computedSaleValue: c.saleValue,
+          terminalCount: c.terminal,
+          achievedValue: c.achievedValue,
+          nearTerminalCount: c.near,
+          nearTerminalValue: c.nearValue,
+        };
+      })
+    );
+
+    const sheetMonths = workbook.addWorksheet("By Created Month", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
+    const monthCols: ColDef[] = [
+      { header: "Created Month", key: "label", width: 16 },
+      { header: "Requirements", key: "requirements", width: 14 },
+      { header: "Openings", key: "openings", width: 12 },
+      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+      { header: "Placed", key: "terminalCount", width: 10 },
+      { header: "Achieved Value", key: "achievedValue", width: 18 },
+      { header: "Achieved %", key: "achievedPct", width: 12 },
+      { header: "Near Close", key: "nearTerminalCount", width: 12 },
+      { header: "Near Close Value", key: "nearTerminalValue", width: 18 },
+    ];
+    const MONTH_MONEY_KEYS = [
+      "computedSaleValue",
+      "achievedValue",
+      "nearTerminalValue",
+    ];
+    sheetMonths.columns = monthCols;
+    styleHeaderRow(sheetMonths.getRow(1), monthCols.length, FILLS.header);
+    for (const m of createdMonths) {
+      const row = sheetMonths.addRow(m);
+      for (const k of MONTH_MONEY_KEYS) row.getCell(k).numFmt = FMT.money;
+    }
+    const monthTotals = sheetMonths.addRow({
+      label: `TOTAL (${createdMonths.length} months)`,
+      requirements: createdMonths.reduce((s, m) => s + m.requirements, 0),
+      openings: createdMonths.reduce((s, m) => s + m.openings, 0),
+      computedSaleValue: createdMonths.reduce(
+        (s, m) => s + m.computedSaleValue,
+        0
+      ),
+      terminalCount: createdMonths.reduce((s, m) => s + m.terminalCount, 0),
+      achievedValue: createdMonths.reduce((s, m) => s + m.achievedValue, 0),
+      nearTerminalCount: createdMonths.reduce(
+        (s, m) => s + m.nearTerminalCount,
+        0
+      ),
+      nearTerminalValue: createdMonths.reduce(
+        (s, m) => s + m.nearTerminalValue,
+        0
+      ),
+    });
+    styleTotalsRow(monthTotals, monthCols.length);
+    for (const k of MONTH_MONEY_KEYS) monthTotals.getCell(k).numFmt = FMT.money;
 
-    sheet2.columns = [
+    const sheet2 = workbook.addWorksheet("Candidates", {
+      views: [{ state: "frozen", ySplit: 1, xSplit: 2 }],
+    });
+
+    const candCols: ColDef[] = [
       { header: "Req Code", key: "reqCode", width: 14 },
       { header: "Requirement", key: "reqTitle", width: 36 },
-      { header: "Total Pipeline", key: "totalPipeline", width: 14 },
+      { header: "Req Created Month", key: "reqCreatedMonth", width: 16 },
+      { header: "Candidates (this export)", key: "totalPipeline", width: 16 },
       { header: "Client", key: "client", width: 22 },
       { header: "Client SPOC", key: "spoc", width: 22 },
       { header: "Service Line", key: "reqSL", width: 18 },
       { header: "Business Unit", key: "reqBU", width: 18 },
-      // Candidate
+      { header: "Req Assigned To", key: "reqAssignedTo", width: 26 },
       { header: "Candidate Name", key: "name", width: 26 },
       { header: "Email", key: "email", width: 30 },
       { header: "Phone", key: "phone", width: 16 },
@@ -837,23 +813,20 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Exp (yrs)", key: "exp", width: 10 },
       { header: "Top Skills", key: "skills", width: 40 },
       { header: "Recruiter", key: "recruiter", width: 22 },
-      // Stage
       { header: "Current Stage", key: "stage", width: 22 },
       { header: "Is Terminal?", key: "isTerminal", width: 12 },
       { header: "Is Near Terminal?", key: "isNearTerminal", width: 14 },
       { header: "Status", key: "status", width: 12 },
-      // Timeline
-      { header: "Added On", key: "addedOn", width: 16 },
-      { header: "Days in Pipeline", key: "pipelineDays", width: 16 },
-      { header: "Stage Aging", key: "stageAging", width: 14 },
-      // Offer / CTC
+      { header: "Disposition", key: "disposition", width: 14 },
+      { header: "Added On", key: "addedOn", width: 14 },
+      { header: "Days in Pipeline", key: "pipelineDays", width: 14 },
+      { header: "Stage Aging", key: "stageAging", width: 12 },
       { header: "Submitted At", key: "submittedAt", width: 18 },
       { header: "Offer Status", key: "offerStatus", width: 14 },
       { header: "Current CTC", key: "currentCtc", width: 14 },
       { header: "Expected CTC", key: "expectedCtc", width: 14 },
       { header: "Negotiated CTC", key: "negotiatedCtc", width: 14 },
       { header: "Offered CTC", key: "offeredCtc", width: 14 },
-      // Joining
       { header: "Notice Period", key: "noticePeriod", width: 14 },
       { header: "Last Working Day", key: "lastWorkingDay", width: 16 },
       { header: "Expected Joining", key: "expectedJoining", width: 16 },
@@ -861,102 +834,101 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Derived Joining", key: "derivedJoining", width: 16 },
       { header: "Month of Joining", key: "monthOfJoining", width: 16 },
       { header: "Days to Join", key: "daysToJoin", width: 12 },
-      // Disposition flags
       { header: "Rejected?", key: "rejected", width: 10 },
       { header: "Withdrawn?", key: "withdrawn", width: 10 },
       { header: "On Hold?", key: "onHold", width: 10 },
-      // Sale value context
       { header: "Req Salary Min", key: "reqSalaryMin", width: 14 },
       { header: "Req Salary Max", key: "reqSalaryMax", width: 14 },
       { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
-      { header: "Sale Basis", key: "saleValueBasis", width: 16 },
+      { header: "Sale Basis", key: "saleValueBasis", width: 14 },
     ];
+    sheet2.columns = candCols;
+    styleHeaderRow(sheet2.getRow(1), candCols.length, FILLS.header);
 
-    const candHdr = sheet2.getRow(1);
-    styleHdr(candHdr);
+    const monthJoinMap: Record<
+      string,
+      { label: string; ts: number; count: number }
+    > = {};
 
-    for (const p of pipelines as any[]) {
-      const r = reqLookup[p.requirementId];
+    for (const p of pipelines) {
+      const r = reqLookup.get(p.requirementId);
       if (!r) continue;
+      const c = calcByReq.get(r.id)!;
 
-      const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
+      const stageAnchor = p.stageUpdatedAt ?? p.createdAt;
+      const stageAgeMins = Math.max(
+        0,
+        Math.floor((now - new Date(stageAnchor).getTime()) / 60_000)
       );
       const totalPipelineMins =
-        (p.stageHistory ?? []).reduce(
-          (sum: number, log: any) => sum + (log.timeInPrevStageMins ?? 0),
-          0
-        ) + stageAgeMins;
+        p.stageHistory.reduce((s, l) => s + (l.timeInPrevStageMins ?? 0), 0) +
+        stageAgeMins;
 
-      // Joining date derivation
       const derivedJoining = deriveJoiningDate(
         p.actualJoiningDate,
         p.expectedJoiningDate,
         p.lastWorkingDate,
         p.noticePeriod
       );
-      const monthOfJoining = derivedJoining
-        ? format(derivedJoining, "MMMM yyyy")
-        : "";
-      const daysToJoin = derivedJoining
-        ? Math.max(0, Math.floor((derivedJoining.getTime() - now) / 86400000))
-        : "";
+      // Stored on write (source of truth for MOJ reports) → derived fallback
+      const monthOfJoining =
+        p.monthOfJoining ||
+        (derivedJoining ? format(derivedJoining, "MMMM yyyy") : "");
+      if (monthOfJoining) {
+        const parsed = parse(monthOfJoining, "MMMM yyyy", new Date());
+        const m = (monthJoinMap[monthOfJoining] ??= {
+          label: monthOfJoining,
+          ts: Number.isNaN(parsed.getTime())
+            ? Number.MAX_SAFE_INTEGER
+            : parsed.getTime(),
+          count: 0,
+        });
+        m.count++;
+      }
 
-      // Sale value for this requirement
-      const { computedSaleValue, saleValueBasis } = computeSaleValue({
-        saleValue: r.saleValue,
-        totalOpenings: r.totalOpenings,
-        salaryMin: r.salaryMin,
-        band: r.band
-          ? { value: r.band.value != null ? Number(r.band.value) : null }
-          : null,
-        client: r.client
-          ? {
-              percentageValue:
-                r.client.percentageValue != null
-                  ? Number(r.client.percentageValue)
-                  : null,
-            }
-          : null,
-      });
-
-      // Status string
-      const candidateStatus = p.currentStage?.isTerminal
-        ? "Placed"
-        : p.isNearTerminal
-        ? "Near Terminal"
+      const isTerminal = !!p.currentStage?.isTerminal;
+      const isNear = !!p.currentStage?.isNearTerminal && !isTerminal;
+      const status = isTerminal
+        ? CANDIDATE_STATUS.PLACED
         : p.isRejected
-        ? "Rejected"
+        ? CANDIDATE_STATUS.REJECTED
         : p.isWithdrawn
-        ? "Withdrawn"
+        ? CANDIDATE_STATUS.WITHDRAWN
         : p.isOnHold
-        ? "On Hold"
-        : "Active";
+        ? CANDIDATE_STATUS.ON_HOLD
+        : isNear
+        ? CANDIDATE_STATUS.NEAR_CLOSE
+        : CANDIDATE_STATUS.ACTIVE;
 
-      const dataRow = sheet2.addRow({
+      const snap = p.snapshot as Record<string, any> | null;
+      const skills = Array.isArray(snap?.topSkills)
+        ? snap!.topSkills.join(", ")
+        : snap?.topSkills ?? "";
+
+      const row = sheet2.addRow({
         reqCode: r.reqCode,
         reqTitle: r.title,
-        totalPipeline: totalPipelineByReq[p.requirementId] ?? 0,
+        reqCreatedMonth: monthLabel(monthKey(r.createdAt)),
+        totalPipeline: rowsPerReq[p.requirementId] ?? 0,
         client: r.client?.name ?? "",
-        spoc: spocName(r.clientSpoc),
+        spoc: personName(r.clientSpoc),
         reqSL: r.serviceLine?.name ?? "",
         reqBU: r.businessUnit?.name ?? "",
-        name: p.snapshot?.fullName ?? "",
-        email: p.snapshot?.email ?? "",
-        phone: p.snapshot?.phone ?? "",
-        title: p.snapshot?.currentTitle ?? "",
-        company: p.snapshot?.currentCompany ?? "",
-        exp: p.snapshot?.totalExpYears ?? "",
-        skills: Array.isArray(p.snapshot?.topSkills)
-          ? p.snapshot.topSkills.join(", ")
-          : p.snapshot?.topSkills ?? "",
-        recruiter: p.recruiter
-          ? `${p.recruiter.firstName} ${p.recruiter.lastName}`
-          : "",
-        stage: p.currentStage?.label ?? "",
-        isTerminal: p.currentStage?.isTerminal ? "Yes" : "No",
-        isNearTerminal: p.currentStage?.isNearTerminal ? "Yes" : "No",
-        status: candidateStatus,
+        reqAssignedTo: joinNames(assigneesByReq[r.id]?.to),
+        name: snap?.fullName ?? "",
+        email: snap?.email ?? "",
+        phone: snap?.phone ?? "",
+        title: snap?.currentTitle ?? "",
+        company: snap?.currentCompany ?? "",
+        exp: snap?.totalExpYears ?? "",
+        skills,
+        recruiter: personName(p.recruiter),
+        stage:
+          p.currentStage?.label ?? stageById.get(p.currentStageId)?.label ?? "",
+        isTerminal: isTerminal ? "Yes" : "No",
+        isNearTerminal: isNear ? "Yes" : "No",
+        status,
+        disposition: p.disposition ?? "",
         addedOn: new Date(p.createdAt),
         pipelineDays: Math.floor(totalPipelineMins / 1440),
         stageAging: formatAging(stageAgeMins),
@@ -974,225 +946,207 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         actualJoining: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
         derivedJoining: derivedJoining ?? "",
         monthOfJoining,
-        daysToJoin,
+        daysToJoin: derivedJoining
+          ? Math.max(
+              0,
+              Math.floor((derivedJoining.getTime() - now) / 86_400_000)
+            )
+          : "",
         rejected: p.isRejected ? "Yes" : "No",
         withdrawn: p.isWithdrawn ? "Yes" : "No",
         onHold: p.isOnHold ? "Yes" : "No",
         reqSalaryMin: r.salaryMin != null ? Number(r.salaryMin) : "",
         reqSalaryMax: r.salaryMax != null ? Number(r.salaryMax) : "",
-        computedSaleValue: computedSaleValue ?? "",
-        saleValueBasis:
-          computedSaleValue != null ? saleValueBasis : "NOT_FOUND",
+        computedSaleValue: c.saleValue ?? "No Data",
+        saleValueBasis: c.basis,
       });
+      row.height = 18;
 
-      dataRow.height = 18;
+      row.getCell("addedOn").numFmt = FMT.date;
+      row.getCell("submittedAt").numFmt = FMT.dateTime;
+      for (const k of [
+        "lastWorkingDay",
+        "expectedJoining",
+        "actualJoining",
+        "derivedJoining",
+      ])
+        row.getCell(k).numFmt = FMT.date;
+      for (const k of [
+        "currentCtc",
+        "expectedCtc",
+        "negotiatedCtc",
+        "offeredCtc",
+        "reqSalaryMin",
+        "reqSalaryMax",
+        "computedSaleValue",
+      ])
+        row.getCell(k).numFmt = FMT.money;
 
-      // Date formatting
-      dataRow.getCell("addedOn").numFmt = "dd-mmm-yyyy";
-      if (p.submittedAt)
-        dataRow.getCell("submittedAt").numFmt = "dd-mmm-yyyy hh:mm";
-      if (p.lastWorkingDate)
-        dataRow.getCell("lastWorkingDay").numFmt = "dd-mmm-yyyy";
-      if (p.expectedJoiningDate)
-        dataRow.getCell("expectedJoining").numFmt = "dd-mmm-yyyy";
-      if (p.actualJoiningDate)
-        dataRow.getCell("actualJoining").numFmt = "dd-mmm-yyyy";
-      if (derivedJoining)
-        dataRow.getCell("derivedJoining").numFmt = "dd-mmm-yyyy";
-
-      // Terminal rows — green tint
-      if (p.currentStage?.isTerminal) {
-        ["stage", "isTerminal", "status"].forEach((k) => {
-          dataRow.getCell(k).fill = LIGHT.green;
-          dataRow.getCell(k).font = { bold: true, color: { argb: "FF1A5C2A" } };
-        });
-        if (p.actualJoiningDate) {
-          dataRow.getCell("actualJoining").fill = LIGHT.green;
+      if (isTerminal) {
+        for (const k of ["stage", "isTerminal", "status", "monthOfJoining"]) {
+          row.getCell(k).fill = LIGHT.green;
+          row.getCell(k).font = { bold: true, color: { argb: COLORS.green } };
         }
-        if (monthOfJoining) {
-          dataRow.getCell("monthOfJoining").fill = LIGHT.green;
-          dataRow.getCell("monthOfJoining").font = {
-            bold: true,
-            color: { argb: "FF1A5C2A" },
-          };
+        if (p.actualJoiningDate)
+          row.getCell("actualJoining").fill = LIGHT.green;
+      } else if (isNear) {
+        for (const k of ["stage", "isNearTerminal", "status"]) {
+          row.getCell(k).fill = LIGHT.amber;
+          row.getCell(k).font = { bold: true };
         }
       }
 
-      // Near-terminal rows — amber tint
-      if (p.currentStage?.isNearTerminal && !p.currentStage?.isTerminal) {
-        ["stage", "isNearTerminal", "status"].forEach((k) => {
-          dataRow.getCell(k).fill = LIGHT.amber;
-          dataRow.getCell(k).font = { bold: true };
-        });
-      }
-
-      // Rejected/withdrawn — grey out
-      if (p.isRejected || p.isWithdrawn) {
-        dataRow.eachCell((cell) => {
-          cell.font = { ...cell.font, color: { argb: "FF9E9E9E" } };
-        });
-      }
-
-      // Computed sale value styling in candidates sheet
-      if (computedSaleValue != null) {
-        dataRow.getCell("computedSaleValue").fill = LIGHT.green;
-        dataRow.getCell("computedSaleValue").font = { bold: true };
-        dataRow.getCell("computedSaleValue").numFmt = "#,##0.00";
+      const svCell = row.getCell("computedSaleValue");
+      if (c.saleValue != null) {
+        svCell.fill = LIGHT.green;
+        svCell.font = { bold: true };
       } else {
-        dataRow.getCell("computedSaleValue").fill = LIGHT.red;
-        dataRow.getCell("computedSaleValue").value = "No Data";
+        svCell.fill = LIGHT.red;
+      }
+
+      if (p.isRejected || p.isWithdrawn) {
+        row.eachCell((cell) => {
+          cell.font = { ...cell.font, color: { argb: COLORS.grey } };
+        });
       }
     }
 
     sheet2.autoFilter = {
       from: { row: 1, column: 1 },
-      to: { row: 1, column: sheet2.columnCount },
+      to: { row: 1, column: candCols.length },
     };
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SHEET 3: Summary
-    // ════════════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════════
+    // SHEET 3: Summary (+ applied filters, so you can verify the export)
+    // ════════════════════════════════════════════════════════════════════
     const sheet3 = workbook.addWorksheet("Summary");
     sheet3.columns = [
-      { header: "Metric", key: "metric", width: 30 },
-      { header: "Value", key: "value", width: 20 },
+      { header: "Metric", key: "metric", width: 34 },
+      { header: "Value", key: "value", width: 40 },
     ];
-    styleHdr(sheet3.getRow(1));
+    styleHeaderRow(sheet3.getRow(1), 2, FILLS.header);
 
-    // Month-of-joining breakdown across all pipeline rows
-    const monthJoinMap: Record<string, number> = {};
-    for (const p of pipelines as any[]) {
-      const derivedJoining = deriveJoiningDate(
-        p.actualJoiningDate,
-        p.expectedJoiningDate,
-        p.lastWorkingDate,
-        p.noticePeriod
-      );
-      if (derivedJoining) {
-        const mo = format(derivedJoining, "MMMM yyyy");
-        monthJoinMap[mo] = (monthJoinMap[mo] ?? 0) + 1;
-      }
-    }
+    type SummaryRow = {
+      metric: string;
+      value: string | number;
+      money?: boolean;
+      section?: boolean;
+    };
+    const blank: SummaryRow = { metric: "", value: "" };
+    const section = (metric: string): SummaryRow => ({
+      metric,
+      value: "",
+      section: true,
+    });
+    const stageRows = (list: ScopedStage[]): SummaryRow[] =>
+      list.map((s) => ({
+        metric: `  ${s.label}`,
+        value: grandStageCounts[s.id] ?? 0,
+      }));
 
-    const summaryRows = [
+    const appliedFilterRows: SummaryRow[] = Object.entries(
+      FILTER_LABELS
+    ).flatMap(([key, label]) => {
+      const vals = toArr(q[key]);
+      if (!vals.length) return [];
+      const display = USER_FILTER_KEYS.includes(key)
+        ? vals.map((id) => userName.get(id) || id)
+        : vals;
+      return [{ metric: `  ${label}`, value: display.join(", ") }];
+    });
+
+    const summaryRows: SummaryRow[] = [
       { metric: "Requirements", value: requirements.length },
+      { metric: "Total Openings", value: totals.openings },
+      { metric: "Total Candidates (in scope)", value: totals.candidates },
+      { metric: "Candidate Rows Exported", value: sheet2.rowCount - 1 },
+      { metric: "Computed Sale Value", value: totals.sale, money: true },
       {
-        metric: "Total Openings",
-        value: requirements.reduce((s, r) => s + r.totalOpenings, 0),
+        metric: "Achieved Value (Terminal)",
+        value: totals.achievedValue,
+        money: true,
       },
-      { metric: "Total Candidates", value: grandTotal },
-      { metric: "Computed Sale Value", value: grandSaleValueSum },
-      { metric: "Achieved Value (Terminal)", value: grandAchievedSum },
-      { metric: "Requirements with No Sale Data", value: omittedCount },
-      { metric: "", value: "" },
-      { metric: "MONTH OF JOINING BREAKDOWN", value: "" },
-      ...Object.entries(monthJoinMap)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([month, count]) => ({ metric: `  ${month}`, value: count })),
-      { metric: "", value: "" },
-      { metric: "STAGE BREAKDOWN (ACTIVE)", value: "" },
-      ...pipelineStages.map((s) => ({
-        metric: `  ${s.label}`,
-        value: grandStageCounts[s.id] ?? 0,
-      })),
-      { metric: "", value: "" },
-      { metric: "NEAR TERMINAL (NEAR CLOSE)", value: "" },
-      ...nearTerminalStages.map((s) => ({
-        metric: `  ${s.label}`,
-        value: grandStageCounts[s.id] ?? 0,
-      })),
-      { metric: "", value: "" },
-      { metric: "ACHIEVED / PLACED", value: "" },
-      ...terminalStages.map((s) => ({
-        metric: `  ${s.label}`,
-        value: grandStageCounts[s.id] ?? 0,
-      })),
-      { metric: "", value: "" },
+      { metric: "Near Close Value", value: totals.nearValue, money: true },
+      { metric: "Requirements with No Sale Data", value: totals.omitted },
+      {
+        metric: "Created Months Spanned",
+        value: createdMonths.length
+          ? `${createdMonths.length} (${createdMonths[0].label} → ${
+              createdMonths[createdMonths.length - 1].label
+            }) — see "By Created Month"`
+          : 0,
+      },
+      blank,
+      section("APPLIED FILTERS"),
+      { metric: "  Window", value: windowLabel(q) },
+      {
+        metric: "  Scope",
+        value:
+          scope.treeUserIds === null
+            ? "All (super admin)"
+            : `Org tree (${scope.treeUserIds.length} users)`,
+      },
+      ...appliedFilterRows,
+      blank,
+      section("MONTH OF JOINING BREAKDOWN"),
+      ...Object.values(monthJoinMap)
+        .sort((a, b) => a.ts - b.ts)
+        .map((m) => ({ metric: `  ${m.label}`, value: m.count })),
+      blank,
+      section("STAGE BREAKDOWN (ACTIVE)"),
+      ...stageRows(pipelineStages),
+      blank,
+      section("NEAR TERMINAL (NEAR CLOSE)"),
+      ...stageRows(nearStages),
+      blank,
+      section("ACHIEVED / PLACED"),
+      ...stageRows(terminalStages),
+      blank,
       {
         metric: "Export Generated At",
         value: format(new Date(), "dd-MMM-yyyy HH:mm"),
       },
     ];
 
-    for (const row of summaryRows) {
-      const r = sheet3.addRow(row);
-      if (typeof row.value === "number" && row.metric.includes("Value")) {
-        r.getCell("value").numFmt = "#,##0.00";
-        r.getCell("value").font = { bold: true, color: { argb: "FF1A5C2A" } };
+    for (const sr of summaryRows) {
+      const row = sheet3.addRow({ metric: sr.metric, value: sr.value });
+      if (sr.money) {
+        row.getCell("value").numFmt = FMT.money;
+        row.getCell("value").font = {
+          bold: true,
+          color: { argb: COLORS.green },
+        };
       }
+      if (sr.section) row.getCell("metric").font = { bold: true };
     }
 
-    // ── Stream ────────────────────────────────────────────────────────────────
+    // ── Stream ───────────────────────────────────────────────────────────
     const suffix = singleId
-      ? requirements[0]?.reqCode ?? singleId
-      : selectedIds
+      ? requirements[0].reqCode ?? singleId
+      : selectedIds.length
       ? "selected"
       : "all";
-    const dateStr = format(new Date(), "yyyy-MM-dd");
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="requirements-${suffix}-${dateStr}.xlsx"`
+      `attachment; filename="requirements-${suffix}-${format(
+        new Date(),
+        "yyyy-MM-dd"
+      )}.xlsx"`
     );
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
     console.error("exportRequirementReport:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to export requirement report" });
+    if (!res.headersSent)
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message: "Failed to export requirement report",
+        });
   }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Date window resolver (keep in sync with your existing one)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function resolveDateWindow(q: Record<string, string>): {
-  gte?: Date;
-  lte?: Date;
-} {
-  const now = new Date();
-  if (q.hours) {
-    const h = parseInt(q.hours, 10);
-    return { gte: new Date(now.getTime() - h * 3600000) };
-  }
-  if (q.fromDate || q.toDate) {
-    return {
-      ...(q.fromDate ? { gte: new Date(q.fromDate) } : {}),
-      ...(q.toDate
-        ? { lte: new Date(new Date(q.toDate).setHours(23, 59, 59, 999)) }
-        : {}),
-    };
-  }
-  if (q.range) {
-    const start = new Date(now);
-    switch (q.range) {
-      case "today":
-        start.setHours(0, 0, 0, 0);
-        return { gte: start };
-      case "yesterday": {
-        const s = new Date(now);
-        s.setDate(s.getDate() - 1);
-        s.setHours(0, 0, 0, 0);
-        const e = new Date(s);
-        e.setHours(23, 59, 59, 999);
-        return { gte: s, lte: e };
-      }
-      case "last7":
-        start.setDate(start.getDate() - 7);
-        return { gte: start };
-      case "last30":
-        start.setDate(start.getDate() - 30);
-        return { gte: start };
-      case "thisMonth":
-        start.setDate(1);
-        start.setHours(0, 0, 0, 0);
-        return { gte: start };
-    }
-  }
-  return {};
-}
