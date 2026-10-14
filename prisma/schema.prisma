@@ -78,6 +78,8 @@ enum ActivityType {
   ISSUE_RAISED
   ISSUE_RESOLVED
   STATS_UPDATED
+
+  APPLICANT_ASSIGNED
 }
 
 enum NotificationType {

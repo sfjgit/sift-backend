@@ -3,7 +3,11 @@
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
-
+import {
+  computeSaleValue as computeSaleValueShared,
+  fetchPeopleFilterOptions,
+  resolveRequirementScope,
+} from "./reports.requirements.shared";
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE WINDOW HELPERS  (same pattern as reports.controller.ts)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,7 +113,7 @@ function resolveScopedUserIds(req: Request): string[] | null {
 // Team filter can only NARROW scope, never expand it — security guarantee.
 function resolveEffectiveUserIds(
   req: Request,
-  q: Record<string, string | undefined>,
+  q: Record<string, string | undefined>
 ): string[] | null {
   const scopedUserIds = resolveScopedUserIds(req);
 
@@ -143,27 +147,27 @@ function resolveEffectiveUserIds(
 // 4. NOT_FOUND   — null
 // ─────────────────────────────────────────────────────────────────────────────
 
-function computeSaleValue(input: {
-  saleValue?: number | null;
-  totalOpenings: number;
-  salaryMin?: number | null;
-  band?: { value?: number | null } | null;
-  client?: { percentageValue?: number | null } | null;
-}): number | null {
-  const open = input.totalOpenings ?? 1;
-  if (input.saleValue != null && input.saleValue > 0)
-    return input.saleValue * open;
-  const bv = input.band?.value != null ? Number(input.band.value) : null;
-  if (bv != null && bv > 0) return bv * open;
-  const pct =
-    input.client?.percentageValue != null
-      ? Number(input.client.percentageValue)
-      : null;
-  const sm = input.salaryMin != null ? Number(input.salaryMin) : null;
-  if (pct != null && pct > 0 && sm != null && sm > 0)
-    return sm * (pct / 100) * open;
-  return null;
-}
+// function computeSaleValue(input: {
+//   saleValue?: number | null;
+//   totalOpenings: number;
+//   salaryMin?: number | null;
+//   band?: { value?: number | null } | null;
+//   client?: { percentageValue?: number | null } | null;
+// }): number | null {
+//   const open = input.totalOpenings ?? 1;
+//   if (input.saleValue != null && input.saleValue > 0)
+//     return input.saleValue * open;
+//   const bv = input.band?.value != null ? Number(input.band.value) : null;
+//   if (bv != null && bv > 0) return bv * open;
+//   const pct =
+//     input.client?.percentageValue != null
+//       ? Number(input.client.percentageValue)
+//       : null;
+//   const sm = input.salaryMin != null ? Number(input.salaryMin) : null;
+//   if (pct != null && pct > 0 && sm != null && sm > 0)
+//     return sm * (pct / 100) * open;
+//   return null;
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BFS: get all descendant user IDs (both reportingToId AND teamLeadId trees)
@@ -171,7 +175,7 @@ function computeSaleValue(input: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getDescendantsWithDepth(
-  rootId: string,
+  rootId: string
 ): Promise<{ id: string; depth: number }[]> {
   const result: { id: string; depth: number }[] = [];
   const visited = new Set<string>([rootId]);
@@ -195,7 +199,7 @@ async function getDescendantsWithDepth(
         // depth = parent depth + 1
         const parentDepth =
           frontier.find(
-            (f) => f.id === child.reportingToId || f.id === child.teamLeadId,
+            (f) => f.id === child.reportingToId || f.id === child.teamLeadId
           )?.depth ?? 0;
         const entry = { id: child.id, depth: parentDepth + 1 };
         result.push(entry);
@@ -338,33 +342,59 @@ export const getReportsOverview = async (req: Request, res: Response) => {
         ...(win.lte ? { lte: win.lte } : {}),
       };
     }
-    if (q.createdById) pipelineWhere.recruiterId = q.createdById;
+    if (q.createdById) {
+      const pick = toArray(q.createdById);
+      pipelineWhere.recruiterId = {
+        in:
+          scopedUserIds === null
+            ? pick
+            : pick.filter((id) => scopedUserIds.includes(id)),
+      };
+    }
 
     // Department filter — resolve department members first
+
+    // Department filter — narrows the current owner list, never expands it
     if (q.departmentId) {
       const deptIds = toArray(q.departmentId);
       const deptUsers = await prisma.user.findMany({
-        where: {
-          departmentId: deptIds.length === 1 ? deptIds[0] : { in: deptIds },
-          isActive: true,
-        },
+        where: { departmentId: { in: deptIds }, isActive: true },
         select: { id: true },
       });
-      // const deptIds = deptUsers.map((u) => u.id);
-      // Intersect with scope if already scoped
-      if (scopedUserIds !== null) {
-        pipelineWhere.recruiterId = {
-          in: deptIds.filter((id) => scopedUserIds.includes(id)),
-        };
-      } else {
-        pipelineWhere.recruiterId = { in: deptIds };
-      }
+      const deptUserIds = deptUsers.map((u) => u.id);
+      const currentOwners: string[] | null =
+        pipelineWhere.recruiterId?.in ?? null;
+      pipelineWhere.recruiterId = {
+        in:
+          currentOwners === null
+            ? deptUserIds
+            : deptUserIds.filter((id) => currentOwners.includes(id)),
+      };
     }
+    // if (q.departmentId) {
+    //   const deptIds = toArray(q.departmentId);
+    //   const deptUsers = await prisma.user.findMany({
+    //     where: {
+    //       departmentId: deptIds.length === 1 ? deptIds[0] : { in: deptIds },
+    //       isActive: true,
+    //     },
+    //     select: { id: true },
+    //   });
+    //   // const deptIds = deptUsers.map((u) => u.id);
+    //   // Intersect with scope if already scoped
+    //   if (scopedUserIds !== null) {
+    //     pipelineWhere.recruiterId = {
+    //       in: deptIds.filter((id) => scopedUserIds.includes(id)),
+    //     };
+    //   } else {
+    //     pipelineWhere.recruiterId = { in: deptIds };
+    //   }
+    // }
 
     // ── Fetch all relevant pipeline stages from DB ─────────────────────────────
     // NO canonical stage dependency — pure isTerminal + pipeline flags
-    const slFilter = q.serviceLineId
-      ? { OR: [{ serviceLineId: null }, { serviceLineId: q.serviceLineId }] }
+    const slFilter = slIds.length
+      ? { OR: [{ serviceLineId: null }, { serviceLineId: { in: slIds } }] }
       : {};
 
     const [allStages, requirements] = await Promise.all([
@@ -410,7 +440,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // Separate pipeline stages (in-progress) vs terminal stages (placed/achieved)
     const pipelineStages = allStages.filter(
-      (s) => s.pipeline === true && s.isTerminal === false,
+      (s) => s.pipeline === true && s.isTerminal === false
     );
     const terminalStages = allStages.filter((s) => s.isTerminal === true);
     const allTrackedIds = allStages.map((s) => s.id);
@@ -574,16 +604,16 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
     // Stage counts — split into pipeline vs terminal
     const pipelineStageCounts: Record<string, number> = Object.fromEntries(
-      pipelineStages.map((s) => [s.id, 0]),
+      pipelineStages.map((s) => [s.id, 0])
     );
     const terminalStageCounts: Record<string, number> = Object.fromEntries(
-      terminalStages.map((s) => [s.id, 0]),
+      terminalStages.map((s) => [s.id, 0])
     );
 
     const nearTerminalStageCounts: Record<string, number> = Object.fromEntries(
       allStages
         .filter((s) => s.isNearTerminal && !s.isTerminal)
-        .map((s) => [s.id, 0]),
+        .map((s) => [s.id, 0])
     );
     let inProgressCount = 0;
 
@@ -691,12 +721,12 @@ export const getReportsOverview = async (req: Request, res: Response) => {
 
       // Pipeline days
       const stageAgeMins = Math.floor(
-        (now - new Date(p.stageUpdatedAt).getTime()) / 60000,
+        (now - new Date(p.stageUpdatedAt).getTime()) / 60000
       );
       const candidateMins =
         (p.stageHistory ?? []).reduce(
           (sum: number, l: any) => sum + (l.timeInPrevStageMins ?? 0),
-          0,
+          0
         ) + stageAgeMins;
       totalPipelineMins += candidateMins;
 
@@ -735,10 +765,10 @@ export const getReportsOverview = async (req: Request, res: Response) => {
           active: 0,
           dropped: 0,
           pipelineCounts: Object.fromEntries(
-            pipelineStages.map((s) => [s.id, 0]),
+            pipelineStages.map((s) => [s.id, 0])
           ),
           terminalCounts: Object.fromEntries(
-            terminalStages.map((s) => [s.id, 0]),
+            terminalStages.map((s) => [s.id, 0])
           ),
         };
       }
@@ -940,7 +970,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
       }));
 
     const byBusinessUnit = Object.values(buAgg).sort(
-      (a, b) => b.total - a.total,
+      (a, b) => b.total - a.total
     );
 
     const byDepartment = Object.values(deptAgg)
@@ -962,7 +992,7 @@ export const getReportsOverview = async (req: Request, res: Response) => {
     // ── Near-terminal pipeline value ──────────────────────────────────────────
     const nearTerminalCount = Object.values(nearTerminalStageCounts).reduce(
       (a, b) => a + b,
-      0,
+      0
     );
     const reqMap = new Map(requirements.map((r) => [r.id, r]));
     let nearTerminalPipelineValue = 0;
@@ -1085,116 +1115,65 @@ export const getReportsOverview = async (req: Request, res: Response) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /reports/overview/filters
-// Returns available filter options scoped to the current user
-// ─────────────────────────────────────────────────────────────────────────────
-// File: reportsController.ts
-// Path: src/controllers/reports/reportsController.ts
-
-// export const getOverviewFilters = async (req: Request, res: Response) => {
-//   try {
-//     const [serviceLines, businessUnits, departments, clients, clientSpocs] =
-//       await Promise.all([
-//         prisma.serviceLine.findMany({
-//           where: { isActive: true },
-//           select: { id: true, name: true },
-//           orderBy: { name: "asc" },
-//         }),
-//         prisma.businessUnit.findMany({
-//           where: { isActive: true },
-//           select: { id: true, name: true },
-//           orderBy: { name: "asc" },
-//         }),
-//         prisma.department.findMany({
-//           where: { isActive: true },
-//           select: { id: true, name: true },
-//           orderBy: { name: "asc" },
-//         }),
-//         prisma.client.findMany({
-//           where: { status: "ACTIVE", deletedAt: null },
-//           select: { id: true, name: true },
-//           orderBy: { name: "asc" },
-//         }),
-//         prisma.clientSpoc.findMany({
-//           where: { isActive: true },
-//           select: {
-//             id: true,
-//             firstName: true,
-//             lastName: true,
-//             designation: true,
-//             client: {
-//               select: { id: true, name: true },
-//             },
-//           },
-//           orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
-//         }),
-//       ]);
-
-//     // Normalise spoc shape → { id, name, clientId, clientName, designation }
-//     const spocs = clientSpocs.map((s) => ({
-//       id: s.id,
-//       name: `${s.firstName} ${s.lastName}`.trim(),
-//       designation: s.designation ?? null,
-//       clientId: s.client.id,
-//       clientName: s.client.name,
-//     }));
-
-//     return res.json({
-//       success: true,
-//       data: { serviceLines, businessUnits, departments, clients, spocs },
-//     });
-//   } catch (err) {
-//     console.error("getOverviewFilters:", err);
-//     return res
-//       .status(500)
-//       .json({ success: false, message: "Failed to fetch filter options" });
-//   }
-// };
-// File: reportsController.ts
-// Path: src/controllers/reports/reportsController.ts
+// File: reports.overview.controller.ts  (function: getOverviewFilters)
+// Path: src/controller/reports/reports.overview.controller.ts
+//
+// Replace the ENTIRE existing `export const getOverviewFilters = async ...`
+// function with this one. Add this import at the top of the file:
+//
+//   import {
+//     resolveRequirementScope,
+//     fetchPeopleFilterOptions,
+//   } from "./reports.requirements.shared";
 
 export const getOverviewFilters = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const isSuperAdmin = req.user!.isSuperAdmin;
 
+    // People options (createdBy / assignedTo / assignedBy / recruiters)
+    // come from real requirement + assignment data inside the user's scope.
+    const scope = await resolveRequirementScope(req, {});
+    const peoplePromise = fetchPeopleFilterOptions(scope);
+
     if (isSuperAdmin) {
-      const [serviceLines, businessUnits, departments, clients, clientSpocs] =
-        await Promise.all([
-          prisma.serviceLine.findMany({
-            // where: { isActive: true },
-            select: { id: true, name: true, isActive: true },
-            orderBy: { name: "asc" },
-          }),
-          prisma.businessUnit.findMany({
-            // where: { isActive: true },
-            select: { id: true, name: true, isActive: true },
-            orderBy: { name: "asc" },
-          }),
-          prisma.department.findMany({
-            // where: { isActive: true },
-            select: { id: true, name: true, isActive: true },
-            orderBy: { name: "asc" },
-          }),
-          prisma.client.findMany({
-            // where: { status: "ACTIVE", deletedAt: null },
-            select: { id: true, name: true, status: true },
-            orderBy: { name: "asc" },
-          }),
-          prisma.clientSpoc.findMany({
-            // where: { isActive: true },
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              designation: true,
-              isActive: true,
-              client: { select: { id: true, name: true } },
-            },
-            orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
-          }),
-        ]);
+      const [
+        serviceLines,
+        businessUnits,
+        departments,
+        clients,
+        clientSpocs,
+        people,
+      ] = await Promise.all([
+        prisma.serviceLine.findMany({
+          select: { id: true, name: true, isActive: true },
+          orderBy: { name: "asc" },
+        }),
+        prisma.businessUnit.findMany({
+          select: { id: true, name: true, isActive: true },
+          orderBy: { name: "asc" },
+        }),
+        prisma.department.findMany({
+          select: { id: true, name: true, isActive: true },
+          orderBy: { name: "asc" },
+        }),
+        prisma.client.findMany({
+          select: { id: true, name: true, status: true },
+          orderBy: { name: "asc" },
+        }),
+        prisma.clientSpoc.findMany({
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            designation: true,
+            isActive: true,
+            client: { select: { id: true, name: true } },
+          },
+          orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
+        }),
+        peoplePromise,
+      ]);
 
       const spocs = clientSpocs.map((s) => ({
         id: s.id,
@@ -1207,35 +1186,49 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
 
       return res.json({
         success: true,
-        data: { serviceLines, businessUnits, departments, clients, spocs },
+        data: {
+          serviceLines,
+          businessUnits,
+          departments,
+          clients,
+          spocs,
+          people,
+        },
       });
     }
 
-    // Non-superadmin — mirror exactly what getMyClients does
-    const myClients = await prisma.client.findMany({
-      where: {
-        deletedAt: null,
-        // status: "ACTIVE",
-        spocs: { some: { handlerId: userId } },
-      },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        businessUnit: { select: { id: true, name: true } },
-        spocs: {
-          where: { handlerId: userId },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            designation: true,
-            serviceLine: { select: { id: true, name: true } },
+    // Non-superadmin — clients/SPOCs the user handles
+    const [myClients, departments, people] = await Promise.all([
+      prisma.client.findMany({
+        where: {
+          deletedAt: null,
+          spocs: { some: { handlerId: userId } },
+        },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          businessUnit: { select: { id: true, name: true } },
+          spocs: {
+            where: { handlerId: userId },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              designation: true,
+              serviceLine: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: { name: "asc" },
-    });
+        orderBy: { name: "asc" },
+      }),
+      prisma.department.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+      peoplePromise,
+    ]);
 
     const clientMap = new Map<
       string,
@@ -1254,20 +1247,9 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
 
     for (const c of myClients) {
       clientMap.set(c.id, { id: c.id, name: c.name, status: c.status });
-
-      if (c.businessUnit) {
-        buMap.set(c.businessUnit.id, {
-          id: c.businessUnit.id,
-          name: c.businessUnit.name,
-        });
-      }
-
+      if (c.businessUnit) buMap.set(c.businessUnit.id, c.businessUnit);
       for (const s of c.spocs) {
-        slMap.set(s.serviceLine.id, {
-          id: s.serviceLine.id,
-          name: s.serviceLine.name,
-        });
-
+        if (s.serviceLine) slMap.set(s.serviceLine.id, s.serviceLine);
         spocs.push({
           id: s.id,
           name: `${s.firstName} ${s.lastName}`.trim(),
@@ -1279,26 +1261,18 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       }
     }
 
-    const departments = await prisma.department.findMany({
-      where: { isActive: true },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    });
+    const byName = (a: { name: string }, b: { name: string }) =>
+      a.name.localeCompare(b.name);
 
     return res.json({
       success: true,
       data: {
-        serviceLines: [...slMap.values()].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        ),
-        businessUnits: [...buMap.values()].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        ),
+        serviceLines: [...slMap.values()].sort(byName),
+        businessUnits: [...buMap.values()].sort(byName),
         departments,
-        clients: [...clientMap.values()].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        ),
+        clients: [...clientMap.values()].sort(byName),
         spocs,
+        people,
       },
     });
   } catch (err) {
@@ -1308,6 +1282,161 @@ export const getOverviewFilters = async (req: Request, res: Response) => {
       .json({ success: false, message: "Failed to fetch filter options" });
   }
 };
+
+// export const getOverviewFilters = async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+
+//     if (isSuperAdmin) {
+//       const [serviceLines, businessUnits, departments, clients, clientSpocs] =
+//         await Promise.all([
+//           prisma.serviceLine.findMany({
+//             // where: { isActive: true },
+//             select: { id: true, name: true, isActive: true },
+//             orderBy: { name: "asc" },
+//           }),
+//           prisma.businessUnit.findMany({
+//             // where: { isActive: true },
+//             select: { id: true, name: true, isActive: true },
+//             orderBy: { name: "asc" },
+//           }),
+//           prisma.department.findMany({
+//             // where: { isActive: true },
+//             select: { id: true, name: true, isActive: true },
+//             orderBy: { name: "asc" },
+//           }),
+//           prisma.client.findMany({
+//             // where: { status: "ACTIVE", deletedAt: null },
+//             select: { id: true, name: true, status: true },
+//             orderBy: { name: "asc" },
+//           }),
+//           prisma.clientSpoc.findMany({
+//             // where: { isActive: true },
+//             select: {
+//               id: true,
+//               firstName: true,
+//               lastName: true,
+//               designation: true,
+//               isActive: true,
+//               client: { select: { id: true, name: true } },
+//             },
+//             orderBy: [{ client: { name: "asc" } }, { firstName: "asc" }],
+//           }),
+//         ]);
+
+//       const spocs = clientSpocs.map((s) => ({
+//         id: s.id,
+//         name: `${s.firstName} ${s.lastName}`.trim(),
+//         designation: s.designation ?? null,
+//         clientId: s.client.id,
+//         clientName: s.client.name,
+//         isActive: s.isActive ?? true,
+//       }));
+
+//       return res.json({
+//         success: true,
+//         data: { serviceLines, businessUnits, departments, clients, spocs },
+//       });
+//     }
+
+//     // Non-superadmin — mirror exactly what getMyClients does
+//     const myClients = await prisma.client.findMany({
+//       where: {
+//         deletedAt: null,
+//         // status: "ACTIVE",
+//         spocs: { some: { handlerId: userId } },
+//       },
+//       select: {
+//         id: true,
+//         name: true,
+//         status: true,
+//         businessUnit: { select: { id: true, name: true } },
+//         spocs: {
+//           where: { handlerId: userId },
+//           select: {
+//             id: true,
+//             firstName: true,
+//             lastName: true,
+//             designation: true,
+//             serviceLine: { select: { id: true, name: true } },
+//           },
+//         },
+//       },
+//       orderBy: { name: "asc" },
+//     });
+
+//     const clientMap = new Map<
+//       string,
+//       { id: string; name: string; status: string }
+//     >();
+//     const buMap = new Map<string, { id: string; name: string }>();
+//     const slMap = new Map<string, { id: string; name: string }>();
+//     const spocs: {
+//       id: string;
+//       name: string;
+//       designation: string | null;
+//       clientId: string;
+//       clientName: string;
+//       isActive: boolean;
+//     }[] = [];
+
+//     for (const c of myClients) {
+//       clientMap.set(c.id, { id: c.id, name: c.name, status: c.status });
+
+//       if (c.businessUnit) {
+//         buMap.set(c.businessUnit.id, {
+//           id: c.businessUnit.id,
+//           name: c.businessUnit.name,
+//         });
+//       }
+
+//       for (const s of c.spocs) {
+//         slMap.set(s.serviceLine.id, {
+//           id: s.serviceLine.id,
+//           name: s.serviceLine.name,
+//         });
+
+//         spocs.push({
+//           id: s.id,
+//           name: `${s.firstName} ${s.lastName}`.trim(),
+//           designation: s.designation ?? null,
+//           clientId: c.id,
+//           clientName: c.name,
+//           isActive: true,
+//         });
+//       }
+//     }
+
+//     const departments = await prisma.department.findMany({
+//       where: { isActive: true },
+//       select: { id: true, name: true },
+//       orderBy: { name: "asc" },
+//     });
+
+//     return res.json({
+//       success: true,
+//       data: {
+//         serviceLines: [...slMap.values()].sort((a, b) =>
+//           a.name.localeCompare(b.name)
+//         ),
+//         businessUnits: [...buMap.values()].sort((a, b) =>
+//           a.name.localeCompare(b.name)
+//         ),
+//         departments,
+//         clients: [...clientMap.values()].sort((a, b) =>
+//           a.name.localeCompare(b.name)
+//         ),
+//         spocs,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("getOverviewFilters:", err);
+//     return res
+//       .status(500)
+//       .json({ success: false, message: "Failed to fetch filter options" });
+//   }
+// };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EMPTY OVERVIEW SHAPE  (returned when no data matches filters)
