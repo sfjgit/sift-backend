@@ -9,9 +9,14 @@ import {
   resolveRequirementFilter,
 } from "@/services/applicant-scope.service";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Move to shared config if createAssignment uses the same list
 const ASSIGNABLE_REQUIREMENT_STATUSES = ["ACTIVE", "PENDING_APPROVAL"];
 
+// Tabs / buckets — keys are sent to the frontend as-is
 const ASSIGNMENT_FILTERS = {
   UNASSIGNED: { pipeline: { is: null } },
   ASSIGNED: { pipeline: { isNot: null } },
@@ -21,9 +26,32 @@ type AssignmentFilterKey = keyof typeof ASSIGNMENT_FILTERS;
 
 const NO_ACCESS_MESSAGE = "You don't have access to applicants";
 
+// Overview charts
+const TREND_DAYS = 30;
+const TOP_REQUIREMENTS_LIMIT = 5;
+
+const USER_LITE = {
+  select: { id: true, firstName: true, lastName: true },
+} as const;
+// requirement's active assignments — who it's assigned to, and by whom
+const ACTIVE_ASSIGNMENTS = {
+  where: { status: "ACTIVE" },
+  orderBy: { depth: "asc" },
+  select: {
+    id: true,
+    depth: true,
+    assignedAt: true,
+    assignedTo: USER_LITE,
+    assignedBy: USER_LITE,
+  },
+} as const;
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /applicants
-// ?requirementId=&status=UNASSIGNED|ASSIGNED&search=&from=&to=&page=&limit=
+// GET /applicants?requirementId=&status=&search=&from=&to=&page=&limit=
+// One row per application — same requirement applied by 20 people = 20 rows.
+//   data                    → applicant + the requirement they applied to
+//   meta.counts             → per-tab counts for the current filters
+//   meta.requirementOptions → requirement filter dropdown
+//   meta.summary            → scope-wide stats + charts (ignores filters)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const listApplicants = async (req: Request, res: Response) => {
@@ -53,9 +81,24 @@ export const listApplicants = async (req: Request, res: Response) => {
             : "Requirement not in your scope",
       });
 
-    const baseWhere: Prisma.CandidateSnapshotWhereInput = {
+    const scopeAccess = resolveRequirementFilter(scope);
+    const scopeWhere: Prisma.RequirementWhereInput = {
+      deletedAt: null,
+      ...(scopeAccess.allowed && scopeAccess.filter
+        ? { id: scopeAccess.filter }
+        : {}),
+    };
+
+    // every applicant this user may see
+    const applicantScope: Prisma.CandidateSnapshotWhereInput = {
       type: CandidateSnapshotType.APPLICANT,
-      ...(access.filter ? { requirementId: access.filter } : {}),
+      requirement: scopeWhere,
+    };
+
+    // + dashboard filters (everything except the tab)
+    const filteredWhere: Prisma.CandidateSnapshotWhereInput = {
+      ...applicantScope,
+      ...(requirementId ? { requirementId } : {}),
       ...(from || to
         ? {
             snapshotAt: {
@@ -71,109 +114,198 @@ export const listApplicants = async (req: Request, res: Response) => {
               { email: { contains: search, mode: "insensitive" } },
               { phone: { contains: search } },
               { candidateCode: { contains: search, mode: "insensitive" } },
+              { currentCompany: { contains: search, mode: "insensitive" } },
+              { topSkills: { has: search } },
+              {
+                requirement: {
+                  reqCode: { contains: search, mode: "insensitive" },
+                },
+              },
+              {
+                requirement: {
+                  title: { contains: search, mode: "insensitive" },
+                },
+              },
             ],
           }
         : {}),
     };
 
-    const statusFilter =
+    const statusKeys = Object.keys(ASSIGNMENT_FILTERS) as AssignmentFilterKey[];
+    const bucket =
       status && status in ASSIGNMENT_FILTERS
-        ? ASSIGNMENT_FILTERS[status as AssignmentFilterKey]
-        : {};
+        ? (status as AssignmentFilterKey)
+        : null;
 
-    const where = { ...baseWhere, ...statusFilter };
+    const where: Prisma.CandidateSnapshotWhereInput = {
+      ...filteredWhere,
+      ...(bucket ? ASSIGNMENT_FILTERS[bucket] : {}),
+    };
 
-    const [rows, total, unassignedCount, assignedCount] =
-      await prisma.$transaction([
-        prisma.candidateSnapshot.findMany({
-          where,
-          orderBy: { snapshotAt: "desc" },
-          skip,
-          take,
-          select: {
-            id: true,
-            candidateCode: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            currentTitle: true,
-            currentCompany: true,
-            totalExpYears: true,
-            topSkills: true,
-            resumeUrl: true,
-            sourced: true,
-            snapshotAt: true,
-            requirement: {
-              select: {
-                id: true,
-                reqCode: true,
-                title: true,
-                status: true,
-                client: { select: { id: true, name: true } },
-              },
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    since.setUTCDate(since.getUTCDate() - (TREND_DAYS - 1));
+
+    const [
+      rows,
+      total,
+      tabCounts,
+      summaryCounts,
+      perRequirementBuckets,
+      totalRequirements,
+      recentApplications,
+    ] = await Promise.all([
+      // table rows — one per application
+      prisma.candidateSnapshot.findMany({
+        where,
+        orderBy: { snapshotAt: "desc" },
+        skip,
+        take,
+        select: {
+          id: true,
+          candidateCode: true,
+          candidateServiceId: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          currentTitle: true,
+          currentCompany: true,
+          totalExpYears: true,
+          topSkills: true,
+          resumeUrl: true,
+          sourced: true,
+          snapshotAt: true,
+          requirement: {
+            select: {
+              id: true,
+              reqCode: true,
+              title: true,
+              status: true,
+              client: { select: { name: true } },
+              createdBy: USER_LITE,
+              assignments: ACTIVE_ASSIGNMENTS,
             },
-            pipeline: {
-              select: {
-                id: true,
-                createdAt: true,
-                recruiter: {
-                  select: { id: true, firstName: true, lastName: true },
-                },
-                currentStage: {
-                  select: {
-                    id: true,
-                    code: true,
-                    label: true,
-                    canonicalStage: true,
-                  },
-                },
-                stageUpdatedBy: {
-                  select: { id: true, firstName: true, lastName: true },
-                },
-                // first log entry = the assignment (who assigned + when)
-                stageHistory: {
-                  orderBy: { createdAt: "asc" },
-                  take: 1,
-                  select: {
-                    createdAt: true,
-                    changedBy: {
-                      select: { id: true, firstName: true, lastName: true },
-                    },
-                  },
-                },
+          },
+          pipeline: {
+            select: {
+              id: true,
+              createdAt: true,
+              recruiter: USER_LITE,
+              currentStage: {
+                select: { id: true, label: true, canonicalStage: true },
               },
             },
           },
-        }),
-        prisma.candidateSnapshot.count({ where }),
-        prisma.candidateSnapshot.count({
-          where: { ...baseWhere, ...ASSIGNMENT_FILTERS.UNASSIGNED },
-        }),
-        prisma.candidateSnapshot.count({
-          where: { ...baseWhere, ...ASSIGNMENT_FILTERS.ASSIGNED },
-        }),
-      ]);
-    const data = rows.map(({ pipeline, ...rest }) => {
-      if (!pipeline) return { ...rest, pipeline: null };
-      const { stageHistory, ...p } = pipeline;
-      return {
-        ...rest,
-        pipeline: {
-          ...p,
-          assignedBy: stageHistory[0]?.changedBy ?? null,
-          assignedAt: stageHistory[0]?.createdAt ?? p.createdAt,
         },
-      };
+      }),
+      prisma.candidateSnapshot.count({ where }),
+      // tab counts — current filters
+      Promise.all(
+        statusKeys.map((k) =>
+          prisma.candidateSnapshot.count({
+            where: { ...filteredWhere, ...ASSIGNMENT_FILTERS[k] },
+          }),
+        ),
+      ),
+      // stats — scope-wide
+      Promise.all(
+        statusKeys.map((k) =>
+          prisma.candidateSnapshot.count({
+            where: { ...applicantScope, ...ASSIGNMENT_FILTERS[k] },
+          }),
+        ),
+      ),
+      // applicants per requirement per bucket — requirements tab, dropdown, top chart
+      Promise.all(
+        statusKeys.map((k) =>
+          prisma.candidateSnapshot.groupBy({
+            by: ["requirementId"],
+            where: { ...applicantScope, ...ASSIGNMENT_FILTERS[k] },
+            _count: { _all: true },
+          }),
+        ),
+      ),
+      prisma.requirement.count({ where: scopeWhere }),
+      // trend
+      prisma.candidateSnapshot.findMany({
+        where: { ...applicantScope, snapshotAt: { gte: since } },
+        select: { snapshotAt: true },
+      }),
+    ]);
+
+    const toCountMap = (values: number[]) =>
+      Object.fromEntries(statusKeys.map((k, i) => [k, values[i]])) as Record<
+        AssignmentFilterKey,
+        number
+      >;
+
+    // requirement options — every in-scope requirement
+    //   ALL   → all requirements
+    //   DL/DM → created by them OR actively assigned to them
+    // with per-bucket applicant counts (0 when none); most applicants first, then newest
+    const bucketMaps = perRequirementBuckets.map(
+      (rows) => new Map(rows.map((g) => [g.requirementId, g._count._all])),
+    );
+    const scopedRequirements = await prisma.requirement.findMany({
+      where: scopeWhere,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        reqCode: true,
+        title: true,
+        status: true,
+        createdAt: true,
+        client: { select: { name: true } },
+        createdBy: USER_LITE,
+        assignments: ACTIVE_ASSIGNMENTS,
+      },
     });
+    const requirementOptions = scopedRequirements
+      .map((r) => {
+        const counts = toCountMap(bucketMaps.map((m) => m.get(r.id) ?? 0));
+        return {
+          ...r,
+          counts,
+          count: Object.values(counts).reduce((s, n) => s + n, 0),
+        };
+      })
+      .sort((a, b) => b.count - a.count); // stable sort keeps newest-first within equal counts
+
+    // daily trend (UTC), zero-filled
+    const trendMap = new Map<string, number>();
+    for (let i = 0; i < TREND_DAYS; i++) {
+      const d = new Date(since);
+      d.setUTCDate(since.getUTCDate() + i);
+      trendMap.set(d.toISOString().slice(0, 10), 0);
+    }
+    recentApplications.forEach(({ snapshotAt }) => {
+      const key = snapshotAt.toISOString().slice(0, 10);
+      if (trendMap.has(key)) trendMap.set(key, trendMap.get(key)! + 1);
+    });
+    const trend = [...trendMap].map(([date, count]) => ({ date, count }));
 
     return res.json({
       success: true,
-      data,
+      data: rows,
       meta: {
         total,
         page: Math.floor(skip / take) + 1,
         limit: take,
-        counts: { UNASSIGNED: unassignedCount, ASSIGNED: assignedCount },
+        assignmentStatuses: statusKeys,
+        counts: toCountMap(tabCounts),
+        requirementOptions,
+        summary: {
+          totalApplicants: summaryCounts.reduce((s, n) => s + n, 0),
+          counts: toCountMap(summaryCounts),
+          totalRequirements,
+          requirementsWithApplicants: requirementOptions.filter(
+            (o) => o.count > 0,
+          ).length,
+          trend,
+          topRequirements: requirementOptions
+            .filter((o) => o.count > 0)
+            .slice(0, TOP_REQUIREMENTS_LIMIT),
+        },
       },
     });
   } catch (err) {
@@ -186,7 +318,8 @@ export const listApplicants = async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /applicants/assign   body: { snapshotIds: string[], recruiterId: string }
-// Recruiter list comes from /users/my-subordinates on the frontend
+// Creates the pipeline row at the Sourced stage under the chosen recruiter.
+// Recruiter list comes from /users/my-subordinates on the frontend.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const assignApplicants = async (req: Request, res: Response) => {
@@ -358,7 +491,7 @@ export const assignApplicants = async (req: Request, res: Response) => {
             });
           }
 
-          // ── 5b. Create pipeline at initial stage ─────────────────────────────
+          // ── 5b. Pipeline at initial stage ────────────────────────────────────
           const p = await tx.requirementCandidatePipeline.create({
             data: {
               snapshotId: snap.id,
@@ -427,7 +560,7 @@ export const assignApplicants = async (req: Request, res: Response) => {
     const skipped = results.filter((r) => r.status === "skipped");
 
     if (ids.length === 1 && skipped.length === 1) {
-      const reason = (skipped[0] as any).reason as string;
+      const reason = (skipped[0] as { reason: string }).reason;
       const code =
         reason === "Already assigned"
           ? 409
@@ -451,190 +584,5 @@ export const assignApplicants = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to assign applicants" });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /applicants/requirements?search=&status=&page=&limit=
-// Every in-scope requirement with applicant counts (0 when none)
-//   ALL   → every live requirement
-//   DL/DM → requirements they created OR are actively assigned to
-// status (UNASSIGNED / ASSIGNED) → only requirements having such applicants
-// meta.summary → scope-wide totals for the stats cards
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const listApplicantRequirements = async (
-  req: Request,
-  res: Response,
-) => {
-  try {
-    const {
-      search,
-      status,
-      page = "1",
-      limit = "20",
-    } = req.query as Record<string, string | undefined>;
-
-    const take = Math.min(Math.max(parseInt(limit!, 10) || 20, 1), 100);
-    const skip = (Math.max(parseInt(page!, 10) || 1, 1) - 1) * take;
-
-    const scope = await getApplicantScope(req.user!);
-    const access = resolveRequirementFilter(scope);
-    if (!access.allowed)
-      return res
-        .status(403)
-        .json({ success: false, message: NO_ACCESS_MESSAGE });
-
-    const statusKeys = Object.keys(ASSIGNMENT_FILTERS) as AssignmentFilterKey[];
-    const bucket =
-      status && status in ASSIGNMENT_FILTERS
-        ? (status as AssignmentFilterKey)
-        : null;
-
-    // scope only — base for the stats cards (ignores search / tab)
-    const scopeWhere: Prisma.RequirementWhereInput = {
-      deletedAt: null,
-      ...(access.filter ? { id: access.filter } : {}),
-    };
-
-    // what the table shows
-    const listWhere: Prisma.RequirementWhereInput = {
-      ...scopeWhere,
-      ...(search
-        ? {
-            OR: [
-              { reqCode: { contains: search, mode: "insensitive" } },
-              { title: { contains: search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-      ...(bucket
-        ? {
-            candidateSnapshots: {
-              some: {
-                type: CandidateSnapshotType.APPLICANT,
-                ...ASSIGNMENT_FILTERS[bucket],
-              },
-            },
-          }
-        : {}),
-    };
-
-    const applicantScope: Prisma.CandidateSnapshotWhereInput = {
-      type: CandidateSnapshotType.APPLICANT,
-      requirement: scopeWhere,
-    };
-
-    const USER_LITE = {
-      select: { id: true, firstName: true, lastName: true },
-    } as const;
-
-    const [requirements, total, totalRequirements, requirementsWithApplicants] =
-      await Promise.all([
-        prisma.requirement.findMany({
-          where: listWhere,
-          orderBy: { createdAt: "desc" },
-          skip,
-          take,
-          select: {
-            id: true,
-            reqCode: true,
-            title: true,
-            status: true,
-            createdAt: true,
-            client: { select: { name: true } },
-            createdBy: USER_LITE,
-            assignments: {
-              where: { status: "ACTIVE" },
-              orderBy: { depth: "asc" },
-              select: {
-                id: true,
-                depth: true,
-                assignedTo: USER_LITE,
-                assignedBy: USER_LITE,
-              },
-            },
-          },
-        }),
-        prisma.requirement.count({ where: listWhere }),
-        prisma.requirement.count({ where: scopeWhere }),
-        prisma.requirement.count({
-          where: {
-            ...scopeWhere,
-            candidateSnapshots: {
-              some: { type: CandidateSnapshotType.APPLICANT },
-            },
-          },
-        }),
-      ]);
-
-    const reqIds = requirements.map((r) => r.id);
-
-    const [bucketTotals, buckets] = await Promise.all([
-      // scope-wide applicant totals per bucket (stats cards)
-      Promise.all(
-        statusKeys.map((key) =>
-          prisma.candidateSnapshot.count({
-            where: { ...applicantScope, ...ASSIGNMENT_FILTERS[key] },
-          }),
-        ),
-      ),
-      // per-requirement counts for this page
-      Promise.all(
-        statusKeys.map(async (key) => {
-          const rows = await prisma.candidateSnapshot.groupBy({
-            by: ["requirementId"],
-            where: {
-              type: CandidateSnapshotType.APPLICANT,
-              requirementId: { in: reqIds },
-              ...ASSIGNMENT_FILTERS[key],
-            },
-            _count: { _all: true },
-          });
-          return [
-            key,
-            new Map(rows.map((r) => [r.requirementId, r._count._all])),
-          ] as const;
-        }),
-      ),
-    ]);
-
-    const data = requirements.map((r) => {
-      const counts = Object.fromEntries(
-        buckets.map(([key, map]) => [key, map.get(r.id) ?? 0]),
-      ) as Record<AssignmentFilterKey, number>;
-
-      return {
-        ...r,
-        applicantCount: Object.values(counts).reduce((s, n) => s + n, 0),
-        counts,
-      };
-    });
-
-    const summaryCounts = Object.fromEntries(
-      statusKeys.map((key, i) => [key, bucketTotals[i]]),
-    ) as Record<AssignmentFilterKey, number>;
-
-    return res.json({
-      success: true,
-      data,
-      meta: {
-        total,
-        page: Math.floor(skip / take) + 1,
-        limit: take,
-        assignmentStatuses: statusKeys,
-        summary: {
-          totalApplicants: bucketTotals.reduce((s, n) => s + n, 0),
-          counts: summaryCounts,
-          totalRequirements,
-          requirementsWithApplicants,
-        },
-      },
-    });
-  } catch (err) {
-    console.error("listApplicantRequirements:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch requirements" });
   }
 };
