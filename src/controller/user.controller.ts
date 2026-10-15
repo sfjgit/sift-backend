@@ -13,145 +13,309 @@ import env from "@/config/env";
 // GET /users
 // ─────────────────────────────────────────
 
+// export const listUsers = async (req: Request, res: Response) => {
+//   try {
+//     const {
+//       search,
+//       roleId,
+//       departmentId,
+//       reportingToId,
+//       isActive,
+//       buId,
+//       teamId,
+//       teamRole,
+//       isClientHandler,
+//       page = "1",
+//       limit = "25",
+//       sortBy = "firstName",
+//       sortDir = "asc",
+//     } = req.query as Record<string, string>;
+
+//     const userId = req.user!.id;
+//     const isSuperAdmin = req.user!.isSuperAdmin;
+
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     const take = Math.min(parseInt(limit), 100);
+
+//     let visibleUserIds: string[] | null = null;
+//     if (!isSuperAdmin) {
+//       const subordinates = await getSubordinateIds(userId);
+//       visibleUserIds = [userId, ...subordinates];
+//     }
+
+//     let buUserIds: string[] | null = null;
+//     if (buId) {
+//       const [assignmentUsers, spocUsers] = await Promise.all([
+//         prisma.requirementAssignment.findMany({
+//           where: {
+//             status: "ACTIVE",
+//             assigneeBU: { ancestorIds: { has: buId } },
+//           },
+//           select: { assignedToId: true },
+//           distinct: ["assignedToId"],
+//         }),
+//         prisma.clientSpoc.findMany({
+//           where: {
+//             isActive: true,
+//             businessUnit: { ancestorIds: { has: buId } },
+//           },
+//           select: { handlerId: true },
+//           distinct: ["handlerId"],
+//         }),
+//       ]);
+
+//       const ids = new Set<string>([
+//         ...assignmentUsers.map((a) => a.assignedToId),
+//         ...spocUsers.map((s) => s.handlerId),
+//       ]);
+//       buUserIds = [...ids];
+//     }
+
+//     // const where: any = {};
+
+//     // if (visibleUserIds) {
+//     //   where.id = { in: visibleUserIds };
+//     // }
+
+//     // if (buUserIds !== null) {
+//     //   if (where.id) {
+//     //     const scopeSet = new Set(where.id.in as string[]);
+//     //     where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
+//     //   } else {
+//     //     where.id = { in: buUserIds };
+//     //   }
+//     // }
+
+//     // if (isActive !== undefined) where.isActive = isActive === "true";
+//     // if (roleId) where.roleId = roleId;
+//     // if (departmentId) where.departmentId = departmentId;
+//     // if (reportingToId) where.reportingToId = reportingToId;
+
+//     // if (teamId) where.teamLeadId = teamId;
+
+//     // if (teamRole) {
+//     //   if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
+//     //     where.teamMembers = { some: { isActive: true } };
+//     //   } else if (teamRole === "MEMBER") {
+//     //     where.teamLeadId = { not: null };
+//     //   }
+//     // }
+
+//     // Reporting-to = full subtree under selected manager (direct + indirect)
+//     let reportingUserIds: string[] | null = null;
+//     if (reportingToId) {
+//       reportingUserIds = await getSubordinateIds(reportingToId);
+//     }
+
+//     // Intersect every active id-scope: RBAC ∩ BU ∩ reporting subtree
+//     const idScopes = [visibleUserIds, buUserIds, reportingUserIds].filter(
+//       (s): s is string[] => s !== null,
+//     );
+
+//     const where: any = {};
+//     const AND: any[] = [];
+
+//     if (idScopes.length) {
+//       const [first, ...others] = idScopes;
+//       const sets = others.map((s) => new Set(s));
+//       where.id = { in: first.filter((id) => sets.every((s) => s.has(id))) };
+//     }
+
+//     if (isActive !== undefined) where.isActive = isActive === "true";
+//     if (roleId) where.roleId = roleId;
+//     if (departmentId) where.departmentId = departmentId;
+
+//     if (teamId) AND.push({ teamLeadId: teamId });
+
+//     if (teamRole) {
+//       if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
+//         where.teamMembers = { some: { isActive: true } };
+//       } else if (teamRole === "MEMBER") {
+//         AND.push({ teamLeadId: { not: null } });
+//       }
+//     }
+
+//     if (AND.length) where.AND = AND;
+
+//     if (isClientHandler === "true") {
+//       where.spocsHandled = { some: { isActive: true } };
+//     } else if (isClientHandler === "false") {
+//       where.spocsHandled = { none: { isActive: true } };
+//     }
+
+//     if (search) {
+//       where.OR = [
+//         { firstName: { contains: search, mode: "insensitive" } },
+//         { lastName: { contains: search, mode: "insensitive" } },
+//         { email: { contains: search, mode: "insensitive" } },
+//         { employeeId: { contains: search, mode: "insensitive" } },
+//         { phone: { contains: search, mode: "insensitive" } },
+//       ];
+//     }
+
+//     const SORTABLE = ["firstName", "lastName", "createdAt", "dateOfJoin"];
+//     const orderBy = SORTABLE.includes(sortBy)
+//       ? { [sortBy]: sortDir as "asc" | "desc" }
+//       : { firstName: "asc" as const };
+
+//     const [total, users] = await Promise.all([
+//       prisma.user.count({ where }),
+//       prisma.user.findMany({
+//         where,
+//         select: {
+//           id: true,
+//           firstName: true,
+//           lastName: true,
+//           displayName: true,
+//           email: true,
+//           employeeId: true,
+//           phone: true,
+//           workingLocation: true,
+//           isActive: true,
+//           isSuperAdmin: true,
+//           dateOfJoin: true,
+//           createdAt: true,
+//           role: { select: { id: true, name: true } },
+//           department: { select: { id: true, name: true } },
+//           reportingTo: {
+//             select: { id: true, firstName: true, lastName: true },
+//           },
+//           teamLead: { select: { id: true, firstName: true, lastName: true } },
+//           _count: {
+//             select: {
+//               subordinates: true,
+//               teamMembers: true,
+//               spocsHandled: { where: { isActive: true } },
+//               assignmentsReceived: { where: { status: "ACTIVE" } },
+//             },
+//           },
+//         },
+//         orderBy,
+//         skip,
+//         take,
+//       }),
+//     ]);
+
+//     res.json({
+//       success: true,
+//       data: users,
+//       meta: {
+//         total,
+//         page: parseInt(page),
+//         limit: take,
+//         pages: Math.ceil(total / take),
+//       },
+//       permissions: {
+//         canAdd: req.modulePermission.canAdd,
+//         canEdit: req.modulePermission.canEdit,
+//         canDelete: req.modulePermission.canDelete,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("listUsers:", err);
+//     res.status(500).json({ success: false, message: "Failed to fetch users" });
+//   }
+// };
+
+const TEAM_ROLE_FILTERS = [
+  { value: "LEAD", label: "Lead" },
+  { value: "CO_LEAD", label: "Co-Lead" },
+  { value: "MEMBER", label: "Member" },
+] as const;
+
+const getBuUserIds = async (buId: string) => {
+  const [assignments, spocs] = await Promise.all([
+    prisma.requirementAssignment.findMany({
+      where: { status: "ACTIVE", assigneeBU: { ancestorIds: { has: buId } } },
+      select: { assignedToId: true },
+      distinct: ["assignedToId"],
+    }),
+    prisma.clientSpoc.findMany({
+      where: { isActive: true, businessUnit: { ancestorIds: { has: buId } } },
+      select: { handlerId: true },
+      distinct: ["handlerId"],
+    }),
+  ]);
+  return [
+    ...new Set([
+      ...assignments.map((a) => a.assignedToId),
+      ...spocs.map((s) => s.handlerId),
+    ]),
+  ];
+};
+
+// One where-builder for list + filter options. `skip` ignores those filters (for cascading dropdowns).
+const buildUserWhere = async (
+  req: Request,
+  f: Record<string, string>,
+  skip: string[] = [],
+) => {
+  const use = (k: string) => !!f[k] && !skip.includes(k);
+  const user = req.user!;
+
+  const idLists: string[][] = [];
+  if (!user.isSuperAdmin)
+    idLists.push([user.id, ...(await getSubordinateIds(user.id))]);
+  if (use("buId")) idLists.push(await getBuUserIds(f.buId));
+  if (use("reportingToId"))
+    idLists.push(await getSubordinateIds(f.reportingToId));
+
+  const where: any = {};
+  if (idLists.length) {
+    where.id = {
+      in: idLists.reduce((acc, list) => {
+        const set = new Set(list);
+        return acc.filter((id) => set.has(id));
+      }),
+    };
+  }
+
+  if (use("isActive")) where.isActive = f.isActive === "true";
+  if (use("roleId")) where.roleId = f.roleId;
+  if (use("departmentId")) where.departmentId = f.departmentId;
+
+  const AND: any[] = [];
+  if (use("teamId")) AND.push({ teamLeadId: f.teamId });
+  if (use("teamRole")) {
+    if (f.teamRole === "MEMBER") AND.push({ teamLeadId: { not: null } });
+    else where.teamMembers = { some: { isActive: true } };
+  }
+  if (AND.length) where.AND = AND;
+
+  if (use("isClientHandler")) {
+    where.spocsHandled =
+      f.isClientHandler === "true"
+        ? { some: { isActive: true } }
+        : { none: { isActive: true } };
+  }
+
+  if (use("search")) {
+    where.OR = ["firstName", "lastName", "email", "employeeId", "phone"].map(
+      (field) => ({
+        [field]: { contains: f.search, mode: "insensitive" },
+      }),
+    );
+  }
+
+  return where;
+};
+// ─────────────────────────────────────────
+// GET /users
+// ─────────────────────────────────────────
+
 export const listUsers = async (req: Request, res: Response) => {
   try {
     const {
-      search,
-      roleId,
-      departmentId,
-      reportingToId,
-      isActive,
-      buId,
-      teamId,
-      teamRole,
-      isClientHandler,
       page = "1",
       limit = "25",
       sortBy = "firstName",
       sortDir = "asc",
+      ...filters
     } = req.query as Record<string, string>;
 
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-
-    const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = Math.min(parseInt(limit), 100);
-
-    let visibleUserIds: string[] | null = null;
-    if (!isSuperAdmin) {
-      const subordinates = await getSubordinateIds(userId);
-      visibleUserIds = [userId, ...subordinates];
-    }
-
-    let buUserIds: string[] | null = null;
-    if (buId) {
-      const [assignmentUsers, spocUsers] = await Promise.all([
-        prisma.requirementAssignment.findMany({
-          where: {
-            status: "ACTIVE",
-            assigneeBU: { ancestorIds: { has: buId } },
-          },
-          select: { assignedToId: true },
-          distinct: ["assignedToId"],
-        }),
-        prisma.clientSpoc.findMany({
-          where: {
-            isActive: true,
-            businessUnit: { ancestorIds: { has: buId } },
-          },
-          select: { handlerId: true },
-          distinct: ["handlerId"],
-        }),
-      ]);
-
-      const ids = new Set<string>([
-        ...assignmentUsers.map((a) => a.assignedToId),
-        ...spocUsers.map((s) => s.handlerId),
-      ]);
-      buUserIds = [...ids];
-    }
-
-    // const where: any = {};
-
-    // if (visibleUserIds) {
-    //   where.id = { in: visibleUserIds };
-    // }
-
-    // if (buUserIds !== null) {
-    //   if (where.id) {
-    //     const scopeSet = new Set(where.id.in as string[]);
-    //     where.id = { in: buUserIds.filter((id) => scopeSet.has(id)) };
-    //   } else {
-    //     where.id = { in: buUserIds };
-    //   }
-    // }
-
-    // if (isActive !== undefined) where.isActive = isActive === "true";
-    // if (roleId) where.roleId = roleId;
-    // if (departmentId) where.departmentId = departmentId;
-    // if (reportingToId) where.reportingToId = reportingToId;
-
-    // if (teamId) where.teamLeadId = teamId;
-
-    // if (teamRole) {
-    //   if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
-    //     where.teamMembers = { some: { isActive: true } };
-    //   } else if (teamRole === "MEMBER") {
-    //     where.teamLeadId = { not: null };
-    //   }
-    // }
-
-    // Reporting-to = full subtree under selected manager (direct + indirect)
-    let reportingUserIds: string[] | null = null;
-    if (reportingToId) {
-      reportingUserIds = await getSubordinateIds(reportingToId);
-    }
-
-    // Intersect every active id-scope: RBAC ∩ BU ∩ reporting subtree
-    const idScopes = [visibleUserIds, buUserIds, reportingUserIds].filter(
-      (s): s is string[] => s !== null,
-    );
-
-    const where: any = {};
-    const AND: any[] = [];
-
-    if (idScopes.length) {
-      const [first, ...others] = idScopes;
-      const sets = others.map((s) => new Set(s));
-      where.id = { in: first.filter((id) => sets.every((s) => s.has(id))) };
-    }
-
-    if (isActive !== undefined) where.isActive = isActive === "true";
-    if (roleId) where.roleId = roleId;
-    if (departmentId) where.departmentId = departmentId;
-
-    if (teamId) AND.push({ teamLeadId: teamId });
-
-    if (teamRole) {
-      if (teamRole === "LEAD" || teamRole === "CO_LEAD") {
-        where.teamMembers = { some: { isActive: true } };
-      } else if (teamRole === "MEMBER") {
-        AND.push({ teamLeadId: { not: null } });
-      }
-    }
-
-    if (AND.length) where.AND = AND;
-
-    if (isClientHandler === "true") {
-      where.spocsHandled = { some: { isActive: true } };
-    } else if (isClientHandler === "false") {
-      where.spocsHandled = { none: { isActive: true } };
-    }
-
-    if (search) {
-      where.OR = [
-        { firstName: { contains: search, mode: "insensitive" } },
-        { lastName: { contains: search, mode: "insensitive" } },
-        { email: { contains: search, mode: "insensitive" } },
-        { employeeId: { contains: search, mode: "insensitive" } },
-        { phone: { contains: search, mode: "insensitive" } },
-      ];
-    }
+    const skip = (parseInt(page) - 1) * take;
+    const where = await buildUserWhere(req, filters);
 
     const SORTABLE = ["firstName", "lastName", "createdAt", "dateOfJoin"];
     const orderBy = SORTABLE.includes(sortBy)
@@ -216,7 +380,6 @@ export const listUsers = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Failed to fetch users" });
   }
 };
-
 // GET /users/hierarchy-filters
 export const getHierarchyFilters = async (req: Request, res: Response) => {
   try {
@@ -1486,17 +1649,17 @@ export const getUserCard = async (req: Request, res: Response) => {
     );
 
     const activeAssignments = user.assignmentsReceived.filter(
-      (a) => a.status === "ACTIVE",
+      (a: any) => a.status === "ACTIVE",
     );
 
     const aggregateStats = {
       activeReqs: user._count.assignmentsReceived,
       totalSubmissions: activeAssignments.reduce(
-        (s, a) => s + a.submissionsCount,
+        (s: any, a: any) => s + a.submissionsCount,
         0,
       ),
       totalInterviews: activeAssignments.reduce(
-        (s, a) => s + a.interviewsCount,
+        (s: any, a: any) => s + a.interviewsCount,
         0,
       ),
       totalFilled: activeAssignments.reduce((s, a) => s + a.filledOpenings, 0),
@@ -1670,51 +1833,14 @@ export const getMySubordinates = async (req: Request, res: Response) => {
   }
 };
 
-// Single source for team-role filter options — keep in sync with the teamRole branch in listUsers
-const TEAM_ROLE_FILTERS = [
-  { value: "LEAD", label: "Lead" },
-  { value: "CO_LEAD", label: "Co-Lead" },
-  { value: "MEMBER", label: "Member" },
-] as const;
-
 // ─────────────────────────────────────────
-// GET /users/filter-options?reportingToId=
+// GET /users/filter-options  (same query params as /users)
+// Each dropdown = values valid for all the OTHER selected filters
 // ─────────────────────────────────────────
 
 export const getUserFilterOptions = async (req: Request, res: Response) => {
   try {
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-    const { reportingToId } = req.query as Record<string, string | undefined>;
-
-    // RBAC scope — null = everyone (super admin)
-    let visibleIds: string[] | null = null;
-    if (!isSuperAdmin) {
-      const subs = await getSubordinateIds(userId);
-      visibleIds = [userId, ...subs];
-    }
-    const visibleSet = visibleIds ? new Set(visibleIds) : null;
-    const scope: any = visibleIds ? { id: { in: visibleIds } } : {};
-
-    // Non-admin can't pivot onto a manager outside their own tree
-    if (reportingToId && visibleSet && !visibleSet.has(reportingToId)) {
-      return res.status(403).json({ success: false, message: "Not allowed" });
-    }
-
-    // Team leads narrow to the selected manager's subtree (manager included)
-    let leadScope: any = scope;
-    if (reportingToId) {
-      const subtree = [
-        reportingToId,
-        ...(await getSubordinateIds(reportingToId)),
-      ];
-      leadScope = {
-        id: {
-          in: visibleSet ? subtree.filter((id) => visibleSet.has(id)) : subtree,
-        },
-      };
-    }
-
+    const f = req.query as Record<string, string>;
     const PERSON = {
       id: true,
       firstName: true,
@@ -1722,49 +1848,55 @@ export const getUserFilterOptions = async (req: Request, res: Response) => {
       employeeId: true,
     } as const;
 
+    const [deptWhere, roleWhere, managerWhere, leadWhere, rbacWhere] =
+      await Promise.all([
+        buildUserWhere(req, f, ["departmentId"]),
+        buildUserWhere(req, f, ["roleId"]),
+        buildUserWhere(req, f, ["reportingToId"]),
+        buildUserWhere(req, f, ["teamId", "teamRole"]),
+        buildUserWhere(req, {}),
+      ]);
+
     const [deptRows, roleRows, reportingTo, teamLeads] = await Promise.all([
       prisma.user.findMany({
-        where: { ...scope, departmentId: { not: null } },
+        where: { ...deptWhere, departmentId: { not: null } },
         select: { department: { select: { id: true, name: true } } },
         distinct: ["departmentId"],
       }),
       prisma.user.findMany({
-        where: scope,
+        where: roleWhere,
         select: { role: { select: { id: true, name: true } } },
         distinct: ["roleId"],
       }),
-      // Managers = anyone in scope who has at least one subordinate
       prisma.user.findMany({
-        where: { ...scope, isActive: true, subordinates: { some: {} } },
+        where: {
+          ...rbacWhere,
+          isActive: true,
+          subordinates: { some: managerWhere },
+        },
         select: PERSON,
         orderBy: { firstName: "asc" },
       }),
-      // Team leads = anyone in lead-scope with active team members
       prisma.user.findMany({
         where: {
-          ...leadScope,
+          ...rbacWhere,
           isActive: true,
-          teamMembers: { some: { isActive: true } },
+          teamMembers: { some: leadWhere },
         },
         select: PERSON,
         orderBy: { firstName: "asc" },
       }),
     ]);
 
-    const byName = (a: { name: string }, b: { name: string }) =>
-      a.name.localeCompare(b.name);
-
     res.json({
       success: true,
       data: {
         departments: deptRows
-          .map((r) => r.department)
-          .filter((d): d is { id: string; name: string } => !!d)
-          .sort(byName),
+          .map((r) => r.department!)
+          .sort((a, b) => a.name.localeCompare(b.name)),
         roles: roleRows
           .map((r) => r.role)
-          .filter((r): r is { id: string; name: string } => !!r)
-          .sort(byName),
+          .sort((a, b) => a.name.localeCompare(b.name)),
         reportingTo,
         teamLeads,
         teamRoles: TEAM_ROLE_FILTERS,
