@@ -1251,6 +1251,8 @@ model RequirementCandidatePipeline {
   monthOfJoining      String? // "June 2025" — derived on write, stored for reporting
   remainingDaysToJoin Int? // computed on write — negative means overdue, null = no date set
 
+    noticePeriodDays Int?
+
   // ── Rejection
   isRejected      Boolean   @default(false)
   rejectedAt      DateTime?
@@ -1278,6 +1280,9 @@ model RequirementCandidatePipeline {
   transferredAt DateTime?
   //interview
   interviewSchedules CandidateInterviewSchedule[]
+
+  @@index([lastWorkingDate])
+  @@index([noticePeriodDays])
 
   @@index([requirementId, currentStageId])
   @@index([recruiterId])

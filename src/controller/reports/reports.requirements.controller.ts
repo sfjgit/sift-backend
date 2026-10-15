@@ -9,7 +9,7 @@ import {
   toArr,
   computeSaleValue,
   emptyByBasis,
-  shareOf,
+  cappedShares,
   pctOf,
   windowLabel,
   fetchScopedStages,
@@ -21,7 +21,10 @@ import {
   buildActivityPipelineWhere,
   monthKey,
   monthLabel,
+  personName,
 } from "./reports.requirements.shared";
+import { Prisma } from "@prisma/client";
+import { resolveJoining, JOINING_SOURCE_LABELS } from "./reports.joining";
 
 // Backward compat for anything that imported it from here
 export { computeSaleValue } from "./reports.requirements.shared";
@@ -182,12 +185,9 @@ export const getRequirementReport = async (req: Request, res: Response) => {
       const { value: computedSaleValue, basis: saleValueBasis } =
         computeSaleValue(r);
 
-      const achievedValue = shareOf(
+      // Capped at openings — same rule as the Recruiters tab
+      const { achievedValue, nearTerminalValue } = cappedShares(
         terminalCount,
-        r.totalOpenings,
-        computedSaleValue
-      );
-      const nearTerminalValue = shareOf(
         nearTerminalCount,
         r.totalOpenings,
         computedSaleValue
@@ -320,5 +320,236 @@ export const getRequirementReport = async (req: Request, res: Response) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to fetch requirement report" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getRequirementCandidates
+// GET /reports/requirements/candidates?type=all|pipeline|placed&bucket=…
+//
+// The candidates behind the count tiles. Same scope + filters as the table:
+// requirement filters, created/activity dates, candidate ownership, and the
+// summary-bar slice (bucket). Every row says who moved the candidate into the
+// current stage and when — e.g. "Placed on 12 Oct by Priya".
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CANDIDATE_TYPE_WHERE: Record<
+  string,
+  Prisma.RequirementCandidatePipelineWhereInput
+> = {
+  pipeline: { currentStage: { isNearTerminal: true, isTerminal: false } },
+  placed: { currentStage: { isTerminal: true } },
+};
+
+const CANDIDATE_LIST_CAP = 1_000;
+
+const CANDIDATE_LIST_SELECT = {
+  id: true,
+  requirementId: true,
+  recruiterId: true,
+  currentStageId: true,
+  isOnHold: true,
+  submittedAt: true,
+  offerStatus: true,
+  offeredCtc: true,
+  currentCtc: true,
+  expectedCtc: true,
+  noticePeriodDays: true,
+  lastWorkingDate: true,
+  stageUpdatedAt: true,
+  createdAt: true,
+  currentStage: {
+    select: {
+      label: true,
+      isTerminal: true,
+      isNearTerminal: true,
+      isSourced: true,
+      pipeline: true,
+    },
+  },
+  stageHistory: {
+    select: {
+      createdAt: true,
+      fromStageId: true,
+      toStageId: true,
+      timeInPrevStageMins: true,
+      changedBy: { select: { firstName: true, lastName: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  },
+  recruiter: {
+    select: { id: true, firstName: true, lastName: true, email: true },
+  },
+  snapshot: {
+    select: {
+      fullName: true,
+      email: true,
+      phone: true,
+      currentTitle: true,
+      currentCompany: true,
+      totalExpYears: true,
+      resumeUrl: true,
+    },
+  },
+  requirement: {
+    select: {
+      id: true,
+      reqCode: true,
+      title: true,
+      totalOpenings: true,
+      client: { select: { name: true } },
+      createdBy: { select: { firstName: true, lastName: true } },
+    },
+  },
+} as const;
+
+export const getRequirementCandidates = async (req: Request, res: Response) => {
+  try {
+    const q = req.query as Q;
+    const type = str(q.type) ?? "all";
+    const scope = await resolveRequirementScope(req, q);
+    const reqWhere = await buildRequirementWhere(q, scope);
+    const activityWhere = buildActivityPipelineWhere(q);
+
+    // Same requirement set as the table (default order, same cap)
+    const reqRows = await prisma.requirement.findMany({
+      where: reqWhere,
+      select: { id: true },
+      orderBy: { createdAt: "desc" },
+      take: 1_000,
+    });
+    let reqIds = reqRows.map((r) => r.id);
+
+    // Summary-bar slice — same rule the table uses on its rows
+    const bucket = str(q.bucket);
+    if (bucket && reqIds.length) {
+      const [counts, stageById] = await Promise.all([
+        prisma.requirementCandidatePipeline.groupBy({
+          by: ["requirementId", "currentStageId"],
+          where: {
+            requirementId: { in: reqIds },
+            ...scope.pipelineOwnerWhere,
+            ...activityWhere,
+          },
+          _count: { id: true },
+        }),
+        fetchStageFlagMap(),
+      ]);
+      const byReq: Record<string, Record<string, number>> = {};
+      for (const c of counts as any[])
+        (byReq[c.requirementId] ??= {})[c.currentStageId] = c._count.id;
+      reqIds = reqIds.filter((id) => {
+        const { terminal, nearTerminal } = classifyStageCounts(
+          byReq[id] ?? {},
+          stageById
+        );
+        return bucket === "terminal"
+          ? terminal > 0
+          : bucket === "nearTerminal"
+          ? nearTerminal > 0
+          : true;
+      });
+    }
+
+    const where: Prisma.RequirementCandidatePipelineWhereInput = {
+      requirementId: { in: reqIds },
+      ...scope.pipelineOwnerWhere,
+      ...activityWhere,
+      ...(CANDIDATE_TYPE_WHERE[type] ?? {}),
+    };
+
+    const [total, pipes] = await Promise.all([
+      prisma.requirementCandidatePipeline.count({ where }),
+      prisma.requirementCandidatePipeline.findMany({
+        where,
+        select: CANDIDATE_LIST_SELECT,
+        orderBy: { stageUpdatedAt: "desc" },
+        take: CANDIDATE_LIST_CAP,
+      }),
+    ]);
+
+    const now = new Date();
+    const rows = pipes.map((p) => {
+      // Real move INTO the current stage (skip same-stage logs: transfers, notes)
+      const move = p.stageHistory.find(
+        (l) => l.toStageId === p.currentStageId && l.fromStageId !== l.toStageId
+      );
+      const pipelineMins =
+        p.stageHistory.reduce((s, l) => s + (l.timeInPrevStageMins ?? 0), 0) +
+        Math.max(
+          0,
+          Math.floor(
+            (now.getTime() - new Date(p.stageUpdatedAt).getTime()) / 60_000
+          )
+        );
+      const j = resolveJoining(p, now);
+      return {
+        pipelineId: p.id,
+        addedOn: p.createdAt,
+        pipelineDays: Math.floor(pipelineMins / 1440),
+
+        stageId: p.currentStageId,
+        stageLabel: p.currentStage?.label ?? "—",
+        isTerminal: p.currentStage?.isTerminal ?? false,
+        isNearTerminal: p.currentStage?.isNearTerminal ?? false,
+        isDropped: p.currentStage?.pipeline === false, // stage flags = source of truth
+        isOnHold: p.isOnHold,
+        stageReachedAt: move?.createdAt ?? p.stageUpdatedAt,
+        stageMovedBy: move?.changedBy ? personName(move.changedBy) : null,
+
+        submittedAt: p.submittedAt,
+        offerStatus: p.offerStatus,
+        offeredCtc: p.offeredCtc,
+        currentCtc: p.currentCtc,
+        expectedCtc: p.expectedCtc,
+
+        noticeDays: j.noticeDays,
+        lastWorkingDate: p.lastWorkingDate,
+        joiningDate: j.date,
+        joiningSource: j.source,
+        joiningSourceLabel: j.source ? JOINING_SOURCE_LABELS[j.source] : null,
+        monthOfJoining: j.mojLabel,
+        daysToJoin: j.daysToJoin,
+
+        candidateName: p.snapshot?.fullName ?? "—",
+        candidateEmail: p.snapshot?.email ?? "",
+        candidatePhone: p.snapshot?.phone ?? "",
+        currentTitle: p.snapshot?.currentTitle ?? "",
+        currentCompany: p.snapshot?.currentCompany ?? "",
+        expYears: p.snapshot?.totalExpYears ?? null,
+        resumeUrl: p.snapshot?.resumeUrl ?? null,
+
+        recruiterId: p.recruiterId,
+        recruiterName: personName(p.recruiter),
+        recruiterEmail: p.recruiter?.email ?? "",
+
+        requirementId: p.requirementId,
+        reqCode: p.requirement?.reqCode ?? "",
+        reqTitle: p.requirement?.title ?? "",
+        totalOpenings: p.requirement?.totalOpenings ?? 0,
+        clientName: p.requirement?.client?.name ?? "",
+        createdByName: p.requirement?.createdBy
+          ? personName(p.requirement.createdBy)
+          : null,
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: rows,
+      meta: {
+        total,
+        capped: total > CANDIDATE_LIST_CAP,
+        window: windowLabel(q),
+      },
+    });
+  } catch (err) {
+    console.error("getRequirementCandidates:", err);
+    return res
+      .status(500)
+      .json({
+        success: false,
+        message: "Failed to fetch requirement candidates",
+      });
   }
 };

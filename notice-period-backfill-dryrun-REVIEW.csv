@@ -1,0 +1,4 @@
+"pipelineId","stage","legacy noticePeriod text","rule","proposed LWD","proposed noticePeriodDays"
+"b4754387-c4f8-42ed-adf3-61c01b112336","Submit to Client","-","MANUAL","",""
+"a96d003e-8f65-42ed-8543-d7b43d22b03c","Internal Submission","j","MANUAL","",""
+"a531ee4e-2342-4b95-92bb-9c60af9b27b8","Submmited to Client","o","MANUAL","",""

@@ -162,6 +162,28 @@ export function shareOf(
   return (count / openings) * saleValue;
 }
 
+/**
+ * Achieved + pipeline value of ONE requirement, capped at its openings.
+ * Same rule as the Recruiters tab: placements beyond openings add nothing,
+ * and pipeline only fills the openings that are still unfilled.
+ *   3 placed on a 1-opening req → 100% achieved, never 300%.
+ */
+export function cappedShares(
+  terminal: number,
+  nearTerminal: number,
+  openings: number,
+  saleValue: number | null
+): { achievedValue: number | null; nearTerminalValue: number | null } {
+  if (saleValue == null || openings <= 0)
+    return { achievedValue: null, nearTerminalValue: null };
+  const placed = Math.min(terminal, openings);
+  const near = Math.min(nearTerminal, openings - placed);
+  return {
+    achievedValue: (placed / openings) * saleValue,
+    nearTerminalValue: (near / openings) * saleValue,
+  };
+}
+
 /** count / openings as % (1 decimal, capped at 100) */
 export function pctOf(count: number, openings: number): number {
   if (openings <= 0) return 0;
@@ -281,7 +303,7 @@ export function buildActivityPipelineWhere(
 // Month keys are computed on the SERVER in one timezone so screen + Excel agree.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const REPORT_TZ = process.env.REPORT_TIMEZONE || "Asia/Kolkata";
+export const REPORT_TZ = process.env.REPORT_TIMEZONE || "Asia/Kolkata";
 const monthKeyFmt = new Intl.DateTimeFormat("en-CA", {
   timeZone: REPORT_TZ,
   year: "numeric",

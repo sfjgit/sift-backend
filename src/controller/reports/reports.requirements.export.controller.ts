@@ -2,8 +2,8 @@
 // Path: src/controller/reports/reports.requirements.export.controller.ts
 
 import ExcelJS from "exceljs";
-import { addDays, addMonths, format, parse } from "date-fns";
-import { CandidateDisposition, Prisma } from "@prisma/client";
+import { format } from "date-fns";
+import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
 import {
@@ -11,11 +11,10 @@ import {
   str,
   toArr,
   personName,
-  enumIn,
   REPORT_ASSIGNMENT_STATUSES,
   computeSaleValue,
   SaleValueBasis,
-  shareOf,
+  cappedShares,
   pctOf,
   windowLabel,
   fetchScopedStages,
@@ -29,6 +28,7 @@ import {
   buildCreatedMonthBreakdown,
   ScopedStage,
 } from "./reports.requirements.shared";
+import { resolveJoining, JOINING_SOURCE_LABELS } from "./reports.joining";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOCAL HELPERS
@@ -40,29 +40,6 @@ function formatAging(mins: number): string {
   if (mins < 10080) return `${Math.floor(mins / 1440)}d`;
   if (mins < 43800) return `${Math.floor(mins / 10080)}wk`;
   return `${Math.floor(mins / 43800)}mo`;
-}
-
-/** Priority: actual → expected → LWD → noticePeriod from today */
-function deriveJoiningDate(
-  actualJoiningDate: Date | null,
-  expectedJoiningDate: Date | null,
-  lastWorkingDate: Date | null,
-  noticePeriod: string | null
-): Date | null {
-  if (actualJoiningDate) return actualJoiningDate;
-  if (expectedJoiningDate) return expectedJoiningDate;
-  if (lastWorkingDate) return lastWorkingDate;
-  if (noticePeriod) {
-    const lower = noticePeriod.toLowerCase().trim();
-    const m = lower.match(/^(\d+)/);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      return lower.includes("month")
-        ? addMonths(new Date(), n)
-        : addDays(new Date(), n);
-    }
-  }
-  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,12 +85,12 @@ const STATUS_COLORS: Record<string, string> = {
   CANCELLED: "FF5E6C84",
 };
 
+/** Candidate status — from stage flags only */
 const CANDIDATE_STATUS = {
   PLACED: "Placed",
-  REJECTED: "Rejected",
-  WITHDRAWN: "Withdrawn",
+  DROPPED: "Dropped",
   ON_HOLD: "On Hold",
-  NEAR_CLOSE: "Near Close",
+  PIPELINE: "Pipeline",
   ACTIVE: "Active",
 } as const;
 
@@ -138,7 +115,6 @@ const FILTER_LABELS: Record<string, string> = {
   assignedById: "Assigned By",
   recruiterId: "Recruiter",
   userIds: "Team",
-  disposition: "Disposition",
   stageIds: "Stages (candidates)",
   hiddenStageIds: "Hidden Stages",
   ids: "Selected Requirements",
@@ -206,10 +182,6 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
     const selectedStageIds = toArr(q.stageIds);
     const hiddenStageIds = new Set(toArr(q.hiddenStageIds));
     const standardOnly = str(q.standardOnly) === "true";
-    const dispositionIn = enumIn(
-      q.disposition,
-      Object.values(CandidateDisposition)
-    );
 
     // ── 1. Scope + where (identical to the on-screen report) ─────────────
     const scope = await resolveRequirementScope(req, q);
@@ -290,7 +262,6 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       requirementId: { in: reqIds },
       ...scope.pipelineOwnerWhere,
       ...buildActivityPipelineWhere(q), // activity date → counts + candidate rows
-      ...(dispositionIn ? { disposition: dispositionIn } : {}),
     };
     const candidateWhere: Prisma.RequirementCandidatePipelineWhereInput = {
       ...pipelineBaseWhere,
@@ -314,10 +285,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
           id: true,
           requirementId: true,
           currentStageId: true,
-          disposition: true,
           stageUpdatedAt: true,
-          isRejected: true,
-          isWithdrawn: true,
           isOnHold: true,
           submittedAt: true,
           offerStatus: true,
@@ -328,11 +296,15 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
           expectedJoiningDate: true,
           actualJoiningDate: true,
           lastWorkingDate: true,
-          noticePeriod: true,
-          monthOfJoining: true,
+          noticePeriodDays: true,
           createdAt: true,
           currentStage: {
-            select: { label: true, isTerminal: true, isNearTerminal: true },
+            select: {
+              label: true,
+              isTerminal: true,
+              isNearTerminal: true,
+              pipeline: true,
+            },
           },
           recruiter: { select: { firstName: true, lastName: true } },
           snapshot: {
@@ -439,6 +411,13 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         stageById
       );
       const { value, basis } = computeSaleValue(r);
+      // Capped at openings — same rule as the screen + Recruiters tab
+      const shares = cappedShares(
+        terminal,
+        nearTerminal,
+        r.totalOpenings,
+        value
+      );
       calcByReq.set(r.id, {
         counts,
         total,
@@ -446,8 +425,8 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         near: nearTerminal,
         saleValue: value,
         basis,
-        achievedValue: shareOf(terminal, r.totalOpenings, value),
-        nearValue: shareOf(nearTerminal, r.totalOpenings, value),
+        achievedValue: shares.achievedValue,
+        nearValue: shares.nearTerminalValue,
       });
       for (const s of visibleStages)
         grandStageCounts[s.id] =
@@ -501,14 +480,14 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Band Value", key: "bandValue", width: 14 },
       { header: "Client %", key: "clientPct", width: 10 },
       { header: "Req Sale Value", key: "reqSaleValue", width: 16 },
-      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
-      { header: "Sale Basis", key: "saleValueBasis", width: 14 },
+      { header: "Funnel Value", key: "computedSaleValue", width: 20 },
+      { header: "Value Basis", key: "saleValueBasis", width: 14 },
       { header: "Achieved Count", key: "achievedCount", width: 14 },
       { header: "Achieved Value", key: "achievedValue", width: 16 },
       { header: "Achieved %", key: "achievedPct", width: 12 },
-      { header: "Near Close Count", key: "nearCount", width: 14 },
-      { header: "Near Close Value", key: "nearValue", width: 16 },
-      { header: "Near Close %", key: "nearPct", width: 12 },
+      { header: "Pipeline Count", key: "nearCount", width: 14 },
+      { header: "Pipeline Value", key: "nearValue", width: 16 },
+      { header: "Pipeline %", key: "nearPct", width: 12 },
     ];
     const MONEY_KEYS = [
       "salaryMin",
@@ -530,9 +509,9 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
 
     const colGroups = [
       { label: "Requirement Details", cols: fixedCols, fill: FILLS.header },
-      { label: "Sale Value", cols: saleCols, fill: FILLS.sale },
-      { label: "Pipeline Stages", cols: pipelineCols, fill: FILLS.sub },
-      { label: "Near Close", cols: nearCols, fill: FILLS.near },
+      { label: "Funnel", cols: saleCols, fill: FILLS.sale },
+      { label: "Active Stages", cols: pipelineCols, fill: FILLS.sub },
+      { label: "Pipeline (near close)", cols: nearCols, fill: FILLS.near },
       { label: "Achieved / Placed", cols: terminalCols, fill: FILLS.achieved },
     ].filter((g) => g.cols.length > 0);
 
@@ -694,7 +673,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       grandStageData[`stage_${s.id}`] = grandStageCounts[s.id] ?? 0;
 
     const totalsRow = sheet1.addRow({
-      reqCode: `TOTAL: ${requirements.length} requirements (${totals.omitted} without sale data)`,
+      reqCode: `TOTAL: ${requirements.length} requirements (${totals.omitted} without a value)`,
       openings: totals.openings,
       daysOpen: Math.round(totals.daysOpen / requirements.length),
       total: totals.candidates,
@@ -751,12 +730,12 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Created Month", key: "label", width: 16 },
       { header: "Requirements", key: "requirements", width: 14 },
       { header: "Openings", key: "openings", width: 12 },
-      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
+      { header: "Funnel Value", key: "computedSaleValue", width: 20 },
       { header: "Placed", key: "terminalCount", width: 10 },
       { header: "Achieved Value", key: "achievedValue", width: 18 },
       { header: "Achieved %", key: "achievedPct", width: 12 },
-      { header: "Near Close", key: "nearTerminalCount", width: 12 },
-      { header: "Near Close Value", key: "nearTerminalValue", width: 18 },
+      { header: "Pipeline", key: "nearTerminalCount", width: 12 },
+      { header: "Pipeline Value", key: "nearTerminalValue", width: 18 },
     ];
     const MONTH_MONEY_KEYS = [
       "computedSaleValue",
@@ -814,10 +793,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Top Skills", key: "skills", width: 40 },
       { header: "Recruiter", key: "recruiter", width: 22 },
       { header: "Current Stage", key: "stage", width: 22 },
-      { header: "Is Terminal?", key: "isTerminal", width: 12 },
-      { header: "Is Near Terminal?", key: "isNearTerminal", width: 14 },
       { header: "Status", key: "status", width: 12 },
-      { header: "Disposition", key: "disposition", width: 14 },
       { header: "Added On", key: "addedOn", width: 14 },
       { header: "Days in Pipeline", key: "pipelineDays", width: 14 },
       { header: "Stage Aging", key: "stageAging", width: 12 },
@@ -827,20 +803,19 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { header: "Expected CTC", key: "expectedCtc", width: 14 },
       { header: "Negotiated CTC", key: "negotiatedCtc", width: 14 },
       { header: "Offered CTC", key: "offeredCtc", width: 14 },
-      { header: "Notice Period", key: "noticePeriod", width: 14 },
+      { header: "Notice (days)", key: "noticePeriod", width: 14 },
       { header: "Last Working Day", key: "lastWorkingDay", width: 16 },
       { header: "Expected Joining", key: "expectedJoining", width: 16 },
       { header: "Actual Joining", key: "actualJoining", width: 16 },
-      { header: "Derived Joining", key: "derivedJoining", width: 16 },
+      { header: "Joining Date", key: "derivedJoining", width: 16 },
+      { header: "Joining From", key: "joiningSource", width: 16 },
       { header: "Month of Joining", key: "monthOfJoining", width: 16 },
       { header: "Days to Join", key: "daysToJoin", width: 12 },
-      { header: "Rejected?", key: "rejected", width: 10 },
-      { header: "Withdrawn?", key: "withdrawn", width: 10 },
       { header: "On Hold?", key: "onHold", width: 10 },
       { header: "Req Salary Min", key: "reqSalaryMin", width: 14 },
       { header: "Req Salary Max", key: "reqSalaryMax", width: 14 },
-      { header: "Computed Sale Value", key: "computedSaleValue", width: 20 },
-      { header: "Sale Basis", key: "saleValueBasis", width: 14 },
+      { header: "Funnel Value", key: "computedSaleValue", width: 20 },
+      { header: "Value Basis", key: "saleValueBasis", width: 14 },
     ];
     sheet2.columns = candCols;
     styleHeaderRow(sheet2.getRow(1), candCols.length, FILLS.header);
@@ -864,40 +839,32 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         p.stageHistory.reduce((s, l) => s + (l.timeInPrevStageMins ?? 0), 0) +
         stageAgeMins;
 
-      const derivedJoining = deriveJoiningDate(
-        p.actualJoiningDate,
-        p.expectedJoiningDate,
-        p.lastWorkingDate,
-        p.noticePeriod
-      );
-      // Stored on write (source of truth for MOJ reports) → derived fallback
-      const monthOfJoining =
-        p.monthOfJoining ||
-        (derivedJoining ? format(derivedJoining, "MMMM yyyy") : "");
-      if (monthOfJoining) {
-        const parsed = parse(monthOfJoining, "MMMM yyyy", new Date());
-        const m = (monthJoinMap[monthOfJoining] ??= {
-          label: monthOfJoining,
-          ts: Number.isNaN(parsed.getTime())
-            ? Number.MAX_SAFE_INTEGER
-            : parsed.getTime(),
+      // Joining: LWD, else today + notice period days (same rule as every report)
+      const joining = resolveJoining(p);
+      const derivedJoining = joining.date;
+      const monthOfJoining = joining.mojLabel ?? "";
+      if (joining.mojKey && joining.mojLabel) {
+        const m = (monthJoinMap[joining.mojKey] ??= {
+          label: joining.mojLabel,
+          ts: Number(joining.mojKey.replace("-", "")),
           count: 0,
         });
         m.count++;
       }
 
+      // Stage flags are the only source of truth
       const isTerminal = !!p.currentStage?.isTerminal;
-      const isNear = !!p.currentStage?.isNearTerminal && !isTerminal;
+      const isDropped = !isTerminal && p.currentStage?.pipeline === false;
+      const isNear =
+        !!p.currentStage?.isNearTerminal && !isTerminal && !isDropped;
       const status = isTerminal
         ? CANDIDATE_STATUS.PLACED
-        : p.isRejected
-        ? CANDIDATE_STATUS.REJECTED
-        : p.isWithdrawn
-        ? CANDIDATE_STATUS.WITHDRAWN
+        : isDropped
+        ? CANDIDATE_STATUS.DROPPED
         : p.isOnHold
         ? CANDIDATE_STATUS.ON_HOLD
         : isNear
-        ? CANDIDATE_STATUS.NEAR_CLOSE
+        ? CANDIDATE_STATUS.PIPELINE
         : CANDIDATE_STATUS.ACTIVE;
 
       const snap = p.snapshot as Record<string, any> | null;
@@ -925,10 +892,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         recruiter: personName(p.recruiter),
         stage:
           p.currentStage?.label ?? stageById.get(p.currentStageId)?.label ?? "",
-        isTerminal: isTerminal ? "Yes" : "No",
-        isNearTerminal: isNear ? "Yes" : "No",
         status,
-        disposition: p.disposition ?? "",
         addedOn: new Date(p.createdAt),
         pipelineDays: Math.floor(totalPipelineMins / 1440),
         stageAging: formatAging(stageAgeMins),
@@ -938,22 +902,18 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         expectedCtc: p.expectedCtc != null ? Number(p.expectedCtc) : "",
         negotiatedCtc: p.negotiatedCtc != null ? Number(p.negotiatedCtc) : "",
         offeredCtc: p.offeredCtc != null ? Number(p.offeredCtc) : "",
-        noticePeriod: p.noticePeriod ?? "",
+        noticePeriod: p.noticePeriodDays ?? "",
         lastWorkingDay: p.lastWorkingDate ? new Date(p.lastWorkingDate) : "",
         expectedJoining: p.expectedJoiningDate
           ? new Date(p.expectedJoiningDate)
           : "",
         actualJoining: p.actualJoiningDate ? new Date(p.actualJoiningDate) : "",
         derivedJoining: derivedJoining ?? "",
-        monthOfJoining,
-        daysToJoin: derivedJoining
-          ? Math.max(
-              0,
-              Math.floor((derivedJoining.getTime() - now) / 86_400_000)
-            )
+        joiningSource: joining.source
+          ? JOINING_SOURCE_LABELS[joining.source]
           : "",
-        rejected: p.isRejected ? "Yes" : "No",
-        withdrawn: p.isWithdrawn ? "Yes" : "No",
+        monthOfJoining,
+        daysToJoin: joining.daysToJoin ?? "",
         onHold: p.isOnHold ? "Yes" : "No",
         reqSalaryMin: r.salaryMin != null ? Number(r.salaryMin) : "",
         reqSalaryMax: r.salaryMax != null ? Number(r.salaryMax) : "",
@@ -983,14 +943,14 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         row.getCell(k).numFmt = FMT.money;
 
       if (isTerminal) {
-        for (const k of ["stage", "isTerminal", "status", "monthOfJoining"]) {
+        for (const k of ["stage", "status", "monthOfJoining"]) {
           row.getCell(k).fill = LIGHT.green;
           row.getCell(k).font = { bold: true, color: { argb: COLORS.green } };
         }
         if (p.actualJoiningDate)
           row.getCell("actualJoining").fill = LIGHT.green;
       } else if (isNear) {
-        for (const k of ["stage", "isNearTerminal", "status"]) {
+        for (const k of ["stage", "status"]) {
           row.getCell(k).fill = LIGHT.amber;
           row.getCell(k).font = { bold: true };
         }
@@ -1004,7 +964,7 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         svCell.fill = LIGHT.red;
       }
 
-      if (p.isRejected || p.isWithdrawn) {
+      if (isDropped) {
         row.eachCell((cell) => {
           cell.font = { ...cell.font, color: { argb: COLORS.grey } };
         });
@@ -1060,14 +1020,10 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
       { metric: "Total Openings", value: totals.openings },
       { metric: "Total Candidates (in scope)", value: totals.candidates },
       { metric: "Candidate Rows Exported", value: sheet2.rowCount - 1 },
-      { metric: "Computed Sale Value", value: totals.sale, money: true },
-      {
-        metric: "Achieved Value (Terminal)",
-        value: totals.achievedValue,
-        money: true,
-      },
-      { metric: "Near Close Value", value: totals.nearValue, money: true },
-      { metric: "Requirements with No Sale Data", value: totals.omitted },
+      { metric: "Funnel Value", value: totals.sale, money: true },
+      { metric: "Achieved Value", value: totals.achievedValue, money: true },
+      { metric: "Pipeline Value", value: totals.nearValue, money: true },
+      { metric: "Requirements without a Value", value: totals.omitted },
       {
         metric: "Created Months Spanned",
         value: createdMonths.length
@@ -1093,10 +1049,10 @@ export const exportRequirementReport = async (req: Request, res: Response) => {
         .sort((a, b) => a.ts - b.ts)
         .map((m) => ({ metric: `  ${m.label}`, value: m.count })),
       blank,
-      section("STAGE BREAKDOWN (ACTIVE)"),
+      section("ACTIVE STAGES"),
       ...stageRows(pipelineStages),
       blank,
-      section("NEAR TERMINAL (NEAR CLOSE)"),
+      section("PIPELINE (NEAR CLOSE)"),
       ...stageRows(nearStages),
       blank,
       section("ACHIEVED / PLACED"),
