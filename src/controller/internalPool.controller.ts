@@ -13,6 +13,8 @@ import {
   sourceCandidateToRequirement,
   getInternalPoolActivitySummary,
 } from "../services/internalPool.service";
+import prisma from "@/utils/prisma/client";
+import { Prisma } from "@prisma/client";
 
 // =============================================================================
 // SAVED SEARCHES
@@ -21,7 +23,7 @@ import {
 // GET /api/internal-pool/saved-searches?requirementId=xxx
 export const listSavedSearchesController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const recruiterId = req.user.id;
@@ -41,7 +43,7 @@ export const listSavedSearchesController = async (
 // Body: { name, filters, requirementId?, assignmentId? }
 export const createSavedSearchController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const recruiterId = req.user.id;
@@ -79,7 +81,7 @@ export const createSavedSearchController = async (
 // Body: { name?, filters? }
 export const updateSavedSearchController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const recruiterId = req.user.id;
@@ -112,7 +114,7 @@ export const updateSavedSearchController = async (
 // DELETE /api/internal-pool/saved-searches/:id
 export const deleteSavedSearchController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const recruiterId = req.user.id;
@@ -189,7 +191,7 @@ export const logSearchController = async (req: Request, res: Response) => {
       filters,
       resultCount: resultCount ?? undefined,
     }).catch((err) =>
-      console.error("[logSearchActivity] failed (non-critical):", err)
+      console.error("[logSearchActivity] failed (non-critical):", err),
     );
   } catch (err: any) {
     console.error("[logSearchController]", err);
@@ -209,7 +211,7 @@ export const logSearchController = async (req: Request, res: Response) => {
 
 export const sourceCandidateController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const recruiterId = req.user.id;
@@ -271,7 +273,7 @@ export const sourceCandidateController = async (
       candidateEmail: email,
       candidateName: fullName,
     }).catch((err) =>
-      console.error("[logSourcingActivity] failed (non-critical):", err)
+      console.error("[logSourcingActivity] failed (non-critical):", err),
     );
 
     return res.status(201).json({
@@ -304,7 +306,7 @@ export const sourceCandidateController = async (
 
 export const getActivitySummaryController = async (
   req: Request,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { recruiterId, requirementId, from, to } = req.query;
@@ -322,5 +324,58 @@ export const getActivitySummaryController = async (
     return res
       .status(500)
       .json({ success: false, message: "Failed to fetch activity summary" });
+  }
+};
+
+const startOfDay = (d: Date) => {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+};
+const endOfDay = (d: Date) => {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+};
+
+type JoinedCountRow = {
+  recruiter_id: string;
+  recruiter_email: string;
+  joined_count: number;
+};
+
+export const getJoinedCount = async (req: Request, res: Response) => {
+  try {
+    const from = new Date(String(req.query.from));
+    const to = new Date(String(req.query.to));
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      return res.status(400).json({ error: "Invalid from/to" });
+    }
+
+    const gte = startOfDay(from);
+    const lte = endOfDay(to);
+
+    const rows = await prisma.$queryRaw<JoinedCountRow[]>(Prisma.sql`
+      SELECT
+        p."recruiterId"        AS recruiter_id,
+        LOWER(u."email")       AS recruiter_email,
+        COUNT(*)::int          AS joined_count
+      FROM "CandidatePipelineStageLog" l
+      JOIN "PipelineStage" ts               ON ts."id" = l."toStageId"
+      JOIN "RequirementCandidatePipeline" p ON p."id"  = l."pipelineId"
+      JOIN "Requirement" r                  ON r."id"  = p."requirementId"
+      JOIN "User" u                         ON u."id"  = p."recruiterId"
+      WHERE ts."isTerminal" = true
+        AND r."deletedAt" IS NULL
+        AND l."createdAt" >= ${gte}
+        AND l."createdAt" <= ${lte}
+        AND (l."fromStageId" IS NULL OR l."fromStageId" <> l."toStageId")
+      GROUP BY p."recruiterId", LOWER(u."email")
+    `);
+
+    return res.json(rows);
+  } catch (err: any) {
+    console.error("getJoinedCount:", err);
+    return res.status(500).json({ error: err.message });
   }
 };
