@@ -12,6 +12,7 @@ import {
   logSearchController,
   sourceCandidateController,
   getActivitySummaryController,
+  getJoinedCount,
 } from "@/controller/internalPool.controller";
 import { authenticateUser } from "@/middleware/auth";
 
@@ -23,17 +24,17 @@ router.post("/saved-searches", authenticateUser, createSavedSearchController);
 router.patch(
   "/saved-searches/:id",
   authenticateUser,
-  updateSavedSearchController
+  updateSavedSearchController,
 );
 router.delete(
   "/saved-searches/:id",
   authenticateUser,
-  deleteSavedSearchController
+  deleteSavedSearchController,
 );
 router.post(
   "/saved-searches/:id/run",
   authenticateUser,
-  runSavedSearchController
+  runSavedSearchController,
 );
 
 // ── Activity Logging (fire and forget from frontend) ─────────────────────────
@@ -44,5 +45,7 @@ router.post("/source", authenticateUser, sourceCandidateController);
 
 // ── Monitoring (manager view) ─────────────────────────────────────────────────
 router.get("/activity", authenticateUser, getActivitySummaryController);
+
+router.get("/joined-count", getJoinedCount);
 
 export default router;
