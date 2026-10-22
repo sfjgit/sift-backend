@@ -128,7 +128,7 @@ function resolveWindow(q: Q): DateWindow | null {
   return null;
 }
 
-function windowLabel(q: Q): string {
+export function windowLabel(q: Q): string {
   const hours = str(q.hours);
   if (hours) return `Last ${hours}h`;
   const range = str(q.range);
@@ -139,7 +139,7 @@ function windowLabel(q: Q): string {
   return "All time";
 }
 
-const inWindow = (
+export const inWindow = (
   d: Date | string | null | undefined,
   w: DateWindow | null
 ) => {
@@ -210,7 +210,7 @@ function walkDown(roots: string[], g: OrgGraph): Map<string, number> {
 }
 
 /** All users below `id` (not including id) */
-function descendantsOf(id: string, g: OrgGraph): Set<string> {
+export function descendantsOf(id: string, g: OrgGraph): Set<string> {
   const out = new Set<string>();
   const stack = [...(g.children.get(id) ?? [])];
   while (stack.length) {
@@ -222,7 +222,7 @@ function descendantsOf(id: string, g: OrgGraph): Set<string> {
   return out;
 }
 
-const managerName = (u: OrgUser | undefined, g: OrgGraph) => {
+export const managerName = (u: OrgUser | undefined, g: OrgGraph) => {
   const mid = u?.reportingToId ?? u?.teamLeadId;
   return mid ? personName(g.byId.get(mid)) || null : null;
 };
@@ -231,7 +231,7 @@ const managerName = (u: OrgUser | undefined, g: OrgGraph) => {
 // CONTEXT — scope + filters, resolved once per request
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface RecruiterContext {
+export interface RecruiterContext {
   q: Q;
   graph: OrgGraph;
   /** null = unrestricted (super admin, nothing narrowed) */
@@ -244,9 +244,9 @@ interface RecruiterContext {
   moj: Prisma.RequirementCandidatePipelineWhereInput | null;
 }
 
-class ScopeError extends Error {}
+export class ScopeError extends Error {}
 
-async function buildContext(
+export async function buildContext(
   req: Request,
   q: Q,
   opts: { recruiterId?: string | null; selectedIds?: string[] } = {}
@@ -421,7 +421,7 @@ async function loadPipelines(
   return rows.map((p) => ({ ...p, joining: resolveJoining(p, now) }));
 }
 
-async function loadAssignments(ctx: RecruiterContext) {
+export async function loadAssignments(ctx: RecruiterContext) {
   return prisma.requirementAssignment.findMany({
     where: {
       status: { in: REPORT_ASSIGNMENT_STATUSES },
@@ -459,13 +459,13 @@ const REQ_INFO_SELECT = {
   createdBy: { select: { id: true, firstName: true, lastName: true } },
 } as const;
 
-type ReqInfo = Prisma.RequirementGetPayload<{
+export type ReqInfo = Prisma.RequirementGetPayload<{
   select: typeof REQ_INFO_SELECT;
 }> & {
   sale: { value: number | null; basis: SaleValueBasis };
 };
 
-async function loadRequirements(
+export async function loadRequirements(
   ids: Iterable<string>
 ): Promise<Map<string, ReqInfo>> {
   const list = [...new Set(ids)];
@@ -536,7 +536,7 @@ interface ValueResult {
 }
 
 /** Per requirement: capped placed / near share of that requirement's value */
-function valueOf(
+export function valueOf(
   reqIds: Iterable<string>,
   countsFor: (reqId: string) => Counts,
   reqs: Map<string, ReqInfo>
