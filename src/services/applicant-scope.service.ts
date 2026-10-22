@@ -61,23 +61,28 @@ export const getApplicantScope = async (
 };
 
 /**
- * Turns a scope (+ optional requested requirementId) into a Prisma
- * requirementId filter. filter undefined = no restriction (ALL scope).
+ * Turns a scope (+ optional requested requirement ids) into a Prisma
+ * requirementId filter. filter undefined = no restriction (ALL scope, nothing picked).
+ * Any requested id outside the user's scope → not allowed.
  */
 export const resolveRequirementFilter = (
   scope: ApplicantScope,
-  requirementId?: string,
-):
-  | { allowed: false }
-  | { allowed: true; filter?: string | { in: string[] } } => {
+  requirementIds: string[] = [],
+): { allowed: false } | { allowed: true; filter?: { in: string[] } } => {
   if (scope.type === "NONE") return { allowed: false };
 
-  if (scope.type === "ALL") return { allowed: true, filter: requirementId };
+  if (scope.type === "ALL")
+    return {
+      allowed: true,
+      filter: requirementIds.length ? { in: requirementIds } : undefined,
+    };
 
-  if (requirementId)
-    return scope.requirementIds.includes(requirementId)
-      ? { allowed: true, filter: requirementId }
+  if (requirementIds.length) {
+    const inScope = new Set(scope.requirementIds);
+    return requirementIds.every((id) => inScope.has(id))
+      ? { allowed: true, filter: { in: requirementIds } }
       : { allowed: false };
+  }
 
   return { allowed: true, filter: { in: scope.requirementIds } };
 };
