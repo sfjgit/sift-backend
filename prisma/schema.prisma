@@ -314,13 +314,32 @@ model ImpersonationLog {
   startedAt      DateTime  @default(now())
   endedAt        DateTime?
 
-  impersonator User @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
-  targetUser   User @relation("ImpersonatedLogs", fields: [targetUserId], references: [id])
+  impersonator User                     @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
+  targetUser   User                     @relation("ImpersonatedLogs", fields: [targetUserId], references: [id])
+  actions      ImpersonationActionLog[]
 
   @@index([impersonatorId])
   @@index([targetUserId])
 }
 
+model ImpersonationActionLog {
+  id                 String   @id @default(uuid())
+  impersonationLogId String
+  impersonatorId     String
+  targetUserId       String
+  service            String
+  method             String
+  path               String
+  statusCode         Int
+  requestBody        Json?
+  ipAddress          String?
+  createdAt          DateTime @default(now())
+
+  impersonationLog ImpersonationLog @relation(fields: [impersonationLogId], references: [id], onDelete: Cascade)
+
+  @@index([impersonationLogId])
+  @@index([targetUserId, createdAt])
+}
 
 model PortalRecruitLog {
   id            String   @id @default(uuid())

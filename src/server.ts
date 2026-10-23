@@ -8,6 +8,7 @@ import cookieParser from "cookie-parser";
 import { loggers } from "./utils/logger";
 import { httpLogger, errorLogger, requestTimer } from "./middleware/httpLogger";
 import router from "./routes";
+import { impersonationAudit } from "./middleware/impersonationAudit.middleware";
 
 dotenv.config();
 
@@ -44,6 +45,7 @@ const allowedOrigins = [
 ];
 
 app.use(cookieParser());
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -103,6 +105,7 @@ app.use(
   }),
 );
 
+app.use(impersonationAudit);
 // HTTP request logging
 app.use(httpLogger);
 
