@@ -293,12 +293,32 @@ model User {
   sourcingActivityLogs SourcingActivityLog[]
   portalRecruitLogs    PortalRecruitLog[] 
 
+  impersonationsDone     ImpersonationLog[] @relation("ImpersonatorLogs")
+  impersonationsReceived ImpersonationLog[] @relation("ImpersonatedLogs")
+
   @@index([email])
   @@index([isActive])
   @@index([roleId])
   @@index([departmentId])
   @@index([reportingToId])
   @@index([teamLeadId])
+}
+
+model ImpersonationLog {
+  id             String    @id @default(uuid())
+  impersonatorId String
+  targetUserId   String
+  reason         String?
+  ipAddress      String?
+  userAgent      String?
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  impersonator User @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
+  targetUser   User @relation("ImpersonatedLogs", fields: [targetUserId], references: [id])
+
+  @@index([impersonatorId])
+  @@index([targetUserId])
 }
 
 
