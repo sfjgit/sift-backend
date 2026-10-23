@@ -28,6 +28,8 @@ import requirementCategoryRoutes from "./requirementCategory.routes";
 import internalPoolRoutes from "./internalPool.routes";
 import portalRecruitRoutes from "./portalRecruit.routes";
 import applicantsRoutes from "./applicants.routes";
+import { impersonationAudit } from "@/middleware/impersonationAudit.middleware";
+import impersonationRoutes from "./impersonation.routes";
 
 const router = Router();
 
@@ -60,4 +62,5 @@ router.use("/candidates", candidateRoutes); // ← new, clean, no nesting
 router.use("/applicants", applicantsRoutes);
 router.use("/public", publicRoutes); // ← new, clean, no nesting
 router.use("/portal-recruit", authenticateUser, portalRecruitRoutes);
+router.use("/admin", impersonationRoutes);
 export default router;
