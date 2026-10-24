@@ -1,5 +1,7 @@
 // src/server.ts
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
+import { Prisma } from "@prisma/client";
+import { ZodError } from "zod";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -9,6 +11,7 @@ import { loggers } from "./utils/logger";
 import { httpLogger, errorLogger, requestTimer } from "./middleware/httpLogger";
 import router from "./routes";
 import { impersonationAudit } from "./middleware/impersonationAudit.middleware";
+import { HttpError } from "./utils/httpError";
 
 dotenv.config();
 
@@ -86,24 +89,8 @@ const limiter = rateLimit({
   },
 });
 app.use(limiter);
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
-
-app.use(
-  express.json({
-    limit: "600mb",
-    verify: (req, res, buf) => {
-      const bodyStr = buf.toString().trim();
-      if (!bodyStr) return; // ✅ skip empty body (no error)
-      try {
-        JSON.parse(bodyStr);
-      } catch (err) {
-        loggers.error("❌ Invalid JSON in request body", err);
-        throw new Error("Invalid JSON");
-      }
-    },
-  }),
-);
 
 app.use(impersonationAudit);
 // HTTP request logging
@@ -127,7 +114,7 @@ app.get("/", (_req, res) => {
   loggers.info("Root route accessed");
   res.json({
     success: true,
-    message: "Auth server is running=====================",
+    message: "CRM core service is running",
     timestamp: new Date().toISOString(),
   });
 });
@@ -137,7 +124,7 @@ app.get("/health", (_req, res) => {
   loggers.info("Health check accessed");
   res.json({
     success: true,
-    message: "Auth server is running",
+    message: "CRM core service is running",
     timestamp: new Date().toISOString(),
   });
 });
@@ -154,7 +141,53 @@ app.use((req, res) => {
 
 // Error handling middleware (should be last)
 app.use(errorLogger);
-app.use((err: any, req: any, res: any, next: any) => {
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof HttpError) {
+    res.status(err.statusCode).json({
+      success: false,
+      message: err.message,
+      ...(err.code && { code: err.code }),
+    });
+    return;
+  }
+
+  if (err instanceof ZodError) {
+    res.status(400).json({
+      success: false,
+      message: "Validation failed",
+      errors: err.issues.map((i) => ({
+        field: i.path.join(".") || "unknown",
+        message: i.message,
+        code: i.code,
+      })),
+    });
+    return;
+  }
+
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P2002") {
+      const target = (err.meta?.target as string[] | undefined)?.join(", ");
+      res.status(409).json({
+        success: false,
+        code: "DUPLICATE",
+        message: target ? `Already exists: ${target}` : "Already exists",
+      });
+      return;
+    }
+    if (err.code === "P2025") {
+      res.status(404).json({ success: false, code: "NOT_FOUND", message: "Record not found" });
+      return;
+    }
+    if (err.code === "P2003") {
+      res.status(400).json({
+        success: false,
+        code: "INVALID_REFERENCE",
+        message: "A referenced record does not exist",
+      });
+      return;
+    }
+  }
+
   loggers.error("Unhandled application error", err);
 
   res.status(err.status || 500).json({

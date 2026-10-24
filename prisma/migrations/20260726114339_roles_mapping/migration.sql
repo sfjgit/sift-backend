@@ -1,5 +1,0 @@
--- CreateEnum
-CREATE TYPE "RoleCanonical" AS ENUM ('ADMIN', 'SUPER_ADMIN', 'CSM', 'SR_CSM', 'RECRUITER', 'DELIVERY_LEAD', 'DELIVERY_MANAGER', 'DEVELOPER', 'UNMAPPED');
-
--- AlterTable
-ALTER TABLE "Role" ADD COLUMN     "canonical" "RoleCanonical" DEFAULT 'UNMAPPED';

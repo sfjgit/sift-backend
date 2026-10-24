@@ -1,18 +1,11 @@
-// File: bu.routes.ts
-// Path: src/routes/bu.routes.ts
+// File: businessUnit.routes.ts
+// Path: src/routes/businessUnit.routes.ts
 
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import {
-  scopeFilter,
-  checkPermission,
-} from "@/middleware/scopeFilter.middleware";
-import { validate } from "@/validators/validator";
-import {
-  createBUBody,
-  updateBUBody,
-  buIdParams,
-} from "@/validators/bu.validator";
+import { authorize } from "@/middleware/authorize";
+import { validate, idParams } from "@/validators/validator";
+import { createBUBody, updateBUBody } from "@/validators/bu.validator";
 import {
   listBusinessUnits,
   getBusinessUnitById,
@@ -22,29 +15,19 @@ import {
 } from "@/controller/bu.controller";
 
 const router = Router();
+const manage = authorize("admin.manage_lookups");
 
 router.use(authenticateUser);
-router.use(scopeFilter("business-units"));
 
 router.get("/", listBusinessUnits);
-router.get("/:id", validate.params(buIdParams), getBusinessUnitById);
-router.post(
-  "/",
-  checkPermission("canAdd"),
-  validate.body(createBUBody),
-  createBusinessUnit
-);
+router.get("/:id", validate.params(idParams), getBusinessUnitById);
+router.post("/", manage, validate.body(createBUBody), createBusinessUnit);
 router.put(
   "/:id",
-  checkPermission("canEdit"),
-  validate.request({ params: buIdParams, body: updateBUBody }),
-  updateBusinessUnit
+  manage,
+  validate.request({ params: idParams, body: updateBUBody }),
+  updateBusinessUnit,
 );
-router.delete(
-  "/:id",
-  checkPermission("canDelete"),
-  validate.params(buIdParams),
-  deleteBusinessUnit
-);
+router.delete("/:id", manage, validate.params(idParams), deleteBusinessUnit);
 
 export default router;

@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { ZodSchema } from "zod"
-import { ZodError } from "zod"
+import { z, ZodSchema, ZodError } from "zod";
 
 
 interface ValidationSchemas {
@@ -60,3 +59,24 @@ export const validate = {
     query: validateQuery,
     request: validateRequest
 }
+
+// ── shared schemas ───────────────────────────────────────────────────────────
+
+export const idParams = z.object({ id: z.string().uuid("Invalid id") });
+
+export const paginationQuery = {
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+};
+
+// "" → null so clearing a form field clears the column
+export const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((v) => (v === "" ? null : v))
+    .nullable()
+    .optional();
+
+export const optionalId = z.string().uuid().nullable().optional();

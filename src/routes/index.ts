@@ -1,66 +1,41 @@
+// File: index.ts
+// Path: src/routes/index.ts
+
 import { Router } from "express";
 import authRoutes from "./auth.routes";
+import meRoutes from "./me.routes";
 import userRoutes from "./user.routes";
 import roleRoutes from "./role.routes";
+import permissionRoutes from "./permission.routes";
 import businessUnitRoutes from "./businessUnit.routes";
+import { masterRouter } from "./master.routes";
+import lookupRoutes from "./lookup.routes";
 import clientRoutes from "./client.routes";
-import requirementRoutes from "./requirements.routes";
-import dashboardRoutes from "./dashboard.routes";
-import departmentRoutes from "./department.routes";
-import serviceLineRoutes from "./serviceLine.routes";
-// import pipelineStages from "./pipelineStage.routes";
-import pipelineRoutes from "@/routes/pipeline.routes";
-import pipelineStageRoutes from "@/routes/pipelineStage.routes";
+import spocRoutes from "./spoc.routes";
 import notificationRoutes from "./notification.routes";
-import internalRoutes from "@/routes/internal.routes";
-import moduleRoutes from "./module.routes";
-import jdRoutes from "./jd.routes";
-import assignmentRoutes from "./assignment.routes";
-import candidateRoutes from "./candidate.routes";
-import reportRoutes from "./reports.routes";
-import authLogs from "./auth-logs.routes";
-import internalUsers from "./internal-users.routes";
-import { authenticateUser } from "@/middleware/auth";
-import naukriAccountabilityRoutes from "./naukriAccountability.routes";
-import ticketRoutes from "./ticket.routes";
-import publicRoutes from "./public.routes";
-import requirementCategoryRoutes from "./requirementCategory.routes";
-import internalPoolRoutes from "./internalPool.routes";
-import portalRecruitRoutes from "./portalRecruit.routes";
-import applicantsRoutes from "./applicants.routes";
-import { impersonationAudit } from "@/middleware/impersonationAudit.middleware";
+import authLogRoutes from "./auth-logs.routes";
 import impersonationRoutes from "./impersonation.routes";
 
 const router = Router();
 
-// in your core router index, behind auth:
-
-router.use("/internal-pool", internalPoolRoutes);
-router.use("/naukri", authenticateUser, naukriAccountabilityRoutes);
-router.use("/tickets", ticketRoutes);
-router.use("/reports", reportRoutes);
-router.use("/internal-users", internalUsers);
-router.use("/auth-logs", authLogs);
-router.use("/modules", moduleRoutes);
-router.use("/jd", jdRoutes);
-router.use("/internal", internalRoutes);
-router.use("/notifications", notificationRoutes);
 router.use("/auth", authRoutes);
-router.use("/dashboard", dashboardRoutes);
+router.use("/me", meRoutes);
+
+// org + admin
 router.use("/users", userRoutes);
 router.use("/roles", roleRoutes);
-router.use("/clients", clientRoutes);
+router.use("/permissions", permissionRoutes);
 router.use("/business-units", businessUnitRoutes);
-router.use("/departments", departmentRoutes);
-router.use("/service-lines", serviceLineRoutes);
-router.use("/requirements", requirementRoutes);
-router.use("/requirementCategories", requirementCategoryRoutes);
-router.use("/pipeline", pipelineRoutes);
-router.use("/pipeline-stages", pipelineStageRoutes);
-router.use("/assignments", assignmentRoutes);
-router.use("/candidates", candidateRoutes); // ← new, clean, no nesting
-router.use("/applicants", applicantsRoutes);
-router.use("/public", publicRoutes); // ← new, clean, no nesting
-router.use("/portal-recruit", authenticateUser, portalRecruitRoutes);
+router.use("/service-lines", masterRouter("serviceLine", "Service line"));
+router.use("/departments", masterRouter("department", "Department"));
+router.use("/designations", masterRouter("designation", "Designation"));
+router.use("/lookups", lookupRoutes);
+router.use("/auth-logs", authLogRoutes);
 router.use("/admin", impersonationRoutes);
+
+// CRM
+router.use("/clients", clientRoutes);
+router.use("/spocs", spocRoutes);
+router.use("/notifications", notificationRoutes);
+
 export default router;

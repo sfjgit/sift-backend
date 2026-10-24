@@ -45,7 +45,7 @@ const s3Config: S3ClientConfig = {
 
 export const s3 = new S3Client(s3Config);
 
-/** safe, collision-free object key: tickets/2026/08/uuid-file-name.pdf */
+/** safe, collision-free object key: clients/2026/08/uuid-file-name.pdf */
 export const buildFileKey = (folder: string, fileName: string) => {
   const ext = path.extname(fileName).toLowerCase();
   const base = path

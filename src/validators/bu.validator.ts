@@ -2,30 +2,21 @@
 // Path: src/validators/bu.validator.ts
 
 import { z } from "zod";
+import { optionalId, optionalText } from "@/validators/validator";
 
 export const createBUBody = z.object({
-  name: z.string().min(1, "Name is required").max(100).trim(),
-  code: z.string().max(20).trim().optional().nullable(),
-  parentBUId: z
-    .string()
-    .uuid("parentBUId must be a valid UUID")
-    .optional()
-    .nullable(),
+  name: z.string().trim().min(1, "Name is required").max(100),
+  code: optionalText(20),
+  parentBUId: optionalId,
+  serviceLineIds: z.array(z.string().uuid()).default([]),
 });
 
 export const updateBUBody = z.object({
-  name: z.string().min(1).max(100).trim().optional(),
-  code: z.string().max(20).trim().optional().nullable(),
+  name: z.string().trim().min(1).max(100).optional(),
+  code: optionalText(20),
   isActive: z.boolean().optional(),
-  parentBUId: z
-    .string()
-    .uuid("parentBUId must be a valid UUID")
-    .optional()
-    .nullable(),
-});
-
-export const buIdParams = z.object({
-  id: z.string().uuid("BU ID must be a valid UUID"),
+  parentBUId: optionalId,
+  serviceLineIds: z.array(z.string().uuid()).optional(), // full replace when sent
 });
 
 export type CreateBUInput = z.infer<typeof createBUBody>;

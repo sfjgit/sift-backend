@@ -19,7 +19,7 @@ const extractClientIp = (req?: Request): string | null => {
   // req.ip already respects `trust proxy`; fall back to raw XFF head if unset
   if (req.ip) return req.ip;
   const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string") return xff.split(",")[0].trim();
+  if (typeof xff === "string") return xff.split(",")[0]?.trim() ?? null;
   return null;
 };
 

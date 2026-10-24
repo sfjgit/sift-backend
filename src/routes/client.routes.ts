@@ -1,145 +1,68 @@
-// routes/client.routes.ts
+// File: client.routes.ts
+// Path: src/routes/client.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
+import { authorize } from "@/middleware/authorize";
+import { validate, idParams } from "@/validators/validator";
 import {
-  scopeFilter,
-  checkPermission,
-} from "@/middleware/scopeFilter.middleware";
-import { validate } from "@/validators/validator";
-import {
-  createClientSchema,
-  updateClientSchema,
-  updateClientStatusSchema,
-  addClientNoteSchema,
-  addSpocSchema,
-  updateSpocSchema,
-  addSpocDMSchema,
+  clientActivitiesQuery,
+  clientNoteBody,
+  clientStatusBody,
+  createClientBody,
+  listClientsQuery,
+  noteParams,
+  updateClientBody,
 } from "@/validators/client.validators";
 import {
-  getClients,
-  getMyClients,
+  listClients,
   getClientById,
   createClient,
   updateClient,
   updateClientStatus,
   deleteClient,
+  listClientActivities,
   addClientNote,
   deleteClientNote,
-  addSpoc,
-  updateSpoc,
-  removeSpoc,
-  getClientSpocs,
-  addSpocDMs,
-  getSpocDMs,
-  removeSpocDM,
-  updateClient1,
 } from "@/controller/client.controller";
 
 const router = Router();
-const scope = scopeFilter("clients");
+const read = authorize("clients.read");
 
-// collection
-router.get("/mine", authenticateUser, getMyClients);
-router.get("/", authenticateUser, scope, getClients);
-router.post(
-  "/",
-  authenticateUser,
-  scope,
-  checkPermission("canAdd"),
-  validate.body(createClientSchema),
-  createClient
-);
+router.use(authenticateUser);
 
-// single
-router.get("/:id", authenticateUser, scope, getClientById);
+router.get("/", read, validate.query(listClientsQuery), listClients);
+router.post("/", authorize("clients.create"), validate.body(createClientBody), createClient);
 
-router.put(
-  "/:id",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  // validate.body(updateClientSchema),
-  updateClient
-);
-
+router.get("/:id", read, validate.params(idParams), getClientById);
 router.patch(
   "/:id",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  // validate.body(updateClientSchema),
-  updateClient1
+  authorize("clients.update"),
+  validate.request({ params: idParams, body: updateClientBody }),
+  updateClient,
 );
-
-router.get("/:id/spocs/:spocId/dms", authenticateUser, scope, getSpocDMs);
-
-router.post(
-  "/:id/spocs/:spocId/dms",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(addSpocDMSchema),
-  addSpocDMs
-);
-
-router.delete(
-  "/:id/spocs/:spocId/dms/:spocDmId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  removeSpocDM
-);
-
 router.patch(
   "/:id/status",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(updateClientStatusSchema),
-  updateClientStatus
+  authorize("clients.approve"),
+  validate.request({ params: idParams, body: clientStatusBody }),
+  updateClientStatus,
 );
-router.delete(
-  "/:id",
-  authenticateUser,
-  scope,
-  checkPermission("canDelete"),
-  deleteClient
+router.delete("/:id", authorize("clients.delete"), validate.params(idParams), deleteClient);
+
+router.get(
+  "/:id/activities",
+  read,
+  validate.request({ params: idParams, query: clientActivitiesQuery }),
+  listClientActivities,
 );
 
-// notes
+// notes — anyone who can see the client
 router.post(
   "/:id/notes",
-  authenticateUser,
-  scope,
-  validate.body(addClientNoteSchema),
-  addClientNote
+  read,
+  validate.request({ params: idParams, body: clientNoteBody }),
+  addClientNote,
 );
-router.delete("/:id/notes/:noteId", authenticateUser, scope, deleteClientNote);
-
-router.get("/:id/spocs", authenticateUser, getClientSpocs);
-// spocs
-router.post(
-  "/:id/spocs",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(addSpocSchema),
-  addSpoc
-);
-router.patch(
-  "/:id/spocs/:spocId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  validate.body(updateSpocSchema),
-  updateSpoc
-);
-router.delete(
-  "/:id/spocs/:spocId",
-  authenticateUser,
-  scope,
-  checkPermission("canEdit"),
-  removeSpoc
-);
+router.delete("/:id/notes/:noteId", read, validate.params(noteParams), deleteClientNote);
 
 export default router;

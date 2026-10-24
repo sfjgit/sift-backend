@@ -1,15 +1,27 @@
+// File: schema.prisma
+// Path: prisma/schema.prisma
+//
+// SFJBS Sales & Marketing CRM — fresh start. CRM is the system of record.
+// External services (CSR pipeline) talk only via /api/svc/* — never the DB.
+//
+// Rule of thumb:
+//   enum      → states code branches on
+//   Lookup    → admin-editable labels / pick-lists (no logic)
+//   table     → masters with relations or attributes
+//   constants → modules + actions (src/config/permissions.registry.ts)
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL") // pooled — used by the app at runtime
-  directUrl = env("DIRECT_URL") // direct — used by migrate/introspect
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ENUMS
+// ENUMS — code depends on these values
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum PermissionScope {
@@ -22,105 +34,116 @@ enum PermissionScope {
   ALL
 }
 
-enum AssignmentStatus {
-  ACTIVE
-  REMOVED
-  REPLACED
-  FILLED // ← their allocated openings are done
-  EXPIRED // ← deadline passed, never filled
-}
-
-enum RequirementType {
-  CONTRACT
-  PERMANENT
-  CONTRACT_TO_HIRE
-  FREELANCE
-}
-
-enum RemoteType {
-  ONSITE
-  REMOTE
-  HYBRID
-}
-
-enum Priority {
-  LOW
-  MEDIUM
-  HIGH
-}
-
-enum RequirementStatus {
-  DRAFT
-  PENDING_APPROVAL
-  ACTIVE
-  ON_HOLD
-  CLOSED
-  CANCELLED
-}
-
-enum SalaryType {
-  MONTHLY
-  ANNUAL
-  HOURLY
-  DAILY
-}
-
-enum ActivityType {
-  REQUIREMENT_CREATED
-  REQUIREMENT_APPROVED
-  REQUIREMENT_CLOSED
-  STATUS_CHANGED
-  MANAGER_ASSIGNED
-  RECRUITER_ASSIGNED
-  ASSIGNMENT_REMOVED
-  NOTE_ADDED
-  DOCUMENT_UPLOADED
-  ISSUE_RAISED
-  ISSUE_RESOLVED
-  STATS_UPDATED
-
-  APPLICANT_ASSIGNED
-}
-
-enum NotificationType {
-  REQUIREMENT_ASSIGNED
-  STATUS_CHANGED
-  REQUIREMENT_CLOSED
-  NOTE_ADDED
-  ISSUE_RAISED
-  DEADLINE_BREACHED
-  DEADLINE_REMINDER
-  INTERVIEW_SCHEDULED
-  INTERVIEW_RESCHEDULED
-}
-
-enum NotificationReferenceType {
-  REQUIREMENT
-  ASSIGNMENT
-  NOTE
-  DOCUMENT
-  PIPELINE
-}
-
 enum ClientStatus {
   PENDING
   ACTIVE
   INACTIVE
 }
 
-enum OfferStatus {
-  PENDING
-  ACCEPTED
-  DECLINED
-  REVOKED
-  EXPIRED
+enum AuthLogType {
+  LOGIN
+  LOGOUT
+  REFRESH
+  PASSWORD_RESET
+  PASSWORD_CHANGE
+  ACCOUNT_CREATED
+  ACCOUNT_DEACTIVATED
+  ACCOUNT_REACTIVATED
+  FAILED_LOGIN
+}
+
+enum EmailStatus {
+  UNVERIFIED
+  GOOD // Apollo-verified or Bouncer deliverable
+  RISKY
+  BAD
+}
+
+enum ValidationBand {
+  READY // >= 75, no failed check
+  REVIEW
+  NOT_USABLE
+}
+
+enum StepTarget {
+  CLIENT
+  SPOC
+}
+
+enum StepRunStatus {
+  QUEUED // created in CRM, dispatch pending / accepted
+  RUNNING
+  DONE // finished with something written or found
+  EMPTY // finished, nothing found — uses no limit slot
+  FAILED
+  STOPPED
+  DISPATCH_FAILED // never reached the service
+  TIMED_OUT
+}
+
+enum ClientActivityType {
+  CLIENT_CREATED
+  CLIENT_UPDATED
+  CLIENT_APPROVED
+  SPOC_ADDED
+  SPOC_UPDATED
+  SPOC_REASSIGNED
+  NOTE_ADDED
+  DOCUMENT_ADDED
+  FINANCIALS_UPDATED
+  PROGRAMS_ADDED
+  OUTREACH_GENERATED
+  STEP_RUN_STARTED
+  STEP_RUN_FINISHED
+  STEP_RUN_FAILED
+}
+
+enum NotificationType {
+  SPOC_ASSIGNED
+  NOTE_ADDED
+  STEP_RUN_FINISHED
+  STEP_RUN_FAILED
+}
+
+enum NotificationReferenceType {
+  CLIENT
+  SPOC
+  STEP_RUN
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUSINESS UNIT
-// ancestorIds — includes self + all ancestors, maintained by buService on write
-// always store exact BU id on any relation
-// filter by passing any ancestor BU id → ancestorIds: { has: buId }
+// LOOKUP — one table for every admin-managed pick-list
+// type: INDUSTRY, CLIENT_CATEGORY, DOCUMENT_TYPE, SPOC_SOURCE,
+//       SALES_STATUS, PROGRAM_SECTOR ... (validated in service, seeded)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Lookup {
+  id       String  @id @default(uuid())
+  type     String
+  code     String
+  label    String
+  order    Int?
+  isActive Boolean @default(true)
+  isSystem Boolean @default(false) // seeded rows code may reference — not deletable
+  meta     Json?
+
+  clientsByIndustry  Client[]         @relation("ClientIndustry")
+  clientsByCategory  Client[]         @relation("ClientCategory")
+  spocsBySource      ClientSpoc[]     @relation("SpocSource")
+  spocsByEmailSource ClientSpoc[]     @relation("SpocEmailSource")
+  spocsBySalesStatus ClientSpoc[]     @relation("SpocSalesStatus")
+  documentsByType    ClientDocument[] @relation("DocumentType")
+  programsBySector   ClientProgram[]  @relation("ProgramSector")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([type, code])
+  @@index([type, isActive])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORG MASTERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 model BusinessUnit {
@@ -133,26 +156,18 @@ model BusinessUnit {
   parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
   childBUs   BusinessUnit[] @relation("BUHierarchy")
 
-  ancestorIds String[]
+  ancestorIds String[] // self + all ancestors, maintained by buService
 
-  clients     Client[]
-  clientSpocs ClientSpoc[]
-
-  requirementsBU Requirement[]           @relation("RequirementBU")
-  assignmentsBU  RequirementAssignment[] @relation("AssignmentBU")
+  serviceLines BusinessUnitServiceLine[]
+  users        UserBusinessUnit[]
+  clientSpocs  ClientSpoc[]
 
   createdAt DateTime @default(now())
-
-  users User[]
 
   @@index([isActive])
   @@index([parentBUId])
   @@index([ancestorIds], type: Gin)
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SERVICE LINE — flat, KaaS / TaaS / CSR / OEM
-// ─────────────────────────────────────────────────────────────────────────────
 
 model ServiceLine {
   id       String  @id @default(uuid())
@@ -160,19 +175,27 @@ model ServiceLine {
   code     String? @unique
   isActive Boolean @default(true)
 
-  clientSpocs    ClientSpoc[]
-  requirements   Requirement[]
-  pipelineStages PipelineStage[]
+  businessUnits BusinessUnitServiceLine[]
+  users         UserServiceLine[]
+  clientSpocs   ClientSpoc[]
 
   createdAt DateTime @default(now())
-  users     User[]
 
   @@index([isActive])
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEPARTMENT — flat label, admin-managed
-// ─────────────────────────────────────────────────────────────────────────────
+model BusinessUnitServiceLine {
+  id             String       @id @default(uuid())
+  businessUnitId String
+  businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  serviceLineId  String
+  serviceLine    ServiceLine  @relation(fields: [serviceLineId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([businessUnitId, serviceLineId])
+  @@index([serviceLineId])
+}
 
 model Department {
   id       String  @id @default(uuid())
@@ -180,8 +203,20 @@ model Department {
   code     String?
   isActive Boolean @default(true)
 
-  users       User[]
-  assignments RequirementAssignment[]
+  users User[]
+
+  createdAt DateTime @default(now())
+
+  @@index([isActive])
+}
+
+model Designation {
+  id       String  @id @default(uuid())
+  name     String  @unique
+  code     String?
+  isActive Boolean @default(true)
+
+  users User[]
 
   createdAt DateTime @default(now())
 
@@ -194,7 +229,7 @@ model Department {
 
 model User {
   id           String @id @default(uuid())
-  email        String // ← drop @unique here
+  email        String @unique
   passwordHash String
 
   resetPasswordToken   String?
@@ -211,215 +246,87 @@ model User {
   dateOfBirth     DateTime?
   dateOfJoin      DateTime?
 
-  retrievalPassword String?
-
   isSuperAdmin Boolean @default(false)
   isActive     Boolean @default(true)
 
   roleId String
   role   Role   @relation(fields: [roleId], references: [id])
 
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  designationId String?
+  designation   Designation? @relation(fields: [designationId], references: [id])
+
   reportingToId String?
   reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
-
-  subordinates User[] @relation("ReportsTo")
+  subordinates  User[]  @relation("ReportsTo")
 
   teamLeadId  String?
   teamLead    User?   @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
   teamMembers User[]  @relation("TeamLeadOf")
 
-  departmentId String?
-  department   Department? @relation(fields: [departmentId], references: [id])
-
   createdById String?
   createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
   createdByMe User[]  @relation("UserCreatedBy")
 
-  refreshTokens RefreshToken[]
+  businessUnits UserBusinessUnit[]
+  serviceLines  UserServiceLine[]
 
-  spocsHandled ClientSpoc[] @relation("SpocHandler")
-  spocsAdded   ClientSpoc[] @relation("SpocAddedBy")
-
-  clientsCreated      Client[]     @relation("ClientCreatedBy")
-  clientsApproved     Client[]     @relation("ClientApprovedBy")
-  clientNotesAuthored ClientNote[] @relation("ClientNoteAuthor")
-
-  requirementsCreated      Requirement[]              @relation("RequirementCreatedBy")
-  requirementsApproved     Requirement[]              @relation("RequirementApprovedBy")
-  requirementsClosed       Requirement[]              @relation("RequirementClosedBy")
-  requirementStatusChanges RequirementStatusHistory[] @relation("RequirementStatusChangedBy")
-  requirementActivities    RequirementActivity[]      @relation("RequirementActivityActor")
-  requirementNotesAuthored RequirementNote[]          @relation("RequirementNoteAuthor")
-  requirementDocsRaised    RequirementDocument[]      @relation("RequirementDocRaisedBy")
-  requirementDocsResolved  RequirementDocument[]      @relation("RequirementDocResolvedBy")
-
-  assignmentsGiven    RequirementAssignment[] @relation("AssignedByUser")
-  assignmentsReceived RequirementAssignment[] @relation("AssignedToUser")
-
-  // pipeline relations
-  pipelinesHandling    RequirementCandidatePipeline[] @relation("PipelineRecruiter")
-  pipelinesStageUpdate RequirementCandidatePipeline[] @relation("PipelineStageUpdatedBy")
-  pipelinesSubmitted   RequirementCandidatePipeline[] @relation("PipelineSubmittedBy")
-  pipelinesOffered     RequirementCandidatePipeline[] @relation("PipelineOfferedBy")
-  pipelinesRejected    RequirementCandidatePipeline[] @relation("PipelineRejectedBy")
-  pipelineStageChanges CandidatePipelineStageLog[]    @relation("StageLogChangedBy")
-
-  candidateSnapshotsCreated CandidateSnapshot[] @relation("SnapshotCreatedBy")
-
-  notifications Notification[] @relation("UserNotifications")
-  auditLogs     AuditLog[]     @relation("AuditLogActor")
-
-  SpocDM ClientSpocDM[] @relation("SpocDM")
-
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  userAppCredentials UserAppCredential[]
-
-  jdsParsed ParsedJDLibrary[] @relation("JDParsedBy")
-
-  canAssignTo     UserAssignableTo[] @relation("CanAssignTo")
-  assignableBy    UserAssignableTo[] @relation("AssignableBy")
-  assignableAdded UserAssignableTo[] @relation("AssignableAddedBy")
-
-  buId          String?
-  bu            BusinessUnit? @relation(fields: [buId], references: [id])
-  servicelineId String?
-  serviceline   ServiceLine?  @relation(fields: [servicelineId], references: [id])
-  authLogs      AuthLogs[]
-
-  createdInterviews    CandidateInterviewSchedule[] @relation("InterviewScheduledBy")
-  savedSearches        SavedSearch[]
-  searchActivityLogs   SearchActivityLog[]
-  sourcingActivityLogs SourcingActivityLog[]
-  portalRecruitLogs    PortalRecruitLog[] 
-
+  refreshTokens          RefreshToken[]
+  authLogs               AuthLogs[]
   impersonationsDone     ImpersonationLog[] @relation("ImpersonatorLogs")
   impersonationsReceived ImpersonationLog[] @relation("ImpersonatedLogs")
 
-  @@index([email])
+  clientsCreated  Client[]     @relation("ClientCreatedBy")
+  clientsApproved Client[]     @relation("ClientApprovedBy")
+  clientNotes     ClientNote[] @relation("ClientNoteAuthor")
+
+  spocsHandled            ClientSpoc[]           @relation("SpocHandler")
+  spocsAdded              ClientSpoc[]           @relation("SpocAddedBy")
+  spocAssignmentsReceived ClientSpocAssignment[] @relation("SpocAssignedTo")
+  spocAssignmentsGiven    ClientSpocAssignment[] @relation("SpocAssignedBy")
+
+  clientActivities ClientActivity[] @relation("ClientActivityActor")
+  stepRuns         StepRun[]        @relation("StepRunRequestedBy")
+  notifications    Notification[]   @relation("UserNotifications")
+  auditLogs        AuditLog[]       @relation("AuditLogActor")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([isActive])
   @@index([roleId])
   @@index([departmentId])
+  @@index([designationId])
   @@index([reportingToId])
   @@index([teamLeadId])
 }
 
-model ImpersonationLog {
-  id             String    @id @default(uuid())
-  impersonatorId String
-  targetUserId   String
-  reason         String?
-  ipAddress      String?
-  userAgent      String?
-  startedAt      DateTime  @default(now())
-  endedAt        DateTime?
-
-  impersonator User                     @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
-  targetUser   User                     @relation("ImpersonatedLogs", fields: [targetUserId], references: [id])
-  actions      ImpersonationActionLog[]
-
-  @@index([impersonatorId])
-  @@index([targetUserId])
-}
-
-model ImpersonationActionLog {
-  id                 String   @id @default(uuid())
-  impersonationLogId String
-  impersonatorId     String
-  targetUserId       String
-  service            String
-  method             String
-  path               String
-  statusCode         Int
-  requestBody        Json?
-  ipAddress          String?
-  createdAt          DateTime @default(now())
-
-  impersonationLog ImpersonationLog @relation(fields: [impersonationLogId], references: [id], onDelete: Cascade)
-
-  @@index([impersonationLogId])
-  @@index([targetUserId, createdAt])
-}
-
-model PortalRecruitLog {
-  id            String   @id @default(uuid())
-  recruiterId   String
-  requirementId String
-  assignmentId  String
-  reqCode       String?
-  appName       String // 'NAUKRI', 'LINKEDIN', etc.
-  reason        String
-
-  createdAt     DateTime @default(now())
-
-  recruiter User @relation(fields: [recruiterId], references: [id])
-
-  @@index([requirementId, recruiterId, appName])
-  @@index([recruiterId, createdAt])
-}
-
-enum AuthLogType {
-  LOGIN
-  LOGOUT
-  REFRESH
-  PASSWORD_RESET
-  PASSWORD_CHANGE
-  EMAIL_VERIFICATION
-  EMAIL_CHANGE
-  PHONE_VERIFICATION
-
-  ACCOUNT_CREATED
-  ACCOUNT_DEACTIVATED
-  ACCOUNT_REACTIVATED
-  FAILED_LOGIN
-}
-
-model AuthLogs {
-  id        String      @id @default(uuid())
-  userId    String
-  ip        String?
-  userAgent String?
-  type      AuthLogType @default(LOGIN)
-  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime    @default(now())
-
-  @@index([userId])
-  @@index([type])
-  @@index([createdAt])
-  @@index([userId, createdAt])
-}
-
-model UserAssignableTo {
-  id       String @id @default(uuid())
-  userId   String // the one who can assign
-  targetId String // the extra user they can assign to
-
-  user   User @relation("CanAssignTo", fields: [userId], references: [id])
-  target User @relation("AssignableBy", fields: [targetId], references: [id])
-
-  addedById String
-  addedBy   User   @relation("AssignableAddedBy", fields: [addedById], references: [id])
+model UserBusinessUnit {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessUnitId String
+  businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
-  @@unique([userId, targetId])
-  @@index([userId])
+  @@unique([userId, businessUnitId])
+  @@index([businessUnitId])
 }
 
-model UserAppCredential {
-  id        String   @id @default(uuid())
-  userId    String
-  appName   String // 'NAUKRI', 'LINKEDIN', 'GITHUB', etc.
-  email     String
-  password  String // AES-256 encrypted
-  metadata  Json? // any extra fields — API keys, tokens, org IDs, etc.
+model UserServiceLine {
+  id            String      @id @default(uuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceLineId String
+  serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, appName]) // one credential per app per user
-  @@map("user_app_credentials")
+  @@unique([userId, serviceLineId])
+  @@index([serviceLineId])
 }
 
 model RefreshToken {
@@ -433,99 +340,96 @@ model RefreshToken {
   @@index([userId])
 }
 
+model AuthLogs {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip        String?
+  userAgent String?
+  type      AuthLogType @default(LOGIN)
+  createdAt DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type])
+}
+
+model ImpersonationLog {
+  id             String    @id @default(uuid())
+  impersonatorId String
+  impersonator   User      @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
+  targetUserId   String
+  targetUser     User      @relation("ImpersonatedLogs", fields: [targetUserId], references: [id])
+  reason         String?
+  ipAddress      String?
+  userAgent      String?
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  @@index([impersonatorId])
+  @@index([targetUserId])
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROLES & PERMISSIONS
+// Modules + actions live in code: src/config/permissions.registry.ts
+// DB stores only grants. One row = one grant. No row = deny.
 // ─────────────────────────────────────────────────────────────────────────────
-
-enum RoleCanonical {
-  ADMIN
-  SUPER_ADMIN
-
-  CSM
-  SR_CSM
-
-  RECRUITER
-  DELIVERY_LEAD
-  DELIVERY_MANAGER
-
-  DEVELOPER
-  UNMAPPED
-}
 
 model Role {
   id          String  @id @default(uuid())
   name        String  @unique
   description String?
-  isSystem    Boolean @default(false)
+  isSystem    Boolean @default(false) // system roles can't be edited from UI
 
   users       User[]
   permissions RolePermission[]
-
-  canonical RoleCanonical? @default(UNMAPPED)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
-model Module {
-  id       String  @id @default(uuid())
-  name     String  @unique // "users", "clients", "requirements"
-  label    String // "Users", "Clients", "Requirements"
-  order    Int?
-  isActive Boolean @default(true)
-
-  permissions RolePermission[]
+model RolePermission {
+  id            String          @id @default(uuid())
+  roleId        String
+  role          Role            @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionKey String // "spocs.assign" — validated against permissions.registry.ts
+  scope         PermissionScope @default(OWN) // ignored for unscoped actions
 
   createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionKey])
+  @@index([permissionKey])
 }
 
-model RolePermission {
-  id     String @id @default(uuid())
-  roleId String
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
-
-  module String
-
-  moduleId String?
-  modules  Module? @relation(fields: [moduleId], references: [id])
-
-  canView   Boolean @default(false)
-  canAdd    Boolean @default(false)
-  canEdit   Boolean @default(false)
-  canDelete Boolean @default(false)
-
-  canViewScope   PermissionScope @default(OWN)
-  canAddScope    PermissionScope @default(OWN)
-  canEditScope   PermissionScope @default(OWN)
-  canDeleteScope PermissionScope @default(OWN)
-
-  @@unique([roleId, module])
-}
-
-enum AgreementType {
-  BAND
-  FIXED
-  SALARY
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENT — company master, shared across BUs
+// ─────────────────────────────────────────────────────────────────────────────
 
 model Client {
-  id       String       @id @default(uuid())
-  name     String
-  vmsName  String?
-  industry String?
-  website  String?
-  country  String?
-  state    String?
-  city     String?
-  address  String?
-  status   ClientStatus @default(PENDING)
+  id          String       @id @default(uuid())
+  name        String
+  shortName   String?
+  cin         String?      @unique
+  website     String?
+  linkedinUrl String?
+  country     String?
+  state       String?
+  district    String?
+  city        String?
+  pincode     String?
+  address     String?
+  status      ClientStatus @default(PENDING)
 
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
+  industryId String?
+  industry   Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
+  categoryId String?
+  category   Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
 
   parentClientId String?
   parentClient   Client?  @relation("ClientFamily", fields: [parentClientId], references: [id])
   childClients   Client[] @relation("ClientFamily")
+
+  legacyCaspaId Int? @unique
 
   createdById  String
   createdBy    User      @relation("ClientCreatedBy", fields: [createdById], references: [id])
@@ -535,54 +439,29 @@ model Client {
 
   deletedAt DateTime?
 
-  spocs        ClientSpoc[]
-  requirements Requirement[]
-  notes        ClientNote[]
-  assignments  RequirementAssignment[]
-
-  agreementType   AgreementType? @default(FIXED)
-  percentageValue Decimal?
-
-  bands Band[]
+  spocs         ClientSpoc[]
+  notes         ClientNote[]
+  activities    ClientActivity[]
+  documents     ClientDocument[]
+  financials    ClientFinancial[]
+  programs      ClientProgram[]
+  outreachPacks OutreachPack[]
+  stepRuns      StepRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
-  @@index([businessUnitId])
+  @@index([industryId])
+  @@index([categoryId])
+  @@index([parentClientId])
+  @@index([createdById])
   @@index([deletedAt])
 }
 
-// model Band {
-//   id String @id @default(uuid())
-
-//   clientId String
-//   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
-
-//   name String?
-//   code String
-
-//   rangeFrom Decimal?
-//   rangeTo   Decimal?
-//   value     Decimal?
-
-//   experience Decimal?
-
-//   createdAt DateTime @default(now())
-
-//   @@index([clientId])
-// }
-
-// model ClientAgreement {
-//   id            String      @id @default(uuid())
-//   clientId      String
-//   client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-//   agreementType AgreementType
-
-//   startDate     DateTime
-//   endDate       DateTime
-//   createdAt     DateTime @default(now())
-// }
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENT SPOC — one row per person; email globally unique (store lowercased)
+// ─────────────────────────────────────────────────────────────────────────────
 
 model ClientSpoc {
   id String @id @default(uuid())
@@ -591,53 +470,86 @@ model ClientSpoc {
   client   Client @relation(fields: [clientId], references: [id])
 
   firstName   String
-  lastName    String
-  email       String?
+  lastName    String?
+  nameKey     String // normalized full name — dedupe per client
+  email       String? @unique
   phone       String?
-  designation String?
+  designation String? // free text as found
   department  String?
+  linkedinUrl String?
+  seniority   String?
+
+  totalExpYears      Decimal? @db.Decimal(4, 1)
+  currentOrgExpYears Decimal? @db.Decimal(4, 1)
 
   handlerId String
   handler   User   @relation("SpocHandler", fields: [handlerId], references: [id])
 
-  serviceLineId String
-  serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id])
-
   businessUnitId String
   businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id])
+  serviceLineId  String
+  serviceLine    ServiceLine  @relation(fields: [serviceLineId], references: [id])
+
+  sourceId      String?
+  source        Lookup? @relation("SpocSource", fields: [sourceId], references: [id])
+  emailSourceId String?
+  emailSource   Lookup? @relation("SpocEmailSource", fields: [emailSourceId], references: [id])
+  salesStatusId String?
+  salesStatus   Lookup? @relation("SpocSalesStatus", fields: [salesStatusId], references: [id])
+
+  // latest validation — computed, latest wins
+  emailStatus      EmailStatus     @default(UNVERIFIED)
+  validationScore  Int?
+  validationBand   ValidationBand?
+  validationChecks Json? // { v_name, v_designation, v_email, v_linkedin, v_phone, suggestion }
+  validatedAt      DateTime?
 
   isPrimary Boolean @default(false)
   isActive  Boolean @default(true)
   notes     String?
 
+  legacyCaspaId Int? @unique
+
+  sourceRunId String?
+  sourceRun   StepRun? @relation("SpocSourceRun", fields: [sourceRunId], references: [id])
+
   addedById String
   addedBy   User   @relation("SpocAddedBy", fields: [addedById], references: [id])
 
-  requirements Requirement[]
-
-  clientSpocDms ClientSpocDM[]
+  assignments   ClientSpocAssignment[]
+  activities    ClientActivity[]
+  outreachPacks OutreachPack[]
+  stepRuns      StepRun[]              @relation("StepRunSpoc")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([clientId, email, serviceLineId])
   @@index([clientId, isActive])
+  @@index([clientId, nameKey])
   @@index([handlerId, isActive])
   @@index([businessUnitId])
   @@index([serviceLineId])
+  @@index([salesStatusId])
+  @@index([validationBand])
 }
 
-model ClientSpocDM {
-  id String @id @default(uuid())
-
+// handler history; active row = endedAt null
+model ClientSpocAssignment {
+  id     String     @id @default(uuid())
   spocId String
-  spoc   ClientSpoc @relation(fields: [spocId], references: [id])
+  spoc   ClientSpoc @relation(fields: [spocId], references: [id], onDelete: Cascade)
 
-  dmId String
-  dm   User   @relation("SpocDM", fields: [dmId], references: [id])
+  assignedToId String
+  assignedTo   User   @relation("SpocAssignedTo", fields: [assignedToId], references: [id])
+  assignedById String
+  assignedBy   User   @relation("SpocAssignedBy", fields: [assignedById], references: [id])
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  reason     String?
+  assignedAt DateTime  @default(now())
+  endedAt    DateTime?
+
+  @@index([spocId, endedAt])
+  @@index([assignedToId, endedAt])
 }
 
 model ClientNote {
@@ -654,724 +566,272 @@ model ClientNote {
   @@index([clientId])
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT
-// ─────────────────────────────────────────────────────────────────────────────
-
-model Requirement {
-  id      String @id @default(uuid())
-  reqCode String @unique
-
-  bandId String?
-  band   Band?   @relation(fields: [bandId], references: [id])
-
-  // ── Sale value — manually entered float, hidden from RECRUITER role at API ──
-
-  // ── Add index inside model Requirement @@index block ─────────────────────────
-
-  // ── Core ──────────────────────────────────────────────────────────────────
-  title       String
-  description String?
-  jobType     RequirementType
-  remoteType  RemoteType
-  priority    Priority        @default(MEDIUM)
-  jobOpenFor  JobOpenFor      @default(EXTERNAL) // EXTERNAL / INTERNAL / BOTH
-
-  // ── Skills ────────────────────────────────────────────────────────────────
-  primarySkills String[] // top 3-5 must-have — replaces flat skills[]
-  keySkills     String[] // all other required skills
-
-  // ── Location ──────────────────────────────────────────────────────────────
-  city    String?
-  state   String?
-  country String?
-
-  // ── Experience ────────────────────────────────────────────────────────────
-  experienceMin Float?
-  experienceMax Float?
-
-  // ── Compensation ──────────────────────────────────────────────────────────
-  salaryMin               Float?
-  salaryMax               Float?
-  salaryType              SalaryType?
-  salaryCurrency          String?     @default("INR")
-  bonusAmount             Float?
-  hideSalaryFromCandidate Boolean     @default(false)
-  showMedianSalary        Boolean     @default(false)
-
-  // ── Employment details ────────────────────────────────────────────────────
-  education      String? // "B.Tech / B.E. in CS"
-  functionalArea String? // "Engineering", "Sales"
-  shift          String? // "Morning" / "Night" / "Flexible"
-
-  // ── Sourcing strategy ─────────────────────────────────────────────────────
-  targetCompanies  String[] // companies to target
-  noPoachCompanies String[] // companies not to poach from
-
-  // ── JD file ───────────────────────────────────────────────────────────────
-  jdFileKey    String?
-  jdFileName   String?
-  jdFileType   String?
-  jdUploadedAt DateTime?
-
-  // ── JD parse metadata (set after /jd/parse, cleared on manual override) ──
-  jdParsedAt     DateTime?
-  jdParseStatus  JDParseStatus? // PARSED / FAILED / MANUALLY_OVERRIDDEN
-  jdParsedFields String[] // which fields were autofilled from JD
-
-  // ── Relations ─────────────────────────────────────────────────────────────
-  clientSpocId String?
-  clientSpoc   ClientSpoc? @relation(fields: [clientSpocId], references: [id])
-
+model ClientActivity {
+  id       String      @id @default(uuid())
   clientId String
-  client   Client @relation(fields: [clientId], references: [id])
+  client   Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  spocId   String?
+  spoc     ClientSpoc? @relation(fields: [spocId], references: [id])
 
-  businessUnitId String?
-  businessUnit   BusinessUnit? @relation("RequirementBU", fields: [businessUnitId], references: [id])
+  actorId String? // null = system / external service
+  actor   User?   @relation("ClientActivityActor", fields: [actorId], references: [id])
 
-  serviceLineId String?
-  serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
-
-  // ── Openings ──────────────────────────────────────────────────────────────
-  // filledOpenings, activeApplications, interviewsScheduled, offersRolledOut
-  // are all DROPPED — computed from pipeline rows on demand, never stored
-  totalOpenings Int @default(1)
-
-  // ── Dates ─────────────────────────────────────────────────────────────────
-  startDate      DateTime?
-  targetDate     DateTime? // expected onboarding date — was endDate, renamed
-  respondBy      DateTime?
-  turnaroundDays Int?
-
-  // ── Status & closure ──────────────────────────────────────────────────────
-  status        RequirementStatus @default(DRAFT)
-  closureReason ClosureReason? // FILLED / CANCELLED / CLIENT_WITHDREW / ON_HOLD
-  closedAt      DateTime?
-
-  isRespondByBreached  Boolean @default(false)
-  isTurnaroundBreached Boolean @default(false)
-
-  // ── Audit ─────────────────────────────────────────────────────────────────
-  createdById String
-  createdBy   User   @relation("RequirementCreatedBy", fields: [createdById], references: [id])
-
-  approvedById String?
-  approvedBy   User?     @relation("RequirementApprovedBy", fields: [approvedById], references: [id])
-  approvedAt   DateTime?
-
-  closedById String?
-  closedBy   User?   @relation("RequirementClosedBy", fields: [closedById], references: [id])
-
-  deletedAt DateTime?
-
-  parsedJDId String?
-  parsedJD   ParsedJDLibrary? @relation(fields: [parsedJDId], references: [id])
-
-  // ── Website integration ──
-
-  requirementCategoryId String?
-  requirementCategory   RequirementCategory? @relation(fields: [requirementCategoryId], references: [id])
-
-  // ── Child relations ───────────────────────────────────────────────────────
-  assignments        RequirementAssignment[]
-  candidateSnapshots CandidateSnapshot[]
-  pipelines          RequirementCandidatePipeline[]
-  statusHistory      RequirementStatusHistory[]
-  activities         RequirementActivity[]
-  notes              RequirementNote[]
-  documents          RequirementDocument[]
-
-  // saleValue Float?
-
-  saleValue          Decimal?        @db.Decimal(14, 2) // TOTAL = perOpeningValue × totalOpenings
-  perOpeningValue    Decimal?        @db.Decimal(14, 2) // source of truth
-  saleValueBasis     SaleValueBasis?
-  saleValueRate      Decimal?        @db.Decimal(14, 4) // band.value or client % actually used
-  // saleValueSalaryRef Decimal?        @db.Decimal(14, 2) // salary figure used for FIXED_PCT (annualised)
-  saleValueFrozenAt  DateTime?
-
-  // achievements RequirementAchievement[]
-
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([bandId])
-  @@index([parsedJDId])
-  @@index([status])
-  @@index([clientId])
-  @@index([businessUnitId])
-  @@index([serviceLineId])
-  @@index([clientSpocId])
-  @@index([createdById])
-  @@index([isRespondByBreached])
-  @@index([isTurnaroundBreached])
-  @@index([deletedAt])
-  @@index([closureReason])
-  @@index([targetDate])
-  @@index([requirementCategoryId])
-}
-
-enum SaleValueBasis {
-  DIRECT     // CSM entered the value manually
-  BAND       // band.value per opening
-  FIXED_PCT  // salary × client % per opening
-}
-
-// File: schema.prisma
-// Path: prisma/schema.prisma
-
-enum AchievementStatus {
-  ACTIVE
-  REVERSED // candidate left terminal / dropped after joining
-}
-
-// model RequirementAchievement {
-//   id String @id @default(uuid())
-
-//   // ── What triggered it
-//   pipelineId String
-//   pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id])
-//   stageLogId String?                      @unique // the transition that created this
-//   stageId    String
-//   stage      PipelineStage                @relation(fields: [stageId], references: [id])
-
-//   // ── Denormalised for report filters — no joins needed
-//   requirementId  String
-//   requirement    Requirement @relation(fields: [requirementId], references: [id])
-//   clientId       String
-//   serviceLineId  String?
-//   businessUnitId String?
-//   reqCreatedById String  // CSM — for createdBy / org-tree scope
-//   recruiterId    String
-//   assignmentId   String?
-
-//   // ── Money frozen at achievement time
-//   amount          Decimal        @db.Decimal(14, 2) // value credited for this placement
-//   perOpeningValue Decimal        @db.Decimal(14, 2) // snapshot from requirement
-//   basis           SaleValueBasis
-//   rate            Decimal?       @db.Decimal(14, 4)
-//   offeredCtc      Decimal?       @db.Decimal(14, 2)
-//   currency        String         @default("INR")
-//   exceedsOpenings Boolean        @default(false) // achieved > totalOpenings — flagged, not dropped
-
-//   // ── When
-//   achievedAt     DateTime @default(now())
-//   achievedById   String
-//   monthOfJoining String?  // "YYYY-MM"
-
-//   // ── Reversal
-//   status         AchievementStatus @default(ACTIVE)
-//   reversedAt     DateTime?
-//   reversedById   String?
-//   reversalReason String?
-
-//   createdAt DateTime @default(now())
-
-//   @@index([requirementId, status])
-//   @@index([recruiterId, status, achievedAt])
-//   @@index([reqCreatedById, status, achievedAt])
-//   @@index([clientId, status])
-//   @@index([serviceLineId, status])
-//   @@index([achievedAt])
-//   @@index([monthOfJoining])
-// }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PARSED JD LIBRARY
-// AI parses once — stored here forever. Anyone can search and reuse.
-// No AI call needed on reuse — just clone the parsed fields into the form.
-// ─────────────────────────────────────────────────────────────────────────────
-
-model ParsedJDLibrary {
-  id String @id @default(uuid())
-
-  // searchable identifier — auto-generated from parsed title
-  title String // "Senior React Developer" — indexed for search
-
-  // raw parsed output from GPT — everything stored flat for easy cloning
-  parsedData Json // full ParsedJD object
-
-  // the original JD file that was parsed
-  jdFileKey  String?
-  jdFileName String?
-  jdFileType String?
-
-  // who parsed it and when
-  parsedById String
-  parsedBy   User     @relation("JDParsedBy", fields: [parsedById], references: [id])
-  parsedAt   DateTime @default(now())
-
-  // usage tracking — who used this and how many times
-  usageCount Int      @default(0)
-  usedByIds  String[] // array of userIds who cloned this — for "used by X people" display
-
-  // requirements created from this parsed JD
-  requirements Requirement[]
-
-  isActive Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([title])
-  @@index([isActive])
-  @@index([usageCount])
-  @@index([parsedById])
-}
-
-// ── New enums to add ──────────────────────────────────────────────────────────
-
-enum JobOpenFor {
-  EXTERNAL
-  INTERNAL
-  BOTH
-}
-
-enum ClosureReason {
-  FILLED
-  CANCELLED
-  CLIENT_WITHDREW
-  ON_HOLD
-}
-
-enum JDParseStatus {
-  PARSED
-  FAILED
-  MANUALLY_OVERRIDDEN
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT ASSIGNMENT
-// depth 0 → sales assigns to DM
-// depth 1 → DM assigns to TeamLead or Recruiter
-// depth 2 → TeamLead assigns to Recruiter
-// ─────────────────────────────────────────────────────────────────────────────
-
-model RequirementAssignment {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  assignedToId String
-  assignedTo   User   @relation("AssignedToUser", fields: [assignedToId], references: [id])
-
-  assignedById String
-  assignedBy   User   @relation("AssignedByUser", fields: [assignedById], references: [id])
-
-  assigneeDepartmentId String?
-  assigneeDepartment   Department? @relation(fields: [assigneeDepartmentId], references: [id])
-
-  assigneeBUId String?
-  assigneeBU   BusinessUnit? @relation("AssignmentBU", fields: [assigneeBUId], references: [id])
-
-  clientId String?
-  client   Client? @relation(fields: [clientId], references: [id])
-
-  depth              Int                     @default(0)
-  parentAssignmentId String?
-  parentAssignment   RequirementAssignment?  @relation("AssignmentChain", fields: [parentAssignmentId], references: [id])
-  childAssignments   RequirementAssignment[] @relation("AssignmentChain")
-
-  status            AssignmentStatus @default(ACTIVE)
-  allocatedOpenings Int?
-  filledOpenings    Int              @default(0)
-  submissionsCount  Int              @default(0)
-  interviewsCount   Int              @default(0)
-
-  deadline       DateTime?
-  deadlineMet    Boolean?
-  breachedAt     DateTime?
-  reminderSentAt DateTime?
-
-  assignedAt    DateTime  @default(now())
-  removedAt     DateTime?
-  removedReason String?
-
-  pipelines RequirementCandidatePipeline[]
-
-  @@index([requirementId, depth])
-  @@index([requirementId, status])
-  @@index([assignedToId, status])
-  @@index([assignedById])
-  @@index([parentAssignmentId])
-  @@index([assigneeBUId])
-  @@index([assigneeDepartmentId])
-  @@index([deadline])
-}
-
-model RequirementStatusHistory {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  fromStatus RequirementStatus
-  toStatus   RequirementStatus
-
-  changedById String
-  changedBy   User   @relation("RequirementStatusChangedBy", fields: [changedById], references: [id])
-
-  reason    String?
-  changedAt DateTime @default(now())
-
-  @@index([requirementId])
-  @@index([changedAt])
-}
-
-model RequirementActivity {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-
-  actorId String
-  actor   User   @relation("RequirementActivityActor", fields: [actorId], references: [id])
-
-  type    ActivityType
+  type    ClientActivityType
   summary String
   meta    Json?
 
   createdAt DateTime @default(now())
 
-  @@index([requirementId, createdAt])
-  @@index([actorId])
+  @@index([clientId, createdAt])
+  @@index([spocId, createdAt])
 }
 
-model RequirementNote {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+// ─────────────────────────────────────────────────────────────────────────────
+// CSR DATA — what CASPA crammed into tbl_csr columns
+// ─────────────────────────────────────────────────────────────────────────────
 
-  authorId String
-  author   User   @relation("RequirementNoteAuthor", fields: [authorId], references: [id])
-  content  String
+model ClientDocument {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  typeId String
+  type   Lookup @relation("DocumentType", fields: [typeId], references: [id])
+
+  fy        String // "2025-2026"
+  fileKey   String // S3 key
+  fileName  String?
+  sourceUrl String?
+  sha256    String?
+
+  sourceRunId String?
+  sourceRun   StepRun? @relation("DocumentSourceRun", fields: [sourceRunId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([requirementId])
+  @@unique([clientId, typeId, fy])
+  @@index([clientId])
 }
 
-model RequirementDocument {
-  id            String      @id @default(uuid())
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+// one row per client per FY — only accepted figures; flagged ones stay in StepRun.viewData
+model ClientFinancial {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-  fileName String?
-  fileKey  String?
-  fileType String?
-  content  String?
+  fy           String
+  obligationRs Decimal? @db.Decimal(16, 2)
+  budgetRs     Decimal? @db.Decimal(16, 2)
+  spentRs      Decimal? @db.Decimal(16, 2)
+  unspentRs    Decimal? @db.Decimal(16, 2)
 
-  isIssue       Boolean   @default(false)
-  issueResolved Boolean   @default(false)
-  resolvedById  String?
-  resolvedBy    User?     @relation("RequirementDocResolvedBy", fields: [resolvedById], references: [id])
-  resolvedAt    DateTime?
+  evidence   String?
+  confidence Decimal? @db.Decimal(3, 2)
+  isLocked   Boolean  @default(false) // manually confirmed — services never overwrite
 
-  raisedById String
-  raisedBy   User   @relation("RequirementDocRaisedBy", fields: [raisedById], references: [id])
-
-  createdAt DateTime @default(now())
-
-  @@index([requirementId])
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PIPELINE STAGES
-// Seeded once. Admin never creates these.
-// serviceLineId null = applies to all service lines
-// Only 07A / 07B have serviceLineId set
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CANDIDATE SNAPSHOT
-// Written once when recruiter links a candidate to a requirement.
-// candidateServiceId = Candidate Service UUID — stored as plain string, no FK.
-// One row per candidate per requirement — frozen at link time, never mutated.
-// ─────────────────────────────────────────────────────────────────────────────
-// File: schema.prisma
-// Path: prisma/schema.prisma  (core service — append near CandidateSnapshot)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CANDIDATE INDEX  (core-side read model / search projection)
-// Source of truth = Candidate Service `Candidate`. This is a denormalized,
-// always-fresh mirror for search + filter. One row per candidate.
-// PK = candidateServiceId, so /candidates/:id detail still resolves against
-// Candidate Service unchanged. Kept in sync via syncCandidateToCore
-// (upsert, guarded by sourceUpdatedAt). NOT frozen — unlike CandidateSnapshot.
-// ─────────────────────────────────────────────────────────────────────────────
-
-model CandidateIndex {
-  id String @id // = Candidate.id from Candidate Service, no @default
-
-  // ── Identity ──
-  fullName  String
-  firstName String?
-  lastName  String?
-  email     String  @unique
-  phone     String?
-
-  // ── Cached profile (mirrors Candidate.cached* + parsed rollups) ──
-  currentTitle     String? // ← cachedCurrentTitle
-  currentCompany   String? // ← cachedCurrentCompany
-  totalExpYears    Float? // ← cachedTotalExpYears
-  topSkills        String[] // ← cachedTopSkills (RAW, for display)
-  normalizedSkills String[] // ← from CandidateSkill.normalizedSkill (GIN filter target)
-  locationCity     String? // ← cachedLocationCity
-  locationState    String? // ← cachedLocationState
-
-  // ── Recruiter filters (mirrored from source) ──
-  isImmediateJoiner Boolean @default(false)
-  noticePeriodDays  Int?
-
-  // ── Flags / provenance ──
-  source       String // string mirror of CandidateSource — do NOT redefine enum here
-  isActive     Boolean @default(true)
-  isBlocked    Boolean @default(false)
-  doNotContact Boolean @default(false)
-
-  // ── Optional list-level resume link (active ResumeFile.url) ──
-  resumeUrl String?
-
-  // ── Sort / sync bookkeeping ──
-  lastActivityAt  DateTime // ← mirrors Candidate.lastActivityAt (default sort)
-  sourceUpdatedAt DateTime // ← Candidate.updatedAt — out-of-order sync guard
-  syncedAt        DateTime @default(now())
+  sourceRunId String?
+  sourceRun   StepRun? @relation("FinancialSourceRun", fields: [sourceRunId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // trgm GIN indexes added via raw SQL migration (fullName/email/company/title)
-  @@index([normalizedSkills], type: Gin)
-  @@index([topSkills], type: Gin)
-  @@index([source])
-  @@index([isActive, isBlocked]) // mirrors source composite index
-  @@index([doNotContact])
-  @@index([isImmediateJoiner])
-  @@index([totalExpYears])
-  @@index([lastActivityAt])
-  @@index([createdAt])
+  @@unique([clientId, fy])
 }
 
-enum CandidateSnapshotType {
-  CANDIDATE // sourced by a recruiter (authenticated ingest / Chrome extension)
-  APPLICANT // self-applied via public careers page
-}
+model ClientProgram {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-// ── Updated model ─────────────────────────────────────────────────────────────
-model CandidateSnapshot {
-  id                 String @id @default(uuid())
-  candidateServiceId String // Candidate Service UUID — no cross-service FK
+  fy   String
+  name String
 
-  candidateCode String? @unique
+  sectorId String?
+  sector   Lookup? @relation("ProgramSector", fields: [sectorId], references: [id])
 
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id])
+  budgetRs      Decimal? @db.Decimal(16, 2)
+  locations     String?
+  beneficiaries String?
+  implementor   String?
+  sourceUrl     String?
 
-  snapshotAt DateTime @default(now())
-
-  // display fields — point-in-time copy, never updated
-  fullName       String
-  email          String
-  phone          String?
-  currentTitle   String?
-  currentCompany String?
-  totalExpYears  Float?
-  topSkills      String[]
-  resumeUrl      String?
-
-  // full response blob from Candidate Service
-  rawSnapshot Json
-
-  // snapshot source / origin label (e.g. "PUBLIC_WEBSITE", "CHROME_EXTENSION")
-  sourced String?
-
-  // ── NEW ────────────────────────────────────────────────────────────────────
-  // Distinguishes self-applied (APPLICANT) from recruiter-sourced (CANDIDATE).
-  // Defaults to CANDIDATE so existing rows and the authenticated ingest path
-  // are unaffected — no backfill required.
-  type CandidateSnapshotType @default(CANDIDATE)
-  // ── END NEW ────────────────────────────────────────────────────────────────
-
-  // createdById is nullable for public applies:
-  // public applicants have no recruiter — there is no User row to FK against.
-  // Authenticated ingest always provides a real user ID.
-  createdById String?
-  createdBy   User?   @relation("SnapshotCreatedBy", fields: [createdById], references: [id])
-
-  pipeline RequirementCandidatePipeline?
-
-  createdAt DateTime @default(now())
-
-  @@unique([candidateServiceId, requirementId])
-  @@index([requirementId])
-  @@index([candidateServiceId])
-  @@index([type]) // filter APPLICANT queue separately
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT CANDIDATE PIPELINE
-// One row per candidate per requirement.
-// Live funnel row — current stage, who's handling, submission / offer state.
-// Stage pointer updates in place. History written to CandidatePipelineStageLog.
-// ─────────────────────────────────────────────────────────────────────────────
-
-enum CandidateDisposition {
-  ACTIVE // in pipeline, being worked
-  PLACED // joined — counts as fill
-  DROPPED // out — reason in dropReason field
-  DUPLICATE // ignored
-  ON_HOLD
-}
-
-enum DropReason {
-  CLIENT_REJECTED
-  CANDIDATE_DECLINED
-  OFFER_EXPIRED
-  NO_SHOW
-  UNRESPONSIVE
-  OVERQUALIFIED
-  BUDGET_MISMATCH
-  OTHER
-}
-
-model RequirementCandidatePipeline {
-  id String @id @default(uuid())
-
-  snapshotId String            @unique
-  snapshot   CandidateSnapshot @relation(fields: [snapshotId], references: [id])
-
-  requirementId String
-  requirement   Requirement @relation(fields: [requirementId], references: [id])
-
-  assignmentId String?
-  assignment   RequirementAssignment? @relation(fields: [assignmentId], references: [id])
-
-  recruiterId String
-  recruiter   User   @relation("PipelineRecruiter", fields: [recruiterId], references: [id])
-
-  currentStageId   String
-  currentStage     PipelineStage @relation(fields: [currentStageId], references: [id])
-  stageUpdatedAt   DateTime      @default(now())
-  stageUpdatedById String
-  stageUpdatedBy   User          @relation("PipelineStageUpdatedBy", fields: [stageUpdatedById], references: [id])
-
-  disposition   CandidateDisposition @default(ACTIVE)
-  dispositionAt DateTime?
-  dropReason    String?
-  dropNote      String?
-
-  // ── Submission
-  submissionNote String?
-  submittedAt    DateTime?
-  submittedById  String?
-  submittedBy    User?     @relation("PipelineSubmittedBy", fields: [submittedById], references: [id])
-
-  // ── Offer
-  offeredCtc     Float? // formal offer number
-  salaryCurrency String?      @default("INR")
-  salaryType     SalaryType?
-  offeredAt      DateTime?
-  offeredById    String?
-  offeredBy      User?        @relation("PipelineOfferedBy", fields: [offeredById], references: [id])
-  offerStatus    OfferStatus?
-
-  noticePeriod String?
-
-  // ── CTC breakdown
-  currentCtc    Float? // what candidate earns now at current company
-  expectedCtc   Float? // what candidate asked for
-  negotiatedCtc Float? // what was agreed during negotiation
-  ctcNotes      String? // free text — any CTC context
-
-  // ── Joining
-  lastWorkingDate     DateTime? // LWD at current company
-  expectedJoiningDate DateTime? // when we expect them to join
-  actualJoiningDate   DateTime? // when they actually joined
-  monthOfJoining      String? // "June 2025" — derived on write, stored for reporting
-  remainingDaysToJoin Int? // computed on write — negative means overdue, null = no date set
-
-    noticePeriodDays Int?
-
-  // ── Rejection
-  isRejected      Boolean   @default(false)
-  rejectedAt      DateTime?
-  rejectedById    String?
-  rejectedBy      User?     @relation("PipelineRejectedBy", fields: [rejectedById], references: [id])
-  rejectionReason String?
-
-  // ── Withdrawal
-  isWithdrawn     Boolean   @default(false)
-  withdrawnAt     DateTime?
-  withdrawnReason String?
-
-  // ── Hold
-  isOnHold     Boolean   @default(false)
-  onHoldAt     DateTime?
-  onHoldReason String?
-
-  stageHistory CandidatePipelineStageLog[]
+  sourceRunId String?
+  sourceRun   StepRun? @relation("ProgramSourceRun", fields: [sourceRunId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  //transfer candidate
-  isTransferred Boolean @default(false)
-  transferredAt DateTime?
-  //interview
-  interviewSchedules CandidateInterviewSchedule[]
-
-  @@index([lastWorkingDate])
-  @@index([noticePeriodDays])
-
-  @@index([requirementId, currentStageId])
-  @@index([recruiterId])
-  @@index([assignmentId])
-  @@index([stageUpdatedAt])
-  // @@index([actualJoiningDate])
-  // @@index([expectedJoiningDate])
-  @@index([monthOfJoining])
-  @@index([disposition])
+  @@unique([clientId, fy, name])
+  @@index([sectorId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE LOG
-// Append-only. One row per transition.
-// timeInPrevStageMins computed before write — source of all TAT / aging reports.
+// OUTREACH — always a new pack (keeps history); sending comes later
 // ─────────────────────────────────────────────────────────────────────────────
 
-model CandidatePipelineStageLog {
-  id String @id @default(uuid())
+model OutreachPack {
+  id       String     @id @default(uuid())
+  clientId String
+  client   Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  spocId   String
+  spoc     ClientSpoc @relation(fields: [spocId], references: [id], onDelete: Cascade)
 
-  pipelineId String
-  pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  fileKey String? // docx in S3
+  model   String?
 
-  fromStageId String?
-  fromStage   PipelineStage? @relation("StageLogFrom", fields: [fromStageId], references: [id])
+  sourceRunId String?
+  sourceRun   StepRun? @relation("OutreachSourceRun", fields: [sourceRunId], references: [id])
 
-  toStageId String
-  toStage   PipelineStage @relation("StageLogTo", fields: [toStageId], references: [id])
+  messages OutreachMessage[]
 
-  fromCanonicalStage CanonicalStage?
-  toCanonicalStage   CanonicalStage?
-
-  changedById String
-  changedBy   User   @relation("StageLogChangedBy", fields: [changedById], references: [id])
-
-  wasSkipped Boolean @default(false)
-  skipReason String?
-
-  timeInPrevStageMins Int?
-
-  note      String?
   createdAt DateTime @default(now())
 
-  @@index([pipelineId, createdAt])
-  @@index([toStageId])
-  @@index([toCanonicalStage])
+  @@index([spocId, createdAt])
+  @@index([clientId])
+}
+
+model OutreachMessage {
+  id     String       @id @default(uuid())
+  packId String
+  pack   OutreachPack @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  sequenceNo Int // 0 = first mail, 1..n = follow-ups
+  subject    String
+  body       String
+
+  @@unique([packId, sequenceNo])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NOTIFICATIONS
+// EXTERNAL SERVICES + STEP RUNS
+// ExternalService = one partner (CSR pipeline). Outbound URL + inbound key.
+// Outbound key read from env var named in outboundKeyEnv; inbound key stored as hash.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ExternalService {
+  id   String @id @default(uuid())
+  code String @unique // "CSR_PIPELINE"
+  name String
+
+  baseUrl        String?
+  outboundKeyEnv String? // e.g. "CSR_PIPELINE_KEY"
+  inboundKeyHash String?
+  scopes         String[] // "clients:read", "step-runs:write", "documents:write"
+
+  timeoutMins      Int @default(120)
+  maxDispatchTries Int @default(5)
+
+  isActive     Boolean   @default(true)
+  lastUsedAt   DateTime?
+  lastHealthAt DateTime?
+  lastHealthOk Boolean?
+
+  steps PipelineStep[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PipelineStep {
+  id        String          @id @default(uuid())
+  serviceId String
+  service   ExternalService @relation(fields: [serviceId], references: [id])
+
+  key             String // "spoc_finder", "programs_figures", "validate" ...
+  label           String
+  target          StepTarget
+  uiOrder         Int?
+  userClientLimit Int? // null = unlimited; super admin bypasses
+  isActive        Boolean    @default(true)
+  config          Json? // step-specific options sent with the job
+
+  runs StepRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([serviceId, key])
+  @@index([isActive])
+}
+
+model StepRun {
+  id     String       @id @default(uuid())
+  stepId String
+  step   PipelineStep @relation(fields: [stepId], references: [id])
+
+  idempotencyKey String  @unique // hash(step + client + spoc + options) — blocks double clicks
+  externalJobId  String? @unique
+
+  parentRunId String?
+  parentRun   StepRun?  @relation("RunChain", fields: [parentRunId], references: [id])
+  childRuns   StepRun[] @relation("RunChain")
+
+  clientId String
+  client   Client      @relation(fields: [clientId], references: [id])
+  spocId   String?
+  spoc     ClientSpoc? @relation("StepRunSpoc", fields: [spocId], references: [id])
+
+  requestedById String
+  requestedBy   User   @relation("StepRunRequestedBy", fields: [requestedById], references: [id])
+
+  options Json? // exactly what was sent
+
+  status        StepRunStatus @default(QUEUED)
+  progress      Int? // 0-100
+  note          String? // short plain-English line for the button
+  dispatchTries Int           @default(0)
+
+  viewData      Json? // skipped rows, conflicts, waiting-for-email, flagged figures
+  resultSummary Json? // what the CRM wrote: { contacts: { created, skipped[] }, ... }
+
+  errorCode     String?
+  errorMessage  String?
+  howToContinue String?
+  costUsd       Decimal? @db.Decimal(10, 4)
+  credits       Json? // { apollo: 3, brightdata: 2 }
+
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  lastCallbackAt DateTime?
+  nextCheckAt    DateTime? // fallback status check if callbacks stop
+
+  events StepRunEvent[]
+
+  spocsCreated  ClientSpoc[]      @relation("SpocSourceRun")
+  documents     ClientDocument[]  @relation("DocumentSourceRun")
+  financials    ClientFinancial[] @relation("FinancialSourceRun")
+  programs      ClientProgram[]   @relation("ProgramSourceRun")
+  outreachPacks OutreachPack[]    @relation("OutreachSourceRun")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, nextCheckAt])
+  @@index([stepId, requestedById, status]) // limit check
+  @@index([clientId, createdAt])
+  @@index([spocId])
+  @@index([parentRunId])
+}
+
+// append-only: dispatch attempts, callbacks, status changes, errors
+model StepRunEvent {
+  id    String  @id @default(uuid())
+  runId String
+  run   StepRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  fromStatus StepRunStatus?
+  toStatus   StepRunStatus?
+  message    String
+  payload    Json? // masked request/response
+
+  createdAt DateTime @default(now())
+
+  @@index([runId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATIONS + AUDIT
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Notification {
@@ -1395,13 +855,8 @@ model Notification {
   @@index([userId, createdAt])
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AUDIT LOG
-// ─────────────────────────────────────────────────────────────────────────────
-
 model AuditLog {
-  id String @id @default(uuid())
-
+  id      String @id @default(uuid())
   actorId String
   actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
 
@@ -1417,502 +872,5 @@ model AuditLog {
 
   @@index([module, recordId])
   @@index([actorId])
-  @@index([createdAt])
-}
-
-enum CanonicalStage {
-  SOURCED
-  SCREENING
-  SUBMMITED
-  SHORTLISTED
-  REJECTED
-  DECLINED
-
-  INTERVIEW
-  INTERVIEW_SCHEDULED
-  INTERVIEW_HOLD
-  INTERVIEW_RESCHEDULED
-  INTERVIEW_CANCELLED
-
-  OFFER_IN_PROGRESS
-  OFFERED
-  HIRED
-  JOINED
-  DROPPED
-
-  TRAINING_STARTED
-  TRAINING_CANCELLED
-  TRAINING_HOLD
-  TRAINING_IN_PROGRESS
-  TRAINING_COMPLETED
-}
-
-enum InterviewMode {
-  ONLINE
-  OFFLINE
-  TELEPHONIC
-}
-
-model CandidateInterviewSchedule {
-  id String @id @default(uuid())
-
-  pipelineId String
-  pipeline   RequirementCandidatePipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
-
-  stageId String
-  stage   PipelineStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
-
-  roundNumber  Int?
-  scheduledAt  DateTime?
-  durationMins Int?
-  mode         InterviewMode
-  // status       CanonicalStage
-
-  createdById String
-  createdBy   User     @relation("InterviewScheduledBy", fields: [createdById], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@index([pipelineId])
-  @@index([stageId])
-  @@index([scheduledAt])
-}
-
-model PipelineStage {
-  id             String          @id @default(uuid())
-  code           String
-  label          String
-  order          Int
-  canonicalStage CanonicalStage?
-  isMandatory    Boolean         @default(true)
-  isTerminal     Boolean         @default(false)
-  isActive       Boolean         @default(true)
-
-  pipeline Boolean @default(true)
-
-  isStandard Boolean @default(false)
-
-  // NEW
-  // candidate fell out — rejected, withdrawn, no show, etc.
-  // mutually exclusive with isTerminal
-  isSourced      Boolean @default(false)
-  isNearTerminal Boolean @default(false)
-
-  candidatePipelines RequirementCandidatePipeline[]
-  stageHistoriesFrom CandidatePipelineStageLog[]    @relation("StageLogFrom")
-  stageHistoriesTo   CandidatePipelineStageLog[]    @relation("StageLogTo")
-
-  createdAt     DateTime     @default(now())
-  serviceLine   ServiceLine? @relation(fields: [serviceLineId], references: [id])
-  serviceLineId String?
-
-  interviewSchedules CandidateInterviewSchedule[]
-
-  @@index([order])
-  @@index([canonicalStage])
-}
-
-enum MigrationStagingType {
-  UNMAPPED_CREATOR // Requirement's "Created By" email has no matching User
-  UNMAPPED_RECRUITER // A recruiter email in "Recruiters"/"Sourced By" col has no matching User
-  UNRESOLVED_CHAIN // Both creator and recruiter exist as Users, but no
-  // reportingTo/teamLead path connects them
-  CLIENT_SPOC_NEEDS_REVIEW // Regex-extracted ClientSpoc, unverified
-  DUPLICATE_REQ_CODE // Job ID / Reference ID collided with an existing reqCode
-  UNMAPPED_REQUIREMENT // Candidate row's Job ID has no matching Requirement
-  UNMAPPED_STAGE // Stage/Substage combo missing from stage-mapping.ts
-  PIPELINE_STAGE_NOT_SEEDED // CanonicalStage has no seeded PipelineStage row
-  FLAT_FALLBACK_ASSIGNMENT // No hierarchy/assignable path — flat creator->recruiter assignment created (audit record, not a blocker)
-  USER_AUTO_CREATED // Creator/recruiter email had no User — auto-created with role MIGRATED, password pass@123. Review and fix role/reporting/BU.
-}
-
-enum MigrationStagingStatus {
-  PENDING
-  RESOLVED
-  IGNORED
-}
-
-model MigrationStaging {
-  id   String               @id @default(uuid())
-  type MigrationStagingType
-
-  // Human-readable, e.g. "ta4087@sfjbs.com not found in Users" —
-  // this is what you'll actually read when triaging.
-  reason String
-
-  // Free-form context needed to resolve this row by hand later:
-  // the source xlsx row number, the raw cell values, any partially
-  // resolved ids. Keep it dumb and complete.
-  payload Json
-
-  // Which xlsx row this came from, for traceability back to the source file.
-  sourceRow Int?
-
-  status MigrationStagingStatus @default(PENDING)
-
-  // Once someone manually maps the missing entity (e.g. adds the
-  // correct userId here), the promote script picks this up.
-  resolvedUserId String?
-  resolvedNote   String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([type, status])
-  @@index([sourceRow])
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REQUIREMENT CATEGORY
-// Flat lookup for grouping/filtering requirements on the SFJ website.
-// Deliberately shallow — the ONLY link is an optional FK from Requirement.
-// ─────────────────────────────────────────────────────────────────────────────
-
-model RequirementCategory {
-  id          String  @id @default(uuid())
-  name        String  @unique // "Engineering", "Sales", "IT & Software"
-  slug        String  @unique // "engineering" — website filter / URL key
-  description String?
-  order       Int? // display order on the careers page
-  isActive    Boolean @default(true) // toggle visibility on the website
-
-  requirements Requirement[] // shallow back-relation — the only relation it has
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([isActive])
-}
-
-enum NaukriPromiseStatus {
-  PENDING // promise made, not yet judged
-  KEPT // next-day gap closed
-  BROKEN // next-day gap still there
-  NONE // no promise made that day
-}
-
-enum MemeCategory {
-  HAPPY
-  CELEBRATE // promise kept / perfect day
-  ANGRY
-  SHAME // gap / promise broken
-  SAD
-  NEUTRAL
-}
-
-enum NaukriMsgAuthor {
-  SYSTEM
-  RECRUITER
-  MANAGER
-}
-
-// one row per recruiter per day — the accountability record (survives re-reconcile)
-model NaukriRecruiterDaily {
-  id          String   @id @default(uuid())
-  reportDate  DateTime @db.Date
-  recruiterId String
-
-  // cached snapshot of the numbers pulled from candidate-service (for history display)
-  naukriConsumed Int?
-  atsCaptured    Int?
-  difference     Int?
-
-  // recruiter's written explanation for the gap
-  reason   String?
-  reasonAt DateTime?
-
-  // promise mechanic
-  promiseMade   Boolean             @default(false)
-  promiseText   String?
-  promiseMadeAt DateTime?
-  promiseStatus NaukriPromiseStatus @default(NONE)
-  evaluatedAt   DateTime?
-
-  messages NaukriMessage[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([reportDate, recruiterId])
-  @@index([recruiterId])
-  @@index([reportDate])
-  @@index([promiseStatus])
-}
-
-// banter thread — system taunts, recruiter replies, manager notes
-model NaukriMessage {
-  id      String               @id @default(uuid())
-  dailyId String
-  daily   NaukriRecruiterDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
-
-  author   NaukriMsgAuthor @default(SYSTEM)
-  authorId String? // userId when RECRUITER/MANAGER
-  body     String
-  memeId   String?
-  meme     MemeAsset?      @relation(fields: [memeId], references: [id])
-
-  createdAt DateTime @default(now())
-
-  @@index([dailyId])
-}
-
-// game rollup per recruiter — cheap reads for the dashboard
-model NaukriRecruiterStreak {
-  recruiterId   String    @id
-  currentStreak Int       @default(0) // consecutive kept days
-  longestStreak Int       @default(0)
-  totalKept     Int       @default(0)
-  totalBroken   Int       @default(0)
-  lastEvaluated DateTime?
-  updatedAt     DateTime  @updatedAt
-}
-
-// reusable meme/gif library (S3 public links) — used here + anywhere else later
-model MemeAsset {
-  id        String       @id @default(uuid())
-  url       String // public S3 link
-  category  MemeCategory
-  caption   String?
-  weight    Int          @default(1) // popular ones picked more often
-  isActive  Boolean      @default(true)
-  createdAt DateTime     @default(now())
-
-  messages NaukriMessage[]
-
-  @@index([category, isActive])
-}
-
-// File: schema.prisma
-// Path: prisma/schema.prisma
-
-enum TicketStatus {
-  OPEN
-  IN_PROGRESS
-  ON_HOLD
-  RESOLVED
-  CLOSED
-  REOPENED
-}
-
-enum TicketPriority {
-  LOW
-  MEDIUM
-  HIGH
-  URGENT
-}
-
-enum TicketEventKind {
-  MESSAGE // a human wrote something
-  STATUS_CHANGE // status moved, with or without a message
-  ASSIGNMENT // handed to someone
-}
-
-model Ticket {
-  id          String  @id @default(uuid())
-  seq         Int     @unique @default(autoincrement())
-  title       String
-  description String? @db.Text
-
-  status   TicketStatus   @default(OPEN)
-  priority TicketPriority @default(MEDIUM)
-
-  categoryId String?
-  category   TicketCategory? @relation(fields: [categoryId], references: [id])
-
-  // plain UUIDs + snapshot, no cross-service FK
-  raisedById     String
-  raisedByName   String?
-  assignedToId   String?
-  assignedToName String?
-
-  entityType String?
-  entityId   String?
-
-  resolvedAt     DateTime?
-  closedAt       DateTime?
-  lastActivityAt DateTime  @default(now())
-
-  attachments   TicketAttachment[]
-  comments      TicketComment[]
-  notifications TicketNotification[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status, priority])
-  @@index([raisedById])
-  @@index([assignedToId])
-  @@index([lastActivityAt])
-  @@index([entityType, entityId])
-}
-
-model TicketCategory {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  isActive  Boolean  @default(true)
-  tickets   Ticket[]
-  createdAt DateTime @default(now())
-}
-
-/**
- * files on the ticket itself (the original request)
- */
-model TicketAttachment {
-  id       String @id @default(uuid())
-  ticketId String
-  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-
-  fileName     String
-  fileKey      String
-  mimeType     String
-  sizeBytes    Int
-  uploadedById String
-
-  createdAt DateTime @default(now())
-
-  @@index([ticketId])
-}
-
-/**
- * one entry in the thread — a message, a status move, or both at once
- */
-model TicketComment {
-  id       String @id @default(uuid())
-  ticketId String
-  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-
-  kind TicketEventKind @default(MESSAGE)
-  body String?         @db.Text
-
-  // author snapshot — no FK across services
-  authorId   String
-  authorName String?
-  authorRole String?
-
-  // where the ticket stood when this was posted, and what moved
-  statusAtPost TicketStatus  @default(OPEN)
-  fromStatus   TicketStatus?
-  toStatus     TicketStatus?
-
-  attachments TicketCommentAttachment[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([ticketId, createdAt])
-}
-
-model TicketCommentAttachment {
-  id        String        @id @default(uuid())
-  commentId String
-  comment   TicketComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
-
-  fileName  String
-  fileKey   String
-  mimeType  String
-  sizeBytes Int
-
-  createdAt DateTime @default(now())
-
-  @@index([commentId])
-}
-
-/**
- * dedicated stream — deliberately not the global notification table
- */
-model TicketNotification {
-  id        String  @id @default(uuid())
-  ticketId  String
-  ticket    Ticket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  commentId String?
-
-  recipientId String
-  actorId     String
-  actorName   String?
-
-  kind    TicketEventKind
-  title   String
-  preview String?
-
-  isRead Boolean   @default(false)
-  readAt DateTime?
-
-  createdAt DateTime @default(now())
-
-  @@index([recipientId, isRead, createdAt])
-  @@index([ticketId])
-}
-
-model Band {
-  id String @id @default(uuid())
-
-  clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
-
-  name String?
-  code String
-
-  rangeFrom Decimal?
-  rangeTo   Decimal?
-  value     Decimal?
-
-  experience Decimal?
-
-  // ← NEW: back-relation so requirements can FK to a band
-  requirements Requirement[]
-
-  createdAt DateTime @default(now())
-
-  @@index([clientId])
-}
-
-model SavedSearch {
-  id            String    @id @default(uuid())
-  recruiterId   String
-  requirementId String?
-  assignmentId  String?
-  name          String
-  filters       Json
-  lastRunAt     DateTime?
-  runCount      Int       @default(0)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  recruiter User @relation(fields: [recruiterId], references: [id])
-
-  @@index([recruiterId])
-  @@index([requirementId])
-}
-
-model SearchActivityLog {
-  id            String   @id @default(uuid())
-  recruiterId   String
-  requirementId String?
-  assignmentId  String?
-  filters       Json
-  resultCount   Int?
-  createdAt     DateTime @default(now())
-
-  recruiter User @relation(fields: [recruiterId], references: [id])
-
-  @@index([recruiterId, createdAt])
-  @@index([requirementId])
-  @@index([createdAt])
-}
-
-model SourcingActivityLog {
-  id                 String   @id @default(uuid())
-  recruiterId        String
-  requirementId      String
-  assignmentId       String?
-  candidateServiceId String
-  candidateEmail     String?
-  candidateName      String?
-  createdAt          DateTime @default(now())
-
-  recruiter User @relation(fields: [recruiterId], references: [id])
-
-  @@index([recruiterId, createdAt])
-  @@index([requirementId])
   @@index([createdAt])
 }

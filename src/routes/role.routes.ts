@@ -1,14 +1,15 @@
+// File: role.routes.ts
+// Path: src/routes/role.routes.ts
+
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import {
-  scopeFilter,
-  checkPermission,
-} from "@/middleware/scopeFilter.middleware";
-// import { validate } from "@/middleware/validate";
+import { authorize } from "@/middleware/authorize";
+import { validate, idParams } from "@/validators/validator";
 import {
   createRoleBody,
   updateRoleBody,
   roleIdParams,
+  saveGrantsBody,
 } from "@/validators/role.validator";
 import {
   listRoles,
@@ -16,54 +17,27 @@ import {
   createRole,
   updateRole,
   deleteRole,
-  getModules,
-  getScopes,
-  getCanonicalOptions,
-  updateRoleCanonical,
 } from "@/controller/role.controller";
-import { validate } from "@/validators/validator";
+import { getRoleGrants, saveRoleGrants } from "@/controller/permission.controller";
 
 const router = Router();
+const manage = authorize("admin.manage_roles");
 
 router.use(authenticateUser);
-router.use(scopeFilter("roles")); // roles live under settings module
 
-// keep the static route ABOVE any '/:id' route so it doesn't get swallowed
-router.get("/canonical-options", getCanonicalOptions);
-
-// ── Utility — before /:id ────────────────────────────────────────────────────
-router.get("/modules", getModules);
-router.get("/scopes", getScopes); // ← NEW: returns all PermissionScope enum values
-// ── List ─────────────────────────────────────────────────────────────────────
 router.get("/", listRoles);
+router.post("/", manage, validate.body(createRoleBody), createRole);
 
-// ── Create ───────────────────────────────────────────────────────────────────
-router.post(
-  "/",
-  checkPermission("canAdd"),
-  validate.body(createRoleBody),
-  createRole
-);
+router.get("/:id", manage, validate.params(idParams), getRoleById);
+router.put("/:id", manage, validate.request({ params: idParams, body: updateRoleBody }), updateRole);
+router.delete("/:id", manage, validate.params(idParams), deleteRole);
 
-router.patch("/:id/canonical", updateRoleCanonical);
-
-// ── Get by ID ────────────────────────────────────────────────────────────────
-router.get("/:id", validate.params(roleIdParams), getRoleById);
-
-// ── Update ───────────────────────────────────────────────────────────────────
+router.get("/:roleId/permissions", manage, validate.params(roleIdParams), getRoleGrants);
 router.put(
-  "/:id",
-  checkPermission("canEdit"),
-  validate.request({ params: roleIdParams, body: updateRoleBody }),
-  updateRole
-);
-
-// ── Delete ───────────────────────────────────────────────────────────────────
-router.delete(
-  "/:id",
-  checkPermission("canDelete"),
-  validate.params(roleIdParams),
-  deleteRole
+  "/:roleId/permissions",
+  manage,
+  validate.request({ params: roleIdParams, body: saveGrantsBody }),
+  saveRoleGrants,
 );
 
 export default router;

@@ -2,64 +2,38 @@
 // Path: src/controller/authLogs.controller.ts
 
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { authLogScopeWhere } from "@/middleware/scopeFilter.middleware";
+import { pageMeta, toSkipTake } from "@/utils/pagination";
+import type { ListAuthLogsQuery } from "@/validators/authLogs.validators";
 
+// ── GET /auth-logs
 export const listAuthLogs = async (req: Request, res: Response) => {
-  try {
-    const {
-      page = "1",
-      limit = "20",
-      userId,
-      departmentId,
-      type,
-      startDate,
-      endDate,
-    } = req.validatedQuery as any;
+  const q = req.validatedQuery as ListAuthLogsQuery;
 
-    const where: any = { ...authLogScopeWhere(req.scopeFilter!) };
-
-    if (userId) where.userId = userId;
-    if (departmentId) where.user = { departmentId };
-    if (type) where.type = type;
-    if (startDate || endDate) {
-      where.createdAt = {
-        ...(startDate ? { gte: new Date(startDate) } : {}),
-        ...(endDate ? { lte: new Date(endDate) } : {}),
-      };
-    }
-
-    const skip = (Number(page) - 1) * Number(limit);
-
-    const [logs, total] = await Promise.all([
-      prisma.authLogs.findMany({
-        where,
-        include: {
-          user: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-        },
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: Number(limit),
-      }),
-      prisma.authLogs.count({ where }),
-    ]);
-
-    return res.status(200).json({
-      success: true,
-      data: logs,
-      pagination: {
-        page: Number(page),
-        limit: Number(limit),
-        total,
-        totalPages: Math.ceil(total / Number(limit)),
+  const where: Prisma.AuthLogsWhereInput = {
+    ...(q.userId && { userId: q.userId }),
+    ...(q.departmentId && { user: { departmentId: q.departmentId } }),
+    ...(q.type && { type: q.type }),
+    ...((q.startDate || q.endDate) && {
+      createdAt: {
+        ...(q.startDate && { gte: new Date(q.startDate) }),
+        ...(q.endDate && { lte: new Date(q.endDate) }),
       },
-    });
-  } catch (error) {
-    console.error("Error listing auth logs:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Error fetching auth logs" });
-  }
+    }),
+  };
+
+  const [total, logs] = await Promise.all([
+    prisma.authLogs.count({ where }),
+    prisma.authLogs.findMany({
+      where,
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { createdAt: q.sortDir },
+      ...toSkipTake(q),
+    }),
+  ]);
+
+  res.json({ success: true, data: logs, meta: pageMeta(total, q.page, q.limit) });
 };

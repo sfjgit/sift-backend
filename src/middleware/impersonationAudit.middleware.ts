@@ -1,5 +1,8 @@
 // File: impersonationAudit.middleware.ts
 // Path: src/middleware/impersonationAudit.middleware.ts
+//
+// While a super admin is logged in as someone else, every write request is
+// recorded in AuditLog (module "impersonation", actor = the real admin).
 
 import { Request, Response, NextFunction } from "express";
 import prisma from "@/utils/prisma/client";
@@ -37,12 +40,7 @@ export const impersonationAudit = async (
   try {
     const log = await prisma.impersonationLog.findUnique({
       where: { id: logId },
-      select: {
-        id: true,
-        impersonatorId: true,
-        targetUserId: true,
-        endedAt: true,
-      },
+      select: { id: true, impersonatorId: true, targetUserId: true, endedAt: true },
     });
 
     if (!log || log.endedAt) return next();
@@ -52,20 +50,23 @@ export const impersonationAudit = async (
 
     res.on("finish", () => {
       // req.user is set by authenticateUser inside the route
-      if ((req as any).user?.id !== log.targetUserId) return;
+      if (req.user?.id !== log.targetUserId) return;
 
-      prisma.impersonationActionLog
+      prisma.auditLog
         .create({
           data: {
-            impersonationLogId: log.id,
-            impersonatorId: log.impersonatorId,
-            targetUserId: log.targetUserId,
-            service: "core",
-            method: req.method,
-            path,
-            statusCode: res.statusCode,
-            requestBody: body ?? undefined,
-            ipAddress: req.ip ?? null,
+            actorId: log.impersonatorId,
+            action: `IMPERSONATED_${req.method}`,
+            module: "impersonation",
+            recordId: log.id,
+            newData: {
+              targetUserId: log.targetUserId,
+              path,
+              statusCode: res.statusCode,
+              body,
+            },
+            ip: req.ip ?? null,
+            userAgent: req.headers["user-agent"] ?? null,
           },
         })
         .catch((err) => console.error("impersonationAudit write failed:", err));

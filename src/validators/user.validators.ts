@@ -2,128 +2,70 @@
 // Path: src/validators/user.validators.ts
 
 import { z } from "zod";
+import { optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
-// ── Reusable date coercion ────────────────────────────────────────────────────
-// Prisma DateTime fields accept ISO strings. z.string().datetime() is too strict
-// (requires time component). Accept any non-empty string and let Prisma/JS Date
-// handle validation at the DB boundary.
-const isoDateString = z
+// accepts "2024-05-01" as well as full ISO; "" clears
+const optionalDate = z
   .string()
-  .refine((v) => !isNaN(Date.parse(v)), { message: "Invalid date string" })
-  .optional()
-  .nullable();
+  .refine((v) => v === "" || !isNaN(Date.parse(v)), { message: "Invalid date" })
+  .transform((v) => (v === "" ? null : new Date(v)))
+  .nullable()
+  .optional();
 
-// ── Create ────────────────────────────────────────────────────────────────────
-
+// No password here — the user sets it from the welcome email link
 export const createUserBody = z.object({
-  email: z.string().email("Invalid email").toLowerCase().trim(),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-  firstName: z.string().min(1).max(100).trim(),
-  lastName: z.string().min(1).max(100).trim(),
-  middleName: z.string().max(100).trim().optional().nullable(),
-  // schema field is nickName (camelCase) — matches User.nickName
-  // nickName: z.string().max(100).trim().optional().nullable(),
-  displayName: z.string().max(100).trim().optional().nullable(),
-  employeeId: z.string().max(50).trim().optional().nullable(),
-  phone: z.string().max(20).trim().optional().nullable(),
-  workingLocation: z.string().max(200).trim().optional().nullable(),
-  timezone: z.string().max(100).optional().nullable(),
-  // Use lenient date parsing — schema stores these as DateTime? (not timestamptz with time required)
-  dateOfBirth: isoDateString,
-  dateOfJoin: isoDateString,
+  email: z.string().email("Invalid email").trim().toLowerCase(),
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  middleName: optionalText(100),
+  displayName: optionalText(100),
+  employeeId: optionalText(50),
+  phone: optionalText(20),
+  workingLocation: optionalText(200),
+  timezone: optionalText(100),
+  dateOfBirth: optionalDate,
+  dateOfJoin: optionalDate,
   roleId: z.string().uuid("roleId must be a valid UUID"),
-  departmentId: z
-    .string()
-    .uuid("departmentId must be a valid UUID")
-    .optional()
-    .nullable(),
-  reportingToId: z
-    .string()
-    .uuid("reportingToId must be a valid UUID")
-    .optional()
-    .nullable(),
-  teamLeadId: z
-    .string()
-    .uuid("teamLeadId must be a valid UUID")
-    .optional()
-    .nullable(),
-  // Only a superAdmin can set this — controller should gate it separately if needed
-  isSuperAdmin: z.boolean().default(false),
+  departmentId: optionalId,
+  designationId: optionalId,
+  reportingToId: optionalId,
+  teamLeadId: optionalId,
+  businessUnitIds: z.array(z.string().uuid()).default([]),
+  serviceLineIds: z.array(z.string().uuid()).default([]),
+  isSuperAdmin: z.boolean().default(false), // only a super admin may set this
 });
 
-// ── Update — all fields optional, email + password not editable via this endpoint ──
-
+// email not editable; BU / SL lists are full replace when sent
 export const updateUserBody = createUserBody
-  .omit({ email: true, password: true })
+  .omit({ email: true })
+  .extend({
+    businessUnitIds: z.array(z.string().uuid()).optional(),
+    serviceLineIds: z.array(z.string().uuid()).optional(),
+    isSuperAdmin: z.boolean().optional(),
+  })
   .partial();
 
-// ── Targeted patch endpoints ──────────────────────────────────────────────────
-
-export const assignReportingBody = z.object({
-  // nullable = clear the reporting line
-  reportingToId: z.string().uuid().nullable(),
+export const adminResetPasswordBody = z.object({
+  newPassword: z.string().min(8, "Password must be at least 8 characters"),
 });
-
-export const assignTeamLeadBody = z.object({
-  // nullable = remove from team
-  teamLeadId: z.string().uuid().nullable(),
-});
-
-export const assignDepartmentBody = z.object({
-  // nullable = unassign department
-  departmentId: z.string().uuid().nullable(),
-});
-
-export const assignRoleBody = z.object({
-  roleId: z.string().uuid("roleId must be a valid UUID"),
-});
-
-// ── Params ────────────────────────────────────────────────────────────────────
-
-export const userIdParams = z.object({
-  id: z.string().uuid("User id must be a valid UUID"),
-});
-
-// ── List / search query ───────────────────────────────────────────────────────
 
 export const listUsersQuery = z.object({
-  search: z.string().optional(),
-
-  // direct field filters
-  roleId: z.string().optional(),
-  departmentId: z.string().optional(),
-  reportingToId: z.string().optional(),
-  isActive: z.enum(["true", "false"]).optional(),
-
-  // buId — users who have ACTIVE assignments in this BU (or any descendant)
-  // OR whose handled client spocs belong to this BU.
-  // Filtering uses BusinessUnit.ancestorIds GIN index.
-  buId: z.string().optional(),
-
-  // teamId is the UUID of the team lead user (teams have no separate model —
-  // a "team" is defined by User.teamLeadId pointing at its lead)
-  teamId: z.string().optional(),
-
-  // LEAD   → user has at least one active teamMember (they are someone's teamLeadId)
-  // MEMBER → user has teamLeadId set (they belong to a team)
-  // Note: CO_LEAD is not modelled separately in the schema — the enum value is
-  // accepted for forward-compat but resolves to the same branch as LEAD.
-  teamRole: z.enum(["LEAD", "CO_LEAD", "MEMBER"]).optional(),
-
-  // true  = user handles at least one active ClientSpoc
-  // false = user handles no active ClientSpoc
-  isClientHandler: z.enum(["true", "false"]).optional(),
-
-  // pagination + sort
-  page: z.string().default("1"),
-  limit: z.string().default("25"),
-  sortBy: z
-    .enum(["firstName", "lastName", "createdAt", "dateOfJoin"])
-    .default("firstName"),
+  search: z.string().trim().optional(),
+  roleId: z.string().uuid().optional(),
+  departmentId: z.string().uuid().optional(),
+  designationId: z.string().uuid().optional(),
+  reportingToId: z.string().uuid().optional(),
+  teamLeadId: z.string().uuid().optional(),
+  businessUnitId: z.string().uuid().optional(),
+  serviceLineId: z.string().uuid().optional(),
+  isActive: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
+  ...paginationQuery,
+  sortBy: z.enum(["firstName", "lastName", "createdAt", "dateOfJoin"]).default("firstName"),
   sortDir: z.enum(["asc", "desc"]).default("asc"),
 });
-
-// ── Inferred types ────────────────────────────────────────────────────────────
 
 export type CreateUserInput = z.infer<typeof createUserBody>;
 export type UpdateUserInput = z.infer<typeof updateUserBody>;

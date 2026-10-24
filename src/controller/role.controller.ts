@@ -3,459 +3,143 @@
 
 import { Request, Response } from "express";
 import prisma from "@/utils/prisma/client";
-import { PermissionScope, Prisma } from "@prisma/client";
-import type {
-  CreateRoleInput,
-  UpdateRoleInput,
-} from "@/validators/role.validator";
+import { createAuditLog } from "@/services/auditLogs.service";
+import { bustRolePermissionCache } from "@/services/permission.service";
+import { toGrantRows } from "@/controller/permission.controller";
+import { ApiError, notFound } from "@/utils/httpError";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SYSTEM MODULES — source of truth for what modules exist in the app
-// Add a new module here → it appears in the permissions matrix immediately
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const SYSTEM_MODULES = [
-  "requirements",
-  "assignments",
-  "clients",
-  "candidates",
-  "users",
-  "roles",
-  "business-units",
-  "departments",
-  "service-lines",
-  "pipeline-stages",
-  "audit-logs",
-  "auth-logs",
-  "reports",
-  "settings",
-  // "assignments",
-] as const;
-
-// File: role.controller.ts
-// Path: src/controllers/role.controller.ts
-
-// import { prisma } from '@/lib/prisma';
-import { getEnumValues, toLabel } from "@/utils/enum.util";
-// import type { Request, Response } from 'express';
-
-// ── GET /roles/canonical-options ────────────────────────────────────────────
-// Feeds the dropdown. Values come from the schema, not a hardcoded list.
-export const getCanonicalOptions = async (_req: Request, res: Response) => {
-  const options = getEnumValues("RoleCanonical").map((v) => ({
-    value: v,
-    label: toLabel(v),
-  }));
-  return res.json({ data: options });
-};
-
-// ── PATCH /roles/:id/canonical ──────────────────────────────────────────────
-export const updateRoleCanonical = async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { canonical } = req.body as { canonical?: string };
-
-  // validate against the same dynamic source — no drift possible
-  const allowed = getEnumValues("RoleCanonical");
-  if (!canonical || !allowed.includes(canonical)) {
-    return res
-      .status(400)
-      .json({ message: `Invalid canonical value: ${canonical}` });
-  }
-
-  const role = await prisma.role.update({
-    where: { id },
-    data: { canonical: canonical as any }, // validated above; safe cast
-    select: { id: true, canonical: true },
+// ── GET /roles — any logged-in user (role pickers)
+export const listRoles = async (_req: Request, res: Response) => {
+  const roles = await prisma.role.findMany({
+    orderBy: [{ isSystem: "desc" }, { name: "asc" }],
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      isSystem: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: { select: { users: true, permissions: true } },
+    },
   });
 
-  return res.json({ data: role });
+  res.json({ success: true, data: roles });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /roles/modules
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getModules = async (_req: Request, res: Response) => {
-  res.json({ success: true, data: SYSTEM_MODULES });
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /roles/scopes
-// Reads PermissionScope enum values directly from Prisma client —
-// always in sync with schema.prisma, zero manual maintenance
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SCOPE_DESCRIPTIONS: Record<string, string> = {
-  OWN: "Only records I created or own",
-  TEAM: "My team members (via team lead assignment)",
-  REPORTING: "My direct reports (one level down)",
-  REPORTING_LINE: "My entire reporting hierarchy (all levels below me)",
-  DEPARTMENT: "Everyone in my department",
-  BU: "Everyone in my business unit subtree",
-  ALL: "All records across the organization",
-};
-
-export const getScopes = async (_req: Request, res: Response) => {
-  const scopeValues = Object.values(PermissionScope);
-  const data = scopeValues.map((value) => ({
-    value,
-    label: value.replace(/_/g, " "),
-    desc: SCOPE_DESCRIPTIONS[value] ?? value,
-  }));
-  res.json({ success: true, data });
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER — build a permission create/upsert data object
-// Casts scope strings to PermissionScope enum so Prisma doesn't complain
-// ─────────────────────────────────────────────────────────────────────────────
-
-function toPermissionData(
-  p: CreateRoleInput["permissions"][number],
-  roleId?: string
-) {
-  return {
-    ...(roleId ? { roleId } : {}),
-    module: p.module,
-    canView: p.canView,
-    canAdd: p.canAdd,
-    canEdit: p.canEdit,
-    canDelete: p.canDelete,
-    canViewScope: p.canViewScope as PermissionScope,
-    canAddScope: p.canAddScope as PermissionScope,
-    canEditScope: p.canEditScope as PermissionScope,
-    canDeleteScope: p.canDeleteScope as PermissionScope,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /roles
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const listRoles = async (_req: Request, res: Response) => {
-  try {
-    const roles = await prisma.role.findMany({
-      orderBy: [{ isSystem: "desc" }, { name: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        isSystem: true,
-        canonical: true, // <- added
-        createdAt: true,
-        updatedAt: true,
-        _count: { select: { users: true, permissions: true } },
-        permissions: {
-          select: {
-            module: true,
-            canView: true,
-            canAdd: true,
-            canEdit: true,
-            canDelete: true,
-            canViewScope: true,
-            canAddScope: true,
-            canEditScope: true,
-            canDeleteScope: true,
-          },
-        },
-      },
-    });
-
-    res.json({ success: true, data: roles });
-  } catch (err) {
-    console.error("listRoles:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch roles" });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /roles/:id
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── GET /roles/:id
 export const getRoleById = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
+  const { id } = req.validatedParams;
 
-    const role = await prisma.role.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        isSystem: true,
-        createdAt: true,
-        updatedAt: true,
-        _count: { select: { users: true, permissions: true } },
-        permissions: {
-          select: {
-            id: true,
-            module: true,
-            canView: true,
-            canAdd: true,
-            canEdit: true,
-            canDelete: true,
-            canViewScope: true,
-            canAddScope: true,
-            canEditScope: true,
-            canDeleteScope: true,
-          },
-          orderBy: { module: "asc" },
-        },
-        users: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            employeeId: true,
-          },
-          take: 50,
-          orderBy: { firstName: "asc" },
-        },
+  const role = await prisma.role.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      isSystem: true,
+      createdAt: true,
+      updatedAt: true,
+      permissions: { select: { permissionKey: true, scope: true } },
+      users: {
+        where: { isActive: true },
+        select: { id: true, firstName: true, lastName: true, email: true },
+        orderBy: { firstName: "asc" },
+        take: 50,
       },
-    });
+      _count: { select: { users: true } },
+    },
+  });
 
-    if (!role) {
-      res.status(404).json({ success: false, message: "Role not found" });
-      return;
-    }
+  if (!role) throw notFound("Role");
 
-    // Merge DB permissions with full module list — modules with no saved
-    // permission get default "no access" values so the matrix always has all rows
-    const permissionsByModule = Object.fromEntries(
-      role.permissions.map((p) => [p.module, p])
-    );
-
-    const fullPermissions = SYSTEM_MODULES.map((module) => ({
-      module,
-      canView: false,
-      canAdd: false,
-      canEdit: false,
-      canDelete: false,
-      canViewScope: "OWN" as PermissionScope,
-      canAddScope: "OWN" as PermissionScope,
-      canEditScope: "OWN" as PermissionScope,
-      canDeleteScope: "OWN" as PermissionScope,
-      ...(permissionsByModule[module] ?? {}),
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        ...role,
-        permissions: fullPermissions,
-        modules: SYSTEM_MODULES,
-      },
-    });
-  } catch (err) {
-    console.error("getRoleById:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch role" });
-  }
+  res.json({ success: true, data: role });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /roles
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── POST /roles
 export const createRole = async (req: Request, res: Response) => {
-  try {
-    const body = req.body as CreateRoleInput;
-    const actorId = req.user!.id;
+  const { name, description, grants } = req.validatedBody;
 
-    const existing = await prisma.role.findUnique({
-      where: { name: body.name },
-    });
-    if (existing) {
-      res
-        .status(409)
-        .json({ success: false, message: "Role name already exists" });
-      return;
-    }
+  const role = await prisma.role.create({
+    data: {
+      name,
+      description: description ?? null,
+      permissions: { create: toGrantRows(grants) },
+    },
+    select: { id: true, name: true, description: true, isSystem: true, createdAt: true },
+  });
 
-    // Only persist rows where at least one action is enabled
-    const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
-    );
+  await createAuditLog({
+    actorId: req.user.id,
+    action: "CREATE",
+    module: "roles",
+    recordId: role.id,
+    newData: { name, grants },
+    req,
+  });
 
-    const role = await prisma.role.create({
-      data: {
-        name: body.name.trim().toUpperCase().replace(/\s+/g, "_"),
-        description: body.description ?? null,
-        isSystem: false,
-        permissions: {
-          create: activePermissions.map((p) => toPermissionData(p)),
-        },
-      },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        isSystem: true,
-        createdAt: true,
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "CREATE",
-        module: "roles",
-        recordId: role.id,
-        newData: { name: role.name },
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
-    });
-
-    res
-      .status(201)
-      .json({ success: true, data: role, message: "Role created" });
-  } catch (err) {
-    console.error("createRole:", err);
-    res.status(500).json({ success: false, message: "Failed to create role" });
-  }
+  res.status(201).json({ success: true, message: "Role created", data: role });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PUT /roles/:id — wipes and recreates active permissions
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── PUT /roles/:id — name / description only; grants go through /roles/:id/permissions
 export const updateRole = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const body = req.body as UpdateRoleInput;
-    const actorId = req.user!.id;
+  const { id } = req.validatedParams;
+  const body = req.validatedBody;
 
-    const existing = await prisma.role.findUnique({ where: { id } });
-    if (!existing) {
-      res.status(404).json({ success: false, message: "Role not found" });
-      return;
-    }
+  const existing = await prisma.role.findUnique({ where: { id } });
+  if (!existing) throw notFound("Role");
+  if (existing.isSystem) throw ApiError(400, "System roles cannot be edited", "SYSTEM_ROLE");
 
-    if (existing.isSystem && body.name && body.name !== existing.name) {
-      res.status(403).json({
-        success: false,
-        message: "System role names cannot be changed",
-      });
-      return;
-    }
+  const updated = await prisma.role.update({
+    where: { id },
+    data: {
+      ...(body.name !== undefined && { name: body.name }),
+      ...(body.description !== undefined && { description: body.description }),
+    },
+  });
 
-    if (body.name && body.name !== existing.name) {
-      const clash = await prisma.role.findUnique({
-        where: { name: body.name },
-      });
-      if (clash) {
-        res
-          .status(409)
-          .json({ success: false, message: "Role name already exists" });
-        return;
-      }
-    }
+  await createAuditLog({
+    actorId: req.user.id,
+    action: "UPDATE",
+    module: "roles",
+    recordId: id,
+    oldData: { name: existing.name, description: existing.description },
+    newData: body,
+    req,
+  });
 
-    const activePermissions = (body.permissions ?? []).filter(
-      (p) => p.canView || p.canAdd || p.canEdit || p.canDelete
-    );
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const role = await tx.role.update({
-        where: { id },
-        data: {
-          ...(body.name !== undefined && {
-            name: body.name.trim().toUpperCase().replace(/\s+/g, "_"),
-          }),
-          ...(body.description !== undefined && {
-            description: body.description,
-          }),
-        },
-      });
-
-      if (body.permissions !== undefined) {
-        await tx.rolePermission.deleteMany({ where: { roleId: id } });
-        if (activePermissions.length > 0) {
-          await tx.rolePermission.createMany({
-            data: activePermissions.map((p) => toPermissionData(p, id)),
-          });
-        }
-      }
-
-      return role;
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "UPDATE",
-        module: "roles",
-        recordId: id,
-        oldData: { name: existing.name },
-        newData: { name: body.name },
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
-    });
-
-    res.json({ success: true, data: updated, message: "Role updated" });
-  } catch (err) {
-    console.error("updateRole:", err);
-    res.status(500).json({ success: false, message: "Failed to update role" });
-  }
+  res.json({ success: true, message: "Role updated", data: updated });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DELETE /roles/:id
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── DELETE /roles/:id
 export const deleteRole = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const actorId = req.user!.id;
+  const { id } = req.validatedParams;
 
-    const role = await prisma.role.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        isSystem: true,
-        _count: { select: { users: true } },
-      },
-    });
+  const role = await prisma.role.findUnique({
+    where: { id },
+    select: { name: true, isSystem: true, _count: { select: { users: true } } },
+  });
 
-    if (!role) {
-      res.status(404).json({ success: false, message: "Role not found" });
-      return;
-    }
-    if (role.isSystem) {
-      res
-        .status(403)
-        .json({ success: false, message: "System roles cannot be deleted" });
-      return;
-    }
-    if (role._count.users > 0) {
-      res.status(409).json({
-        success: false,
-        message: `Cannot delete — ${role._count.users} user(s) assigned. Reassign them first.`,
-      });
-      return;
-    }
-
-    await prisma.role.delete({ where: { id } });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId,
-        action: "DELETE",
-        module: "roles",
-        recordId: id,
-        oldData: { name: role.name },
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] ?? null,
-      },
-    });
-
-    res.json({ success: true, message: "Role deleted" });
-  } catch (err) {
-    console.error("deleteRole:", err);
-    res.status(500).json({ success: false, message: "Failed to delete role" });
+  if (!role) throw notFound("Role");
+  if (role.isSystem) throw ApiError(400, "System roles cannot be deleted", "SYSTEM_ROLE");
+  if (role._count.users > 0) {
+    throw ApiError(
+      409,
+      `Cannot delete — ${role._count.users} user(s) assigned. Reassign them first.`,
+      "ROLE_IN_USE",
+    );
   }
+
+  await prisma.role.delete({ where: { id } }); // grants cascade
+  bustRolePermissionCache(id);
+
+  await createAuditLog({
+    actorId: req.user.id,
+    action: "DELETE",
+    module: "roles",
+    recordId: id,
+    oldData: { name: role.name },
+    req,
+  });
+
+  res.json({ success: true, message: "Role deleted" });
 };

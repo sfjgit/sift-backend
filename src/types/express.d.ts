@@ -1,69 +1,28 @@
-// types/express.d.ts
+// File: express.d.ts
+// Path: src/types/express.d.ts
+
+import type { PermissionScope } from "@prisma/client";
+import type { PermissionMap } from "../services/permission.service";
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  roleId: string;
+  isSuperAdmin: boolean;
+  departmentId: string | null;
+}
+
 declare global {
   namespace Express {
     interface Request {
-      //newly added
-      params: ParamsDictionary;
-      query: Query;
-
+      user: AuthUser; // set by authenticateUser
+      permissions?: PermissionMap; // set by authorize
+      scope?: PermissionScope | null; // set by authorize; null = unscoped action
       validatedBody: any;
       validatedQuery: any;
       validatedParams: any;
-      file: any;
-      permissionScope: any;
-      scopeFilter: any;
-      modulePermission: {
-        canView: boolean;
-        canAdd: boolean;
-        canEdit: boolean;
-        canDelete: boolean;
-        canViewScope: string;
-        canAddScope: string;
-        canEditScope: string;
-        canDeleteScope: string;
-      };
-      user: {
-        id: string;
-        email: string;
-        passwordHash: string;
-        firstName: string;
-        lastName: string;
-        middleName: string | null;
-        nickName: string | null;
-        displayName: string | null;
-        employeeId: string | null;
-        phone: string | null;
-        workingLocation: string | null;
-        timezone: string | null;
-        dateOfBirth: Date | null;
-        dateOfJoin: Date | null;
-        isSuperAdmin: boolean;
-        isActive: boolean;
-        roleId: string;
-        reportingToId: string | null;
-        teamLeadId: string | null;
-        departmentId: string | null;
-        createdById: string | null;
-        createdAt: Date;
-        updatedAt: Date;
-        role: {
-          id: string;
-          name: string;
-          permissions: {
-            module: string;
-            canView: boolean;
-            canAdd: boolean;
-            canEdit: boolean;
-            canDelete: boolean;
-            canViewScope: string;
-            canAddScope: string;
-            canEditScope: string;
-            canDeleteScope: string;
-          }[];
-        };
-      };
     }
   }
 }
-
-export {};

@@ -1,11 +1,14 @@
 // src/middleware/httpLogger.ts
 import morgan from "morgan";
+import type { Request } from "express";
 import { loggers } from "../utils/logger";
 import chalk from "chalk";
 
 // Custom token for response time with color
 morgan.token("response-time-colored", (req, res) => {
-  const responseTime = parseFloat(morgan["response-time"](req, res) || "0");
+  const responseTime = parseFloat(
+    (morgan as unknown as Record<string, morgan.TokenCallbackFn>)["response-time"]!(req, res) || "0",
+  );
   if (responseTime > 1000) return chalk.red(`${responseTime}ms`);
   if (responseTime > 500) return chalk.yellow(`${responseTime}ms`);
   return chalk.green(`${responseTime}ms`);
@@ -35,8 +38,8 @@ morgan.token("method-colored", (req) => {
 });
 
 // Custom token for URL with truncation
-morgan.token("url-truncated", (req) => {
-  const url = req?.originalUrl || req.url;
+morgan.token<Request>("url-truncated", (req) => {
+  const url = req.originalUrl || req.url;
   return url.length > 60 ? `${url.substring(0, 57)}...` : url;
 });
 

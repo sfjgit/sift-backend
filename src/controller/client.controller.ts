@@ -1,1485 +1,370 @@
-// controller/client.controller.ts
-import prisma from "@/utils/prisma/client";
+// File: client.controller.ts
+// Path: src/controller/client.controller.ts
+
 import { Request, Response } from "express";
-import { clientScopeWhere } from "@/middleware/scopeFilter.middleware";
-import { CreateClientInput } from "@/validators/client.validators";
+import { Prisma } from "@prisma/client";
+import prisma from "@/utils/prisma/client";
+import { clientScopeWhere } from "@/services/scope.service";
+import { assertLookups } from "@/services/lookup.service";
+import { logClientActivity } from "@/services/clientActivity.service";
+import { notifyUsers } from "@/services/notification.service";
+import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
+import { ApiError, notFound } from "@/utils/httpError";
+import type {
+  CreateClientInput,
+  ListClientsQuery,
+  UpdateClientInput,
+} from "@/validators/client.validators";
 
-// ── GET /clients// File: client.controller.ts (getClients function only)
-// Path: src/controller/client.controller.ts
+const PERSON = { id: true, firstName: true, lastName: true } as const;
+const LOOKUP = { id: true, code: true, label: true } as const;
 
-// File: client.controller.ts (read paths — replace getClients, getMyClients, getClientById)
-// Path: src/controller/client.controller.ts
-//
-// All three now select bands.value (NOT stringValue) so reads match the
-// write paths (createClient / updateClient) and the Band model.
+const CLIENT_LIST_SELECT = {
+  id: true,
+  name: true,
+  shortName: true,
+  cin: true,
+  website: true,
+  city: true,
+  state: true,
+  country: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+  industry: { select: LOOKUP },
+  category: { select: LOOKUP },
+  parentClient: { select: { id: true, name: true } },
+  createdBy: { select: PERSON },
+  _count: { select: { spocs: { where: { isActive: true } } } },
+} as const;
+
+const CLIENT_DETAIL_SELECT = {
+  ...CLIENT_LIST_SELECT,
+  linkedinUrl: true,
+  district: true,
+  pincode: true,
+  address: true,
+  approvedAt: true,
+  approvedBy: { select: PERSON },
+  childClients: {
+    where: { deletedAt: null },
+    select: { id: true, name: true, status: true },
+  },
+  notes: {
+    select: { id: true, content: true, createdAt: true, author: { select: PERSON } },
+    orderBy: { createdAt: "desc" },
+  },
+  documents: {
+    select: {
+      id: true,
+      fy: true,
+      fileKey: true,
+      fileName: true,
+      sourceUrl: true,
+      createdAt: true,
+      type: { select: LOOKUP },
+    },
+    orderBy: { fy: "desc" },
+  },
+  programs: {
+    select: {
+      id: true,
+      fy: true,
+      name: true,
+      budgetRs: true,
+      locations: true,
+      beneficiaries: true,
+      implementor: true,
+      sourceUrl: true,
+      sector: { select: LOOKUP },
+    },
+    orderBy: { fy: "desc" },
+  },
+} as const;
+
+const FINANCIAL_SELECT = {
+  id: true,
+  fy: true,
+  obligationRs: true,
+  budgetRs: true,
+  spentRs: true,
+  unspentRs: true,
+  evidence: true,
+  confidence: true,
+  isLocked: true,
+  updatedAt: true,
+} as const;
+
+// client by id within the caller's scope for this action — out of scope = 404
+const findClientInScope = async (req: Request, id: string) => {
+  const client = await prisma.client.findFirst({
+    where: { id, deletedAt: null, ...(await clientScopeWhere(req.user, req.scope!)) },
+    select: { id: true, name: true, status: true, approvedById: true },
+  });
+  if (!client) throw notFound("Client");
+  return client;
+};
 
 // ── GET /clients
-// File: client.controller.ts
-// Path: src/controllers/client.controller.ts
+export const listClients = async (req: Request, res: Response) => {
+  const q = req.validatedQuery as ListClientsQuery;
 
-export const getClients = async (req: Request, res: Response) => {
-  try {
-    const {
-      search,
-      status,
-      buId,
-      serviceLineId,
-      handlerId,
-      page = "1",
-      limit = "25",
-      sortBy = "createdAt",
-      sortDir = "desc",
-    } = req.query as Record<string, string>;
+  const spocFilter: Prisma.ClientSpocWhereInput = {
+    ...(q.handlerId && { handlerId: q.handlerId }),
+    ...(q.businessUnitId && { businessUnitId: q.businessUnitId }),
+    ...(q.serviceLineId && { serviceLineId: q.serviceLineId }),
+  };
 
-    const take = Math.min(Math.max(parseInt(limit) || 25, 1), 100);
-    const skip = (Math.max(parseInt(page) || 1, 1) - 1) * take; // take, not raw limit
-
-    const userId = req.user!.id;
-    const sf = req.scopeFilter!;
-    const isAll = req.user!.isSuperAdmin || sf.type === "ALL";
-
-    // ── who am I allowed to see through, from the existing ScopeFilter ──────
-    const visibleUserIds: string[] | null = isAll
-      ? null
-      : sf.type === "TEAM"
-      ? sf.teamMemberIds ?? [userId]
-      : sf.type === "REPORTING_LINE"
-      ? sf.reportingLineIds ?? [userId]
-      : sf.type === "REPORTING" || sf.type === "BU"
-      ? sf.subordinateIds ?? [userId]
-      : sf.type === "DEPARTMENT"
-      ? null // handled relationally below — no id set on ScopeFilter
-      : [userId]; // OWN
-
-    // ── ownership lives on the SPOC, not on createdById ────────────────────
-    const spocOwnership: any = isAll
-      ? {}
-      : sf.type === "DEPARTMENT"
-      ? {
+  const where: Prisma.ClientWhereInput = {
+    deletedAt: null,
+    AND: [
+      await clientScopeWhere(req.user, req.scope!),
+      {
+        ...(q.status && { status: q.status }),
+        ...(q.industryId && { industryId: q.industryId }),
+        ...(q.categoryId && { categoryId: q.categoryId }),
+        ...(Object.keys(spocFilter).length && {
+          spocs: { some: { isActive: true, ...spocFilter } },
+        }),
+        ...(q.search && {
           OR: [
-            { handler: { departmentId: sf.departmentId } },
-            {
-              clientSpocDms: {
-                some: { dm: { departmentId: sf.departmentId } },
-              },
-            },
+            { name: { contains: q.search, mode: "insensitive" } },
+            { shortName: { contains: q.search, mode: "insensitive" } },
+            { cin: { contains: q.search, mode: "insensitive" } },
           ],
-        }
-      : {
-          OR: [
-            { handlerId: { in: visibleUserIds! } },
-            { clientSpocDms: { some: { dmId: { in: visibleUserIds! } } } },
-          ],
-        };
-
-    // user-supplied spoc filters — merged into the SAME `some` as ownership
-    const spocFilter: any = {};
-    if (serviceLineId) spocFilter.serviceLineId = serviceLineId;
-    if (handlerId) spocFilter.handlerId = handlerId;
-    const hasSpocFilter = Object.keys(spocFilter).length > 0;
-
-    const AND: any[] = [];
-
-    if (!isAll) {
-      const creatorClause: any = { createdById: userId };
-      if (hasSpocFilter) {
-        creatorClause.spocs = { some: { isActive: true, ...spocFilter } };
-      }
-      AND.push({
-        OR: [
-          {
-            spocs: {
-              some: { isActive: true, ...spocOwnership, ...spocFilter },
-            },
-          },
-          creatorClause, // creator keeps visibility even with no spoc on them
-        ],
-      });
-    } else if (hasSpocFilter) {
-      AND.push({ spocs: { some: { isActive: true, ...spocFilter } } });
-    }
-
-    if (status) AND.push({ status });
-    if (buId) AND.push({ businessUnitId: buId });
-    if (search) {
-      AND.push({
-        OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { vmsName: { contains: search, mode: "insensitive" } },
-          { industry: { contains: search, mode: "insensitive" } },
-        ],
-      });
-    }
-
-    const where: any = { deletedAt: null, ...(AND.length ? { AND } : {}) };
-
-    const SORTABLE = ["name", "createdAt", "updatedAt", "status"];
-    const orderBy = SORTABLE.includes(sortBy)
-      ? { [sortBy]: (sortDir === "asc" ? "asc" : "desc") as "asc" | "desc" }
-      : { createdAt: "desc" as const };
-
-    const [total, clients] = await Promise.all([
-      prisma.client.count({ where }),
-      prisma.client.findMany({
-        where,
-        select: {
-          id: true,
-          name: true,
-          vmsName: true,
-          industry: true,
-          website: true,
-          country: true,
-          state: true,
-          city: true,
-          address: true,
-          status: true,
-          createdAt: true,
-          agreementType: true,
-          percentageValue: true,
-          bands: {
-            select: {
-              id: true,
-              name: true,
-              code: true,
-              rangeFrom: true,
-              rangeTo: true,
-              value: true,
-              experience: true,
-            },
-          },
-          businessUnit: { select: { id: true, name: true } },
-          parentClient: { select: { id: true, name: true } },
-          createdBy: { select: { id: true, firstName: true, lastName: true } },
-          spocs: {
-            where: { isActive: true },
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              designation: true,
-              isPrimary: true,
-              handler: {
-                select: { id: true, firstName: true, lastName: true },
-              },
-              serviceLine: { select: { id: true, name: true } },
-            },
-          },
-          _count: { select: { requirements: { where: { deletedAt: null } } } },
-        },
-        orderBy,
-        skip,
-        take,
-      }),
-    ]);
-
-    res.json({
-      success: true,
-      data: clients,
-      meta: {
-        total,
-        page: Math.max(parseInt(page) || 1, 1),
-        limit: take,
-        pages: Math.ceil(total / take),
+        }),
       },
-      permissions: {
-        canAdd: req.modulePermission.canAdd,
-        canEdit: req.modulePermission.canEdit,
-        canDelete: req.modulePermission.canDelete,
-      },
-    });
-  } catch (err) {
-    console.error("getClients:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch clients" });
-  }
-};
+    ],
+  };
 
-// ── GET /clients/mine — clients where I handle at least one active spoc
-export const getMyClients = async (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.id;
-    const { search, limit = "200" } = req.query as Record<string, string>;
-
-    const where: any = {
-      deletedAt: null,
-      status: "ACTIVE",
-      spocs: { some: { handlerId: userId, isActive: true } },
-    };
-
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { vmsName: { contains: search, mode: "insensitive" } },
-      ];
-    }
-
-    const clients = await prisma.client.findMany({
+  const [total, clients] = await Promise.all([
+    prisma.client.count({ where }),
+    prisma.client.findMany({
       where,
-      select: {
-        id: true,
-        name: true,
-        vmsName: true,
-        industry: true,
-        agreementType: true,
-        percentageValue: true,
-        bands: {
-          select: {
-            id: true,
-            name: true,
-            code: true,
-            rangeFrom: true,
-            rangeTo: true,
-            value: true,
-            experience: true,
-          },
-        },
-        businessUnit: { select: { id: true, name: true } },
-        spocs: {
-          where: { handlerId: userId, isActive: true },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            designation: true,
-            isPrimary: true,
-            serviceLine: { select: { id: true, name: true } },
-            businessUnit: { select: { id: true, name: true } },
-          },
-        },
-      },
-      orderBy: { name: "asc" },
-      take: Math.min(parseInt(limit), 500),
-    });
+      select: CLIENT_LIST_SELECT,
+      orderBy: { [q.sortBy]: q.sortDir },
+      ...toSkipTake(q),
+    }),
+  ]);
 
-    res.json({ success: true, data: clients });
-  } catch (err) {
-    console.error("getMyClients:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch clients" });
-  }
+  res.json({ success: true, data: clients, meta: pageMeta(total, q.page, q.limit) });
 };
 
-// ── GET /clients/:id
+// ── GET /clients/:id — SPOCs come from GET /spocs?clientId=
 export const getClientById = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
+  const { id } = req.validatedParams;
+  const canSeeFinancials = !!req.permissions!["clients.view_financials"];
 
-    const client = await prisma.client.findFirst({
-      where: { id, deletedAt: null, ...clientScopeWhere(req.scopeFilter) },
-      select: {
-        id: true,
-        name: true,
-        vmsName: true,
-        industry: true,
-        website: true,
-        country: true,
-        state: true,
-        city: true,
-        address: true,
-        status: true,
-        createdAt: true,
-        updatedAt: true,
-        approvedAt: true,
-        agreementType: true,
-        percentageValue: true,
-        bands: {
-          select: {
-            id: true,
-            name: true,
-            code: true,
-            rangeFrom: true,
-            rangeTo: true,
-            value: true,
-            experience: true,
-          },
-        },
-        businessUnit: { select: { id: true, name: true } },
-        parentClient: { select: { id: true, name: true } },
-        childClients: { select: { id: true, name: true, status: true } },
-        createdBy: { select: { id: true, firstName: true, lastName: true } },
-        approvedBy: { select: { id: true, firstName: true, lastName: true } },
-        spocs: {
-          orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            designation: true,
-            department: true,
-            isPrimary: true,
-            isActive: true,
-            notes: true,
-            createdAt: true,
-            handler: { select: { id: true, firstName: true, lastName: true } },
-            addedBy: { select: { id: true, firstName: true, lastName: true } },
-            serviceLine: { select: { id: true, name: true } },
-            businessUnit: { select: { id: true, name: true } },
-            clientSpocDms: {
-              orderBy: { createdAt: "asc" },
-              select: {
-                id: true,
-                spocId: true,
-                createdAt: true,
-                dm: {
-                  select: {
-                    id: true,
-                    firstName: true,
-                    lastName: true,
-                    displayName: true,
-                    email: true,
-                    role: { select: { id: true, name: true } },
-                  },
-                },
-              },
-            },
-          },
-        },
-        notes: {
-          select: {
-            id: true,
-            content: true,
-            createdAt: true,
-            author: { select: { id: true, firstName: true, lastName: true } },
-          },
-          orderBy: { createdAt: "desc" },
-        },
-        requirements: {
-          where: { deletedAt: null },
-          select: {
-            id: true,
-            reqCode: true,
-            title: true,
-            status: true,
-            priority: true,
-            totalOpenings: true,
-            createdAt: true,
-          },
-          orderBy: { createdAt: "desc" },
-          take: 20,
-        },
-        _count: { select: { requirements: true } },
-      },
-    });
+  const client = await prisma.client.findFirst({
+    where: { id, deletedAt: null, ...(await clientScopeWhere(req.user, req.scope!)) },
+    select: {
+      ...CLIENT_DETAIL_SELECT,
+      ...(canSeeFinancials && {
+        financials: { select: FINANCIAL_SELECT, orderBy: { fy: "desc" } },
+      }),
+    },
+  });
+  if (!client) throw notFound("Client");
 
-    if (!client) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    res.json({
-      success: true,
-      data: client,
-      permissions: {
-        canEdit: req.modulePermission.canEdit,
-        canDelete: req.modulePermission.canDelete,
-      },
-    });
-  } catch (err) {
-    console.error("getClientById:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch client" });
-  }
+  res.json({ success: true, data: client });
 };
 
-// ── GET /clients/mine — clients where I handle at least one active spoc
-// export const getMyClients = async (req: Request, res: Response) => {
-//   try {
-//     const userId = req.user!.id;
-//     const { search, limit = "200" } = req.query as Record<string, string>;
-
-//     const where: any = {
-//       deletedAt: null,
-//       status: "ACTIVE",
-//       spocs: { some: { handlerId: userId, isActive: true } },
-//     };
-
-//     if (search) {
-//       where.OR = [
-//         { name: { contains: search, mode: "insensitive" } },
-//         { vmsName: { contains: search, mode: "insensitive" } },
-//       ];
-//     }
-
-//     const clients = await prisma.client.findMany({
-//       where,
-//       select: {
-//         id: true,
-//         name: true,
-//         vmsName: true,
-//         industry: true,
-//         agreementType: true,
-//         percentageValue: true,
-//         bands: {
-//           select: {
-//             id: true,
-//             name: true,
-//             rangeFrom: true,
-//             rangeTo: true,
-//             stringValue: true,
-//             experience: true,
-//             code: true,
-//           },
-//         },
-//         businessUnit: { select: { id: true, name: true } },
-//         spocs: {
-//           where: { handlerId: userId, isActive: true },
-//           select: {
-//             id: true,
-//             firstName: true,
-//             lastName: true,
-//             designation: true,
-//             isPrimary: true,
-//             serviceLine: { select: { id: true, name: true } },
-//             businessUnit: { select: { id: true, name: true } },
-//           },
-//         },
-//       },
-//       orderBy: { name: "asc" },
-//       take: Math.min(parseInt(limit), 500),
-//     });
-
-//     res.json({ success: true, data: clients });
-//   } catch (err) {
-//     console.error("getMyClients:", err);
-//     res
-//       .status(500)
-//       .json({ success: false, message: "Failed to fetch clients" });
-//   }
-// };
-
-// // ── GET /clients/:id
-// // File: client.controller.ts
-// // Path: src/controller/client.controller.ts
-
-// // ─────────────────────────────────────────────────────────────────────────────
-// // getClientById — add clientSpocDms inside spocs select
-// // ─────────────────────────────────────────────────────────────────────────────
-
-// export const getClientById = async (req: Request, res: Response) => {
-//   try {
-//     const { id } = req.params;
-
-//     const client = await prisma.client.findFirst({
-//       where: { id, deletedAt: null, ...clientScopeWhere(req.scopeFilter) },
-//       select: {
-//         id: true,
-//         name: true,
-//         vmsName: true,
-//         industry: true,
-//         website: true,
-//         country: true,
-//         state: true,
-//         city: true,
-//         address: true,
-//         status: true,
-//         createdAt: true,
-//         updatedAt: true,
-//         approvedAt: true,
-//         agreementType: true,
-//         percentageValue: true,
-//         bands: {
-//           select: {
-//             id: true,
-//             name: true,
-//             rangeFrom: true,
-//             rangeTo: true,
-//             stringValue: true,
-//             experience: true,
-//             code: true,
-//           },
-//         },
-//         businessUnit: { select: { id: true, name: true } },
-//         parentClient: { select: { id: true, name: true } },
-//         childClients: { select: { id: true, name: true, status: true } },
-//         createdBy: { select: { id: true, firstName: true, lastName: true } },
-//         approvedBy: { select: { id: true, firstName: true, lastName: true } },
-//         spocs: {
-//           orderBy: { createdAt: "desc" },
-//           select: {
-//             id: true,
-//             firstName: true,
-//             lastName: true,
-//             email: true,
-//             phone: true,
-//             designation: true,
-//             department: true,
-//             isPrimary: true,
-//             isActive: true,
-//             notes: true,
-//             createdAt: true,
-//             handler: { select: { id: true, firstName: true, lastName: true } },
-//             addedBy: { select: { id: true, firstName: true, lastName: true } },
-//             serviceLine: { select: { id: true, name: true } },
-//             businessUnit: { select: { id: true, name: true } },
-//             // ── DM tags ───────────────────────────────────────────────────
-//             clientSpocDms: {
-//               orderBy: { createdAt: "asc" },
-//               select: {
-//                 id: true,
-//                 spocId: true,
-//                 createdAt: true,
-//                 dm: {
-//                   select: {
-//                     id: true,
-//                     firstName: true,
-//                     lastName: true,
-//                     displayName: true,
-//                     email: true,
-//                     role: { select: { id: true, name: true } },
-//                   },
-//                 },
-//               },
-//             },
-//           },
-//         },
-//         notes: {
-//           select: {
-//             id: true,
-//             content: true,
-//             createdAt: true,
-//             author: { select: { id: true, firstName: true, lastName: true } },
-//           },
-//           orderBy: { createdAt: "desc" },
-//         },
-//         requirements: {
-//           where: { deletedAt: null },
-//           select: {
-//             id: true,
-//             reqCode: true,
-//             title: true,
-//             status: true,
-//             priority: true,
-//             totalOpenings: true,
-//             createdAt: true,
-//           },
-//           orderBy: { createdAt: "desc" },
-//           take: 20,
-//         },
-//         _count: { select: { requirements: true } },
-//       },
-//     });
-
-//     if (!client) {
-//       res.status(404).json({ success: false, message: "Client not found" });
-//       return;
-//     }
-
-//     res.json({
-//       success: true,
-//       data: client,
-//       permissions: {
-//         canEdit: req.modulePermission.canEdit,
-//         canDelete: req.modulePermission.canDelete,
-//       },
-//     });
-//   } catch (err) {
-//     console.error("getClientById:", err);
-//     res.status(500).json({ success: false, message: "Failed to fetch client" });
-//   }
-// };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// getClientSpocs — add clientSpocDms so the standalone spocs endpoint
-// also returns DM tags (used by requirement forms / other places that call
-// GET /clients/:id/spocs directly)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const getClientSpocs = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId } = req.params;
-    const { mine } = req.query as Record<string, string>;
-    const userId = req.user!.id;
-    const isSuperAdmin = req.user!.isSuperAdmin;
-
-    const client = await prisma.client.findFirst({
-      where: { id: clientId, deletedAt: null },
-      select: { id: true },
-    });
-
-    if (!client) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    const where: any = { clientId, isActive: true };
-
-    if (mine === "true" || !isSuperAdmin) {
-      where.handlerId = userId;
-    }
-
-    const spocs = await prisma.clientSpoc.findMany({
-      where,
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        designation: true,
-        department: true,
-        isPrimary: true,
-        notes: true,
-        handler: { select: { id: true, firstName: true, lastName: true } },
-        serviceLine: { select: { id: true, name: true } },
-        businessUnit: { select: { id: true, name: true } },
-        // ── DM tags ─────────────────────────────────────────────────────────
-        clientSpocDms: {
-          orderBy: { createdAt: "asc" },
-          select: {
-            id: true,
-            spocId: true,
-            createdAt: true,
-            dm: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                displayName: true,
-                email: true,
-                role: { select: { id: true, name: true } },
-              },
-            },
-          },
-        },
-      },
-      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
-    });
-
-    res.json({ success: true, data: spocs });
-  } catch (err) {
-    console.error("getClientSpocs:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch spocs" });
-  }
-};
-
-// ── POST /clients
+// ── POST /clients — starts PENDING until approved
 export const createClient = async (req: Request, res: Response) => {
-  try {
-    const {
-      name,
-      vmsName,
-      industry,
-      website,
-      country,
-      state,
-      city,
-      address,
-      businessUnitId,
-      parentClientId,
-      agreementType,
-      bands,
-      percentage,
-    } = req.body as CreateClientInput;
+  const body = req.validatedBody as CreateClientInput;
 
-    const actorId = req.user!.id;
+  await assertLookups({
+    industryId: [body.industryId, "INDUSTRY"],
+    categoryId: [body.categoryId, "CLIENT_CATEGORY"],
+  });
 
-    const client = await prisma.client.create({
-      data: {
-        name,
-        vmsName: vmsName ?? null,
-        industry: industry ?? null,
-        website: website ?? null,
-        country: country ?? null,
-        state: state ?? null,
-        city: city ?? null,
-        address: address ?? null,
-
-        businessUnitId: businessUnitId ?? null,
-        parentClientId: parentClientId ?? null,
-
-        status: "PENDING",
-        createdById: actorId,
-
-        agreementType: agreementType ?? "FIXED",
-
-        percentageValue: agreementType === "FIXED" ? percentage ?? null : null,
-
-        bands:
-          agreementType === "BAND" && bands?.length
-            ? {
-                create: bands.map((band) => ({
-                  name: band.name ?? null,
-                  code: band.code,
-                  // stringValue: band.stringValue,
-                  rangeFrom: band.rangeFrom,
-                  rangeTo: band.rangeTo,
-                  value: band.value,
-                  experience: band.experience ?? null,
-                })),
-              }
-            : undefined,
-      },
-
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        createdAt: true,
-        bands: true,
-      },
+  const client = await prisma.$transaction(async (tx) => {
+    const c = await tx.client.create({
+      data: { ...definedOnly(body), createdById: req.user.id },
+      select: CLIENT_LIST_SELECT,
     });
 
-    res.status(201).json({
-      success: true,
-      message: "Client created",
-      data: client,
+    await logClientActivity(tx, {
+      clientId: c.id,
+      actorId: req.user.id,
+      type: "CLIENT_CREATED",
+      summary: `Client "${c.name}" created`,
     });
-  } catch (err) {
-    console.error("createClient:", err);
 
-    res.status(500).json({
-      success: false,
-      message: "Failed to create client",
-    });
-  }
+    return c;
+  });
+
+  res.status(201).json({ success: true, message: "Client created", data: client });
 };
-
-// File: client.controller.ts (updateClient — replace the existing PUT handler)
-// Path: src/controller/client.controller.ts
 
 // ── PATCH /clients/:id
-// Full client edit: scalars + agreement type + percentage + bands + status.
-// Partial by design — only fields present in the body are touched.
-export const updateClient1 = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const {
-      name,
-      vmsName,
-      industry,
-      website,
-      country,
-      state,
-      city,
-      address,
-      businessUnitId,
-      parentClientId,
-      status,
-      agreementType,
-      percentage,
-      bands,
-    } = req.body as Partial<CreateClientInput> & {
-      status?: "PENDING" | "ACTIVE" | "INACTIVE";
-    };
-
-    const actorId = req.user!.id;
-
-    const existing = await prisma.client.findFirst({
-      where: { id, deletedAt: null },
-      select: { id: true, agreementType: true, approvedById: true },
-    });
-
-    if (!existing) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    // The agreement type that will be in effect after this update.
-    const effectiveType = agreementType ?? existing.agreementType ?? "FIXED";
-
-    // Only rewrite pricing/bands when the request actually carries pricing intent.
-    const touchesPricing =
-      agreementType !== undefined ||
-      percentage !== undefined ||
-      bands !== undefined;
-
-    const data: any = {
-      ...(name !== undefined && { name }),
-      ...(vmsName !== undefined && { vmsName }),
-      ...(industry !== undefined && { industry }),
-      ...(website !== undefined && { website }),
-      ...(country !== undefined && { country }),
-      ...(state !== undefined && { state }),
-      ...(city !== undefined && { city }),
-      ...(address !== undefined && { address }),
-      ...(businessUnitId !== undefined && { businessUnitId }),
-      ...(parentClientId !== undefined && { parentClientId }),
-    };
-
-    // Status change — stamp approval metadata on first activation only,
-    // mirroring updateClientStatus so this path can't silently skip it.
-    if (status !== undefined) {
-      data.status = status;
-      if (status === "ACTIVE" && !existing.approvedById) {
-        data.approvedById = actorId;
-        data.approvedAt = new Date();
-      }
-    }
-
-    if (agreementType !== undefined) data.agreementType = agreementType;
-
-    // percentageValue is only meaningful for FIXED; null it out otherwise.
-    if (touchesPricing) {
-      data.percentageValue =
-        effectiveType === "FIXED" ? percentage ?? null : null;
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      await tx.client.update({ where: { id }, data });
-
-      // Bands: form rows carry no stable id, so replace wholesale.
-      // Runs when agreement type changed OR bands were sent.
-      if (touchesPricing) {
-        await tx.band.deleteMany({ where: { clientId: id } });
-
-        if (effectiveType === "BAND" && bands?.length) {
-          await tx.band.createMany({
-            data: bands.map((b) => ({
-              clientId: id,
-              name: b.name ?? null,
-              code: b.code,
-              rangeFrom: b.rangeFrom ?? null,
-              rangeTo: b.rangeTo ?? null,
-              value: b.value ?? null, // ⚠ column name — see note in reply
-              experience: b.experience ?? null,
-            })),
-          });
-        }
-      }
-
-      return tx.client.findUnique({
-        where: { id },
-        select: {
-          id: true,
-          name: true,
-          status: true,
-          updatedAt: true,
-          agreementType: true,
-          percentageValue: true,
-          bands: {
-            select: {
-              id: true,
-              name: true,
-              code: true,
-              rangeFrom: true,
-              rangeTo: true,
-              value: true,
-              experience: true,
-            },
-          },
-        },
-      });
-    });
-
-    res.json({ success: true, message: "Client updated", data: updated });
-  } catch (err) {
-    console.error("updateClient:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to update client" });
-  }
-};
-
-// ── PUT /clients/:id
 export const updateClient = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const {
-      name,
-      vmsName,
-      industry,
-      website,
-      country,
-      state,
-      city,
-      address,
-      businessUnitId,
-      parentClientId,
-      status,
-      agreementType,
-      percentage,
-      bands,
-    } = req.body as Partial<CreateClientInput> & {
-      status?: "PENDING" | "ACTIVE" | "INACTIVE";
-    };
+  const { id } = req.validatedParams;
+  const body = req.validatedBody as UpdateClientInput;
 
-    const actorId = req.user!.id;
-
-    const existing = await prisma.client.findFirst({
-      where: { id, deletedAt: null },
-      select: { id: true, agreementType: true, approvedById: true },
-    });
-
-    if (!existing) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    // The agreement type that will be in effect after this update.
-    const effectiveType = agreementType ?? existing.agreementType ?? "FIXED";
-
-    // Only rewrite pricing/bands when the request actually carries pricing intent.
-    const touchesPricing =
-      agreementType !== undefined ||
-      percentage !== undefined ||
-      bands !== undefined;
-
-    const data: any = {
-      ...(name !== undefined && { name }),
-      ...(vmsName !== undefined && { vmsName }),
-      ...(industry !== undefined && { industry }),
-      ...(website !== undefined && { website }),
-      ...(country !== undefined && { country }),
-      ...(state !== undefined && { state }),
-      ...(city !== undefined && { city }),
-      ...(address !== undefined && { address }),
-      ...(businessUnitId !== undefined && { businessUnitId }),
-      ...(parentClientId !== undefined && { parentClientId }),
-    };
-
-    // Status change — stamp approval metadata on first activation only,
-    // mirroring updateClientStatus so this path can't silently skip it.
-    if (status !== undefined) {
-      data.status = status;
-      if (status === "ACTIVE" && !existing.approvedById) {
-        data.approvedById = actorId;
-        data.approvedAt = new Date();
-      }
-    }
-
-    if (agreementType !== undefined) data.agreementType = agreementType;
-
-    // percentageValue is only meaningful for FIXED; null it out otherwise.
-    if (touchesPricing) {
-      data.percentageValue =
-        effectiveType === "FIXED" ? percentage ?? null : null;
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      await tx.client.update({ where: { id }, data });
-
-      // Bands: form rows carry no stable id, so replace wholesale.
-      // Runs when agreement type changed OR bands were sent.
-      if (touchesPricing) {
-        await tx.band.deleteMany({ where: { clientId: id } });
-
-        if (effectiveType === "BAND" && bands?.length) {
-          await tx.band.createMany({
-            data: bands.map((b) => ({
-              clientId: id,
-              name: b.name ?? null,
-              code: b.code,
-              rangeFrom: b.rangeFrom ?? null,
-              rangeTo: b.rangeTo ?? null,
-              value: b.value ?? null, // ⚠ column name — see note in reply
-              experience: b.experience ?? null,
-            })),
-          });
-        }
-      }
-
-      return tx.client.findUnique({
-        where: { id },
-        select: {
-          id: true,
-          name: true,
-          status: true,
-          updatedAt: true,
-          agreementType: true,
-          percentageValue: true,
-          bands: {
-            select: {
-              id: true,
-              name: true,
-              code: true,
-              rangeFrom: true,
-              rangeTo: true,
-              value: true,
-              experience: true,
-            },
-          },
-        },
-      });
-    });
-
-    res.json({ success: true, message: "Client updated", data: updated });
-  } catch (err) {
-    console.error("updateClient:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to update client" });
+  await findClientInScope(req, id);
+  if (body.parentClientId === id) {
+    throw ApiError(400, "A client cannot be its own parent", "CLIENT_CYCLE");
   }
+
+  await assertLookups({
+    industryId: [body.industryId, "INDUSTRY"],
+    categoryId: [body.categoryId, "CLIENT_CATEGORY"],
+  });
+
+  const data = definedOnly(body);
+  const changed = Object.keys(data);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const c = await tx.client.update({ where: { id }, data, select: CLIENT_LIST_SELECT });
+
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "CLIENT_UPDATED",
+      summary: `Updated ${changed.join(", ")}`,
+      meta: { changes: data },
+    });
+
+    return c;
+  });
+
+  res.json({ success: true, message: "Client updated", data: updated });
 };
 
-// ── PATCH /clients/:id/status
+// ── PATCH /clients/:id/status — first activation stamps approver
 export const updateClientStatus = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    const actorId = req.user!.id;
+  const { id } = req.validatedParams;
+  const { status } = req.validatedBody;
 
-    const data: any = { status };
-    if (status === "ACTIVE") {
-      data.approvedById = actorId;
-      data.approvedAt = new Date();
-    }
+  const existing = await prisma.client.findFirst({
+    where: { id, deletedAt: null },
+    select: { status: true, approvedById: true },
+  });
+  if (!existing) throw notFound("Client");
 
-    const updated = await prisma.client.update({
+  const firstApproval = status === "ACTIVE" && !existing.approvedById;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const c = await tx.client.update({
       where: { id },
-      data,
-      select: { id: true, name: true, status: true },
+      data: {
+        status,
+        ...(firstApproval && { approvedById: req.user.id, approvedAt: new Date() }),
+      },
+      select: { id: true, name: true, status: true, approvedAt: true },
     });
 
-    res.json({
-      success: true,
-      message: `Client ${status.toLowerCase()}`,
-      data: updated,
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: firstApproval ? "CLIENT_APPROVED" : "CLIENT_UPDATED",
+      summary: `Status ${existing.status} → ${status}`,
     });
-  } catch (err) {
-    console.error("updateClientStatus:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to update status" });
-  }
+
+    return c;
+  });
+
+  res.json({ success: true, message: `Client ${status.toLowerCase()}`, data: updated });
 };
 
-// ── DELETE /clients/:id
+// ── DELETE /clients/:id — soft delete
 export const deleteClient = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
+  const { id } = req.validatedParams;
+  const client = await findClientInScope(req, id);
 
-    const existing = await prisma.client.findFirst({
-      where: { id, deletedAt: null },
-      select: { id: true },
-    });
+  await prisma.$transaction([
+    prisma.client.update({ where: { id }, data: { deletedAt: new Date() } }),
+    prisma.auditLog.create({
+      data: {
+        actorId: req.user.id,
+        action: "DELETE",
+        module: "clients",
+        recordId: id,
+        oldData: { name: client.name },
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      },
+    }),
+  ]);
 
-    if (!existing) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    await prisma.client.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
-
-    res.json({ success: true, message: "Client deleted" });
-  } catch (err) {
-    console.error("deleteClient:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to delete client" });
-  }
+  res.json({ success: true, message: "Client deleted" });
 };
 
-// ── POST /clients/:id/notes
+// ── GET /clients/:id/activities
+export const listClientActivities = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const q = req.validatedQuery as { page: number; limit: number };
+  await findClientInScope(req, id);
+
+  const where = { clientId: id };
+  const [total, rows] = await Promise.all([
+    prisma.clientActivity.count({ where }),
+    prisma.clientActivity.findMany({
+      where,
+      select: {
+        id: true,
+        type: true,
+        summary: true,
+        meta: true,
+        createdAt: true,
+        actor: { select: PERSON },
+        spoc: { select: { id: true, firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      ...toSkipTake(q),
+    }),
+  ]);
+
+  res.json({ success: true, data: rows, meta: pageMeta(total, q.page, q.limit) });
+};
+
+// ── POST /clients/:id/notes — anyone who can see the client; handlers get notified
 export const addClientNote = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId } = req.params;
-    const { content } = req.body;
-    const actorId = req.user!.id;
+  const { id } = req.validatedParams;
+  const { content } = req.validatedBody;
+  const client = await findClientInScope(req, id);
 
-    const note = await prisma.clientNote.create({
-      data: { clientId, authorId: actorId, content: content.trim() },
-      select: {
-        id: true,
-        content: true,
-        createdAt: true,
-        author: { select: { id: true, firstName: true, lastName: true } },
-      },
+  const note = await prisma.$transaction(async (tx) => {
+    const n = await tx.clientNote.create({
+      data: { clientId: id, authorId: req.user.id, content },
+      select: { id: true, content: true, createdAt: true, author: { select: PERSON } },
     });
 
-    res.status(201).json({ success: true, data: note });
-  } catch (err) {
-    console.error("addClientNote:", err);
-    res.status(500).json({ success: false, message: "Failed to add note" });
-  }
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "NOTE_ADDED",
+      summary: content.length > 120 ? `${content.slice(0, 117)}...` : content,
+    });
+
+    const handlers = await tx.clientSpoc.findMany({
+      where: { clientId: id, isActive: true },
+      select: { handlerId: true },
+      distinct: ["handlerId"],
+    });
+    await notifyUsers(tx, handlers.map((h) => h.handlerId), req.user.id, {
+      type: "NOTE_ADDED",
+      title: `New note on ${client.name}`,
+      body: `${req.user.firstName} ${req.user.lastName}: ${content.slice(0, 200)}`,
+      referenceId: id,
+      referenceType: "CLIENT",
+    });
+
+    return n;
+  });
+
+  res.status(201).json({ success: true, data: note });
 };
 
-// ── DELETE /clients/:id/notes/:noteId
+// ── DELETE /clients/:id/notes/:noteId — own notes only
 export const deleteClientNote = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, noteId } = req.params;
-    const actorId = req.user!.id;
+  const { id, noteId } = req.validatedParams;
 
-    const note = await prisma.clientNote.findFirst({
-      where: { id: noteId, clientId, authorId: actorId },
-    });
+  const { count } = await prisma.clientNote.deleteMany({
+    where: { id: noteId, clientId: id, authorId: req.user.id },
+  });
+  if (!count) throw notFound("Note");
 
-    if (!note) {
-      res
-        .status(404)
-        .json({ success: false, message: "Note not found or not yours" });
-      return;
-    }
-
-    await prisma.clientNote.delete({ where: { id: noteId } });
-    res.json({ success: true, message: "Note deleted" });
-  } catch (err) {
-    console.error("deleteClientNote:", err);
-    res.status(500).json({ success: false, message: "Failed to delete note" });
-  }
-};
-
-// ── POST /clients/:id/spocs
-export const addSpoc = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId } = req.params;
-    const {
-      firstName,
-      lastName,
-      email,
-      phone,
-      designation,
-      department,
-      handlerId,
-      serviceLineId,
-      businessUnitId,
-      isPrimary,
-      notes,
-    } = req.body;
-    const actorId = req.user!.id;
-
-    const client = await prisma.client.findFirst({
-      where: { id: clientId, deletedAt: null },
-      select: { id: true },
-    });
-
-    if (!client) {
-      res.status(404).json({ success: false, message: "Client not found" });
-      return;
-    }
-
-    // duplicate check — same client + email + service line
-    if (email) {
-      const existing = await prisma.clientSpoc.findUnique({
-        where: {
-          clientId_email_serviceLineId: { clientId, email, serviceLineId },
-        },
-      });
-      if (existing) {
-        res.status(409).json({
-          success: false,
-          message:
-            "SPOC with this email already exists for this client + service line",
-        });
-        return;
-      }
-    }
-
-    const spoc = await prisma.clientSpoc.create({
-      data: {
-        clientId,
-        firstName,
-        lastName,
-        email: email ?? null,
-        phone: phone ?? null,
-        designation: designation ?? null,
-        department: department ?? null,
-        handlerId,
-        serviceLineId,
-        businessUnitId,
-        isPrimary: isPrimary ?? false,
-        isActive: true,
-        notes: notes ?? null,
-        addedById: actorId,
-      },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        designation: true,
-        department: true,
-        isPrimary: true,
-        isActive: true,
-        notes: true,
-        createdAt: true,
-        handler: { select: { id: true, firstName: true, lastName: true } },
-        serviceLine: { select: { id: true, name: true } },
-        businessUnit: { select: { id: true, name: true } },
-      },
-    });
-
-    res.status(201).json({ success: true, message: "SPOC added", data: spoc });
-  } catch (err) {
-    console.error("addSpoc:", err);
-    res.status(500).json({ success: false, message: "Failed to add SPOC" });
-  }
-};
-
-// ── PATCH /clients/:id/spocs/:spocId
-export const updateSpoc = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, spocId } = req.params;
-    const {
-      firstName,
-      lastName,
-      email,
-      phone,
-      designation,
-      department,
-      handlerId,
-      serviceLineId, // ← added
-      businessUnitId, // ← added
-      isPrimary,
-      notes,
-    } = req.body;
-
-    const existing = await prisma.clientSpoc.findFirst({
-      where: { id: spocId, clientId },
-    });
-
-    if (!existing) {
-      res.status(404).json({ success: false, message: "SPOC not found" });
-      return;
-    }
-
-    const updated = await prisma.clientSpoc.update({
-      where: { id: spocId },
-      data: {
-        ...(firstName !== undefined && { firstName }),
-        ...(lastName !== undefined && { lastName }),
-        ...(email !== undefined && { email }),
-        ...(phone !== undefined && { phone }),
-        ...(designation !== undefined && { designation }),
-        ...(department !== undefined && { department }),
-        ...(handlerId !== undefined && { handlerId }),
-        ...(serviceLineId !== undefined && { serviceLineId }), // ← added
-        ...(businessUnitId !== undefined && { businessUnitId }), // ← added
-        ...(isPrimary !== undefined && { isPrimary }),
-        ...(notes !== undefined && { notes }),
-      },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        phone: true,
-        designation: true,
-        isPrimary: true,
-        isActive: true,
-        handler: { select: { id: true, firstName: true, lastName: true } },
-        serviceLine: { select: { id: true, name: true } }, // already there, will reflect new value
-        businessUnit: { select: { id: true, name: true } }, // already there, will reflect new value
-      },
-    });
-
-    res.json({ success: true, message: "SPOC updated", data: updated });
-  } catch (err) {
-    console.error("updateSpoc:", err);
-    res.status(500).json({ success: false, message: "Failed to update SPOC" });
-  }
-};
-
-// ── DELETE /clients/:id/spocs/:spocId
-export const removeSpoc = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, spocId } = req.params;
-
-    const existing = await prisma.clientSpoc.findFirst({
-      where: { id: spocId, clientId, isActive: true },
-    });
-
-    if (!existing) {
-      res.status(404).json({ success: false, message: "SPOC not found" });
-      return;
-    }
-
-    await prisma.clientSpoc.update({
-      where: { id: spocId },
-      data: { isActive: false },
-    });
-
-    res.json({ success: true, message: "SPOC removed" });
-  } catch (err) {
-    console.error("removeSpoc:", err);
-    res.status(500).json({ success: false, message: "Failed to remove SPOC" });
-  }
-};
-
-// File: client.controller.ts  (append these functions)
-// Path: src/controller/client.controller.ts
-
-// import prisma from "@/utils/prisma/client";
-// import { Request, Response } from "express";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SPOC DM MANAGEMENT
-// ClientSpocDM — junction between ClientSpoc and User (the delivery manager)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── GET /clients/:id/spocs/:spocId/dms
-// Returns all DMs currently tagged on this SPOC
-export const getSpocDMs = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, spocId } = req.params;
-
-    const spoc = await prisma.clientSpoc.findFirst({
-      where: { id: spocId, clientId, isActive: true },
-      select: { id: true },
-    });
-
-    if (!spoc) {
-      res.status(404).json({ success: false, message: "SPOC not found" });
-      return;
-    }
-
-    const dms = await prisma.clientSpocDM.findMany({
-      where: { spocId },
-      select: {
-        id: true,
-        spocId: true,
-        createdAt: true,
-        dm: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            displayName: true,
-            email: true,
-            employeeId: true,
-            role: { select: { id: true, name: true } },
-            department: { select: { id: true, name: true } },
-          },
-        },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    res.json({ success: true, data: dms });
-  } catch (err) {
-    console.error("getSpocDMs:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to fetch SPOC DMs" });
-  }
-};
-
-// ── POST /clients/:id/spocs/:spocId/dms
-// Tag one or more DMs on a SPOC (idempotent — skips duplicates)
-export const addSpocDMs = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, spocId } = req.params;
-    // Accept a single dmId or an array for bulk tagging
-    const { dmId, dmIds } = req.body as { dmId?: string; dmIds?: string[] };
-
-    const spoc = await prisma.clientSpoc.findFirst({
-      where: { id: spocId, clientId, isActive: true },
-      select: { id: true },
-    });
-
-    if (!spoc) {
-      res.status(404).json({ success: false, message: "SPOC not found" });
-      return;
-    }
-
-    // Normalise to array — accept single dmId or dmIds[]
-    const ids: string[] = dmIds?.length ? dmIds : dmId ? [dmId] : [];
-
-    if (!ids.length) {
-      res
-        .status(400)
-        .json({ success: false, message: "dmId or dmIds required" });
-      return;
-    }
-
-    // Verify all provided IDs are real, active users
-    const users = await prisma.user.findMany({
-      where: { id: { in: ids }, isActive: true },
-      select: { id: true },
-    });
-
-    if (users.length !== ids.length) {
-      res.status(400).json({
-        success: false,
-        message: "One or more user IDs are invalid or inactive",
-      });
-      return;
-    }
-
-    // Find already-tagged DMs to skip duplicates without an error
-    const existing = await prisma.clientSpocDM.findMany({
-      where: { spocId, dmId: { in: ids } },
-      select: { dmId: true },
-    });
-    const existingSet = new Set(existing.map((e) => e.dmId));
-    const toInsert = ids.filter((id) => !existingSet.has(id));
-
-    let created: { id: string; dmId: string }[] = [];
-    if (toInsert.length) {
-      // createMany doesn't return records in Prisma by default — use a transaction
-      await prisma.$transaction(
-        toInsert.map((id) =>
-          prisma.clientSpocDM.create({
-            data: { spocId, dmId: id },
-            select: { id: true, dmId: true },
-          })
-        )
-      );
-
-      // Re-fetch to return full shape
-      created = await prisma.clientSpocDM
-        .findMany({
-          where: { spocId, dmId: { in: toInsert } },
-          select: {
-            id: true,
-            dmId: true,
-            createdAt: true,
-            dm: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                displayName: true,
-                email: true,
-                role: { select: { id: true, name: true } },
-              },
-            },
-          },
-        })
-        .then((rows) => rows as any[]);
-    }
-
-    res.status(201).json({
-      success: true,
-      message: toInsert.length
-        ? `${toInsert.length} DM(s) tagged`
-        : "All DMs already tagged — no changes made",
-      data: created,
-      skipped: existing.map((e) => e.dmId),
-    });
-  } catch (err) {
-    console.error("addSpocDMs:", err);
-    res.status(500).json({ success: false, message: "Failed to tag DM(s)" });
-  }
-};
-
-// ── DELETE /clients/:id/spocs/:spocId/dms/:spocDmId
-// Remove a single DM tag by the ClientSpocDM row id (not the dmId)
-export const removeSpocDM = async (req: Request, res: Response) => {
-  try {
-    const { id: clientId, spocId, spocDmId } = req.params;
-
-    // Confirm SPOC belongs to this client
-    const spoc = await prisma.clientSpoc.findFirst({
-      where: { id: spocId, clientId, isActive: true },
-      select: { id: true },
-    });
-
-    if (!spoc) {
-      res.status(404).json({ success: false, message: "SPOC not found" });
-      return;
-    }
-
-    const entry = await prisma.clientSpocDM.findFirst({
-      where: { id: spocDmId, spocId },
-    });
-
-    if (!entry) {
-      res.status(404).json({ success: false, message: "DM tag not found" });
-      return;
-    }
-
-    await prisma.clientSpocDM.delete({ where: { id: spocDmId } });
-
-    res.json({ success: true, message: "DM untagged from SPOC" });
-  } catch (err) {
-    console.error("removeSpocDM:", err);
-    res.status(500).json({ success: false, message: "Failed to untag DM" });
-  }
+  res.json({ success: true, message: "Note deleted" });
 };
