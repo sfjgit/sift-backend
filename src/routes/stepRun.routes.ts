@@ -5,8 +5,14 @@ import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import { authorize } from "@/middleware/authorize";
 import { validate, idParams } from "@/validators/validator";
-import { listStepRunsQuery } from "@/validators/stepRun.validators";
-import { listStepRuns, getStepRunById } from "@/controller/stepRun.controller";
+import { listStepRunsQuery, startStepRunBody, stepOverviewQuery } from "@/validators/stepRun.validators";
+import {
+  listStepRuns,
+  getStepRunById,
+  createStepRun,
+  stopStepRun,
+  getStepOverview,
+} from "@/controller/stepRun.controller";
 
 const router = Router();
 const read = authorize("step_runs.read");
@@ -14,7 +20,12 @@ const read = authorize("step_runs.read");
 router.use(authenticateUser);
 
 router.get("/", read, validate.query(listStepRunsQuery), listStepRuns);
+router.post("/", authorize("step_runs.run"), validate.body(startStepRunBody), createStepRun);
+// before /:id so "overview" isn't read as an id
+router.get("/overview", read, validate.query(stepOverviewQuery), getStepOverview);
+
 // out of scope = 404, never 403
 router.get("/:id", read, validate.params(idParams), getStepRunById);
+router.post("/:id/stop", authorize("step_runs.cancel"), validate.params(idParams), stopStepRun);
 
 export default router;

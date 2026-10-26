@@ -7,10 +7,11 @@
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { stepRunScopeWhere } from "@/services/scope.service";
+import { clientScopeWhere, stepRunScopeWhere } from "@/services/scope.service";
+import { startRun, stopRun } from "@/services/pipeline/launch.service";
 import { pageMeta, toSkipTake } from "@/utils/pagination";
-import { notFound } from "@/utils/httpError";
-import type { ListStepRunsQuery } from "@/validators/stepRun.validators";
+import { ApiError, notFound } from "@/utils/httpError";
+import type { ListStepRunsQuery, StartStepRunInput } from "@/validators/stepRun.validators";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const STEP = { id: true, key: true, label: true, target: true } as const;
@@ -110,4 +111,80 @@ export const getStepRunById = async (req: Request, res: Response) => {
   if (!run) throw notFound("Step run");
 
   res.json({ success: true, data: run });
+};
+
+// client must be visible to the caller under clients.read — out of scope = 404
+const assertClientVisible = async (req: Request, clientId: string) => {
+  const grant = req.permissions!["clients.read"];
+  if (!grant) throw notFound("Client");
+  const where = grant === true ? {} : await clientScopeWhere(req.user, grant);
+  const found = await prisma.client.count({ where: { id: clientId, deletedAt: null, ...where } });
+  if (!found) throw notFound("Client");
+};
+
+// ── POST /step-runs — start a step (or "Run all steps") for one client
+export const createStepRun = async (req: Request, res: Response) => {
+  const body = req.validatedBody as StartStepRunInput;
+  await assertClientVisible(req, body.clientId);
+
+  const writesOutreach = body.stepKey === "emails" ||
+    (body.stepKey === "run_all" && Array.isArray(body.options?.steps) && (body.options!.steps as string[]).includes("emails"));
+  if (writesOutreach && !req.permissions!["outreach.generate"]) {
+    throw ApiError(403, "Missing permission: outreach.generate", "FORBIDDEN");
+  }
+
+  const { run, duplicate } = await startRun(req.user, body);
+  res.status(duplicate ? 200 : 201).json({
+    success: true,
+    message: duplicate ? "Already running — showing the existing run" : "Run started",
+    data: { ...run, duplicate },
+  });
+};
+
+// ── POST /step-runs/:id/stop
+export const stopStepRun = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const visible = await prisma.stepRun.count({
+    where: { id, ...(await stepRunScopeWhere(req.user, req.scope!)) },
+  });
+  if (!visible) throw notFound("Step run");
+  await stopRun(id, req.user);
+  res.json({ success: true, message: "Stop requested" });
+};
+
+// ── GET /step-runs/overview?clientId= — per step: latest run + what the client has
+export const getStepOverview = async (req: Request, res: Response) => {
+  const { clientId } = req.validatedQuery as { clientId: string };
+  await assertClientVisible(req, clientId);
+
+  const [steps, latest, spocs, approved, documents, financials, programs, packs] = await Promise.all([
+    prisma.pipelineStep.findMany({
+      where: { isActive: true },
+      select: { id: true, key: true, label: true, uiOrder: true, userClientLimit: true,
+        service: { select: { isActive: true, lastHealthOk: true } } },
+      orderBy: [{ uiOrder: { sort: "asc", nulls: "last" } }],
+    }),
+    prisma.stepRun.findMany({
+      // children of "Run all steps" count as that step's latest run too
+      where: { clientId },
+      distinct: ["stepId"],
+      orderBy: { createdAt: "desc" },
+      select: STEP_RUN_LITE_SELECT,
+    }),
+    prisma.clientSpoc.count({ where: { clientId, isActive: true } }),
+    prisma.clientSpoc.count({ where: { clientId, isActive: true, approvalStatus: "APPROVED" } }),
+    prisma.clientDocument.count({ where: { clientId } }),
+    prisma.clientFinancial.count({ where: { clientId } }),
+    prisma.clientProgram.count({ where: { clientId } }),
+    prisma.outreachPack.count({ where: { clientId } }),
+  ]);
+
+  const byStep = new Map(latest.map((r) => [r.step.id, r]));
+  res.json({
+    success: true,
+    data: {
+      counts: { spocs, approvedSpocs: approved, documents, financials, programs, outreachPacks: packs },
+      steps: steps.map((s) => ({ ...s, lastRun: byStep.get(s.id) ?? null })),
+    },
+  });
 };

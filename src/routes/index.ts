@@ -22,6 +22,8 @@ import faqRoutes from "./faq.routes";
 import pipelineStepRoutes from "./pipelineStep.routes";
 import stepRunRoutes from "./stepRun.routes";
 import outreachRoutes from "./outreach.routes";
+import integrationRoutes from "./integration.routes";
+import svcRoutes from "./svc.routes";
 
 const router = Router();
 
@@ -48,9 +50,12 @@ router.use("/notifications", notificationRoutes);
 router.use("/pipeline-steps", pipelineStepRoutes);
 router.use("/step-runs", stepRunRoutes);
 router.use("/outreach", outreachRoutes);
+router.use("/integrations", integrationRoutes);
 router.use("/reports", reportRoutes);
 router.use("/search", searchRoutes);
 
+// external services — service key, not user JWT
+router.use("/svc", svcRoutes);
 // per-user + help
 router.use("/views", viewRoutes);
 router.use("/faqs", faqRoutes);

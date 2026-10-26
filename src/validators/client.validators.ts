@@ -2,7 +2,7 @@
 // Path: src/validators/client.validators.ts
 
 import { z } from "zod";
-import { ClientStatus, EmailStatus, ValidationBand } from "@prisma/client";
+import { ClientStatus, EmailStatus, SpocApprovalStatus, ValidationBand } from "@prisma/client";
 import { optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
 const optionalUrl = z
@@ -153,6 +153,11 @@ export const listSpocsQuery = z.object({
   salesStatusId: z.string().uuid().optional(),
   emailStatus: z.nativeEnum(EmailStatus).optional(),
   validationBand: z.nativeEnum(ValidationBand).optional(),
+  approvalStatus: z.nativeEnum(SpocApprovalStatus).optional(),
+  reviewFlag: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
   isActive: z
     .enum(["true", "false"])
     .transform((v) => v === "true")
@@ -179,6 +184,14 @@ const bulkIds = (what: string) =>
     .min(1, `Select at least one ${what}`)
     .max(200, "At most 200 at a time")
     .transform((ids) => [...new Set(ids)]);
+
+export const spocApprovalBody = z.object({
+  spocIds: bulkIds("SPOC"),
+  decision: z.nativeEnum(SpocApprovalStatus),
+  note: optionalText(500),
+});
+
+export type SpocApprovalInput = z.infer<typeof spocApprovalBody>;
 
 export const bulkAssignSpocsBody = z.object({
   spocIds: bulkIds("SPOC"),

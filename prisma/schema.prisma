@@ -67,6 +67,12 @@ enum ValidationBand {
   NOT_USABLE
 }
 
+enum SpocApprovalStatus {
+  PENDING
+  APPROVED // cleared for outreach
+  REJECTED
+}
+
 enum StepTarget {
   CLIENT
   SPOC
@@ -100,6 +106,8 @@ enum ClientActivityType {
   STEP_RUN_STARTED
   STEP_RUN_FINISHED
   STEP_RUN_FAILED
+  SPOC_APPROVED
+  SPOC_REJECTED
 }
 
 enum NotificationType {
@@ -275,6 +283,7 @@ model User {
 
   spocsHandled            ClientSpoc[]           @relation("SpocHandler")
   spocsAdded              ClientSpoc[]           @relation("SpocAddedBy")
+  spocsApproved           ClientSpoc[]           @relation("SpocApprovedBy")
   spocAssignmentsReceived ClientSpocAssignment[] @relation("SpocAssignedTo")
   spocAssignmentsGiven    ClientSpocAssignment[] @relation("SpocAssignedBy")
 
@@ -555,6 +564,18 @@ model ClientSpoc {
   validationChecks Json? // { v_name, v_designation, v_email, v_linkedin, v_phone, suggestion }
   validatedAt      DateTime?
 
+  // where each contact field came from — { email: "report", phone: "apollo", linkedin: "brightdata" }
+  fieldSources Json?
+  reviewFlag   Boolean @default(false)
+  reviewReason String?
+
+  // a person decides who gets outreach; services only fill and score
+  approvalStatus SpocApprovalStatus @default(PENDING)
+  approvedById   String?
+  approvedBy     User?              @relation("SpocApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  approvalNote   String?
+
   isPrimary Boolean @default(false)
   isActive  Boolean @default(true)
   notes     String?
@@ -583,6 +604,7 @@ model ClientSpoc {
   @@index([serviceLineId])
   @@index([salesStatusId])
   @@index([validationBand])
+  @@index([approvalStatus])
 }
 
 // handler history; active row = endedAt null

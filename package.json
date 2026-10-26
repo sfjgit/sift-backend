@@ -14,7 +14,8 @@
     "migrate:deploy": "npx prisma migrate deploy",
     "perm:prune": "tsx src/scripts/permissions.prune.ts",
     "typecheck": "tsc --noEmit",
-    "perm:migrate": "tsx src/scripts/permissions.migrate.ts"
+    "perm:migrate": "tsx src/scripts/permissions.migrate.ts",
+    "seed:pipeline": "tsx src/scripts/pipeline.seed.ts"
   },
   "prisma": {
     "seed": "tsx src/seed.ts"

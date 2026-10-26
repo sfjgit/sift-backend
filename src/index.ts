@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import app from "./server";
 import prisma from "./utils/prisma/client";
+import { startReconciler } from "./services/pipeline/reconciler.service";
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ async function startServer() {
       console.log(
         `🚀 CRM core service on http://localhost:${PORT}`
       );
+      startReconciler();
     });
   } catch (error) {
     console.error("❌ Failed to connect to DB:", error);

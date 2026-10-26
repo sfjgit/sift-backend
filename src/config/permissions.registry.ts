@@ -116,6 +116,7 @@ export const MODULES = {
       update: { label: "Edit", scoped: true, requires: ["spocs.read"] },
       delete: { label: "Deactivate", scoped: true, requires: ["spocs.read"] },
       assign: { label: "Assign / reassign", scoped: true, requires: ["spocs.read"] },
+      approve: { label: "Approve for outreach", scoped: true, requires: ["spocs.read"] },
       export: { label: "Export", scoped: true, requires: ["spocs.read"], reserved: true },
       view_contact: { label: "See email / phone", scoped: false, requires: ["spocs.read"] },
     },
@@ -127,7 +128,7 @@ export const MODULES = {
     description: "Generated outreach packs and mail sequences.",
     actions: {
       read: { label: "View", scoped: true, requires: ["clients.read"] },
-      generate: { label: "Generate", scoped: true, requires: ["outreach.read"], reserved: true },
+      generate: { label: "Generate", scoped: false, requires: ["outreach.read", "step_runs.run"] },
     },
   },
   step_runs: {
@@ -137,8 +138,8 @@ export const MODULES = {
     description: "Enrichment runs sent to the CSR pipeline.",
     actions: {
       read: { label: "View runs", scoped: true },
-      run: { label: "Run steps", scoped: false, requires: ["step_runs.read"], reserved: true },
-      cancel: { label: "Stop runs", scoped: true, requires: ["step_runs.read"], reserved: true },
+      run: { label: "Run steps", scoped: false, requires: ["step_runs.read"] },
+      cancel: { label: "Stop runs", scoped: true, requires: ["step_runs.read"] },
     },
   },
 
@@ -214,7 +215,7 @@ export const MODULES = {
     order: 34,
     description: "External services and pipeline step configuration.",
     actions: {
-      manage: { label: "Configure", scoped: false, reserved: true },
+      manage: { label: "Configure", scoped: false },
     },
   },
   audit: {

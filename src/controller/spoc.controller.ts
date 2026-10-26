@@ -7,6 +7,7 @@ import prisma from "@/utils/prisma/client";
 import { isUserInScope, spocScopeWhere } from "@/services/scope.service";
 import { assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
+import { toNameKey } from "@/utils/names";
 import { notifyUsers } from "@/services/notification.service";
 import type { PermissionMap } from "@/services/permission.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
@@ -15,6 +16,7 @@ import type {
   BulkAssignSpocsInput,
   CreateSpocInput,
   ListSpocsQuery,
+  SpocApprovalInput,
   UpdateSpocInput,
 } from "@/validators/client.validators";
 
@@ -37,6 +39,14 @@ const SPOC_SELECT = {
   validationScore: true,
   validationBand: true,
   validatedAt: true,
+  validationChecks: true,
+  fieldSources: true,
+  reviewFlag: true,
+  reviewReason: true,
+  approvalStatus: true,
+  approvedAt: true,
+  approvalNote: true,
+  approvedBy: { select: { id: true, firstName: true, lastName: true } },
   isPrimary: true,
   isActive: true,
   notes: true,
@@ -59,14 +69,6 @@ export const toSpocResponse = <T extends { email: string | null; phone: string |
   spoc: T,
   map: PermissionMap,
 ): T => (map["spocs.view_contact"] ? spoc : { ...spoc, email: null, phone: null });
-
-// normalized full name — dedupe key per client
-const toNameKey = (first: string, last?: string | null) =>
-  `${first} ${last ?? ""}`
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 
 const spocLookups = (body: UpdateSpocInput) =>
   assertLookups({
@@ -131,6 +133,8 @@ export const listSpocs = async (req: Request, res: Response) => {
         ...(q.salesStatusId && { salesStatusId: q.salesStatusId }),
         ...(q.emailStatus && { emailStatus: q.emailStatus }),
         ...(q.validationBand && { validationBand: q.validationBand }),
+        ...(q.approvalStatus && { approvalStatus: q.approvalStatus }),
+        ...(q.reviewFlag !== undefined && { reviewFlag: q.reviewFlag }),
         ...(q.search && {
           OR: (["firstName", "lastName", "email", "designation"] as const).map((field) => ({
             [field]: { contains: q.search, mode: "insensitive" },
@@ -204,6 +208,10 @@ export const createSpoc = async (req: Request, res: Response) => {
         ...definedOnly(body),
         nameKey: toNameKey(body.firstName, body.lastName),
         addedById: req.user.id,
+        // added by a person = already vetted; pipeline SPOCs start PENDING
+        approvalStatus: "APPROVED",
+        approvedById: req.user.id,
+        approvedAt: new Date(),
         assignments: {
           create: { assignedToId: body.handlerId, assignedById: req.user.id },
         },
@@ -453,5 +461,56 @@ export const bulkAssignSpocs = async (req: Request, res: Response) => {
     success: true,
     message: `${eligible.length} SPOC${eligible.length === 1 ? "" : "s"} reassigned`,
     data: { updated: eligible.length, skipped },
+  });
+};
+
+// ── POST /spocs/approval — a person decides who gets outreach
+export const decideSpocApproval = async (req: Request, res: Response) => {
+  const body = req.validatedBody as SpocApprovalInput;
+
+  const spocs = await prisma.clientSpoc.findMany({
+    where: {
+      id: { in: body.spocIds },
+      isActive: true,
+      ...(await spocScopeWhere(req.user, req.scope!)),
+    },
+    select: { id: true, clientId: true, firstName: true, lastName: true, approvalStatus: true },
+  });
+
+  const changed = spocs.filter((s) => s.approvalStatus !== body.decision);
+  const decided = body.decision !== "PENDING";
+
+  await prisma.$transaction(async (tx) => {
+    await tx.clientSpoc.updateMany({
+      where: { id: { in: changed.map((s) => s.id) } },
+      data: {
+        approvalStatus: body.decision,
+        approvedById: decided ? req.user.id : null,
+        approvedAt: decided ? new Date() : null,
+        approvalNote: body.note ?? null,
+      },
+    });
+
+    for (const s of changed) {
+      if (!decided) continue;
+      await logClientActivity(tx, {
+        clientId: s.clientId,
+        spocId: s.id,
+        actorId: req.user.id,
+        type: body.decision === "APPROVED" ? "SPOC_APPROVED" : "SPOC_REJECTED",
+        summary: `${`${s.firstName} ${s.lastName ?? ""}`.trim()} ${body.decision === "APPROVED" ? "approved" : "rejected"} for outreach`,
+        ...(body.note && { meta: { note: body.note } }),
+      });
+    }
+  });
+
+  res.json({
+    success: true,
+    message: `${changed.length} SPOC(s) set to ${body.decision.toLowerCase()}`,
+    data: {
+      updated: changed.length,
+      unchanged: spocs.length - changed.length,
+      notFound: body.spocIds.length - spocs.length, // out of scope or inactive
+    },
   });
 };

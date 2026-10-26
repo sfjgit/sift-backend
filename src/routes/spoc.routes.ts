@@ -10,6 +10,7 @@ import {
   bulkAssignSpocsBody,
   createSpocBody,
   listSpocsQuery,
+  spocApprovalBody,
   updateSpocBody,
 } from "@/validators/client.validators";
 import {
@@ -20,6 +21,7 @@ import {
   assignSpoc,
   deleteSpoc,
   bulkAssignSpocs,
+  decideSpocApproval,
 } from "@/controller/spoc.controller";
 
 const router = Router();
@@ -36,6 +38,13 @@ router.patch(
   authorize("spocs.assign"),
   validate.body(bulkAssignSpocsBody),
   bulkAssignSpocs,
+);
+
+router.post(
+  "/approval",
+  authorize("spocs.approve"),
+  validate.body(spocApprovalBody),
+  decideSpocApproval,
 );
 
 // out of scope = 404, never 403

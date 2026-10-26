@@ -14,10 +14,17 @@ export interface AuthUser {
   departmentId: string | null;
 }
 
+export interface AuthService {
+  id: string;
+  code: string;
+  scopes: string[];
+}
+
 declare global {
   namespace Express {
     interface Request {
       user: AuthUser; // set by authenticateUser
+      service?: AuthService; // set by authenticateService (/api/svc only)
       permissions?: PermissionMap; // set by authorize
       scope?: PermissionScope | null; // set by authorize; null = unscoped action
       validatedBody: any;
