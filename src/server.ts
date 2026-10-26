@@ -48,6 +48,8 @@ const allowedOrigins = [
   "https://ats-frontend-rose.vercel.app",
   "https://sfj-web-usq5.vercel.app",
   "https://www.sfjbs.com",
+
+  "https://sift-eight-pi.vercel.app",
 ];
 
 app.use(cookieParser());
@@ -68,7 +70,7 @@ app.use(
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
-  }),
+  })
 );
 
 // Helmet - sets various HTTP headers for security
@@ -83,7 +85,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
   handler: (req, res) => {
     loggers.warn(
-      `Rate limit exceeded for IP: ${req.ip} on ${req.method} ${req.originalUrl}`,
+      `Rate limit exceeded for IP: ${req.ip} on ${req.method} ${req.originalUrl}`
     );
     res.status(429).json({
       success: false,
@@ -109,7 +111,7 @@ app.use(
     loggers.info("Root route accessed");
     next();
   },
-  router,
+  router
 );
 
 app.get("/", (_req, res) => {
@@ -178,7 +180,13 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       return;
     }
     if (err.code === "P2025") {
-      res.status(404).json({ success: false, code: "NOT_FOUND", message: "Record not found" });
+      res
+        .status(404)
+        .json({
+          success: false,
+          code: "NOT_FOUND",
+          message: "Record not found",
+        });
       return;
     }
     if (err.code === "P2003") {
