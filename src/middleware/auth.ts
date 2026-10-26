@@ -2,6 +2,7 @@
 // Path: src/middleware/auth.ts
 
 import { verifyAccessToken } from "@/utils/jwt";
+import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { config } from "dotenv";
 import { Request, Response, NextFunction } from "express";
@@ -22,7 +23,7 @@ export const AUTH_USER_SELECT = {
   isSuperAdmin: true,
   departmentId: true,
   isActive: true,
-} as const;
+} as const satisfies Prisma.UserSelect;
 
 // ─── Authenticate User ────────────────────────────────────────────────────────
 // JWT contains only { id } — everything else fetched fresh from DB every request

@@ -34,7 +34,7 @@ const createLookupBody = z.object({
 const updateLookupBody = createLookupBody.omit({ type: true }).partial();
 
 const router = Router();
-const manage = authorize("admin.manage_lookups");
+const manage = authorize("lookups.manage");
 
 router.use(authenticateUser);
 

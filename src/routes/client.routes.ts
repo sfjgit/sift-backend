@@ -6,13 +6,20 @@ import { authenticateUser } from "@/middleware/auth";
 import { authorize } from "@/middleware/authorize";
 import { validate, idParams } from "@/validators/validator";
 import {
+  bulkClientStatusBody,
   clientActivitiesQuery,
   clientNoteBody,
   clientStatusBody,
   createClientBody,
+  createLocationBody,
+  documentParams,
   listClientsQuery,
+  locationParams,
   noteParams,
+  saveTechnologyBody,
+  technologyParams,
   updateClientBody,
+  updateLocationBody,
 } from "@/validators/client.validators";
 import {
   listClients,
@@ -24,6 +31,13 @@ import {
   listClientActivities,
   addClientNote,
   deleteClientNote,
+  addClientLocation,
+  updateClientLocation,
+  removeClientLocation,
+  saveClientTechnology,
+  removeClientTechnology,
+  bulkUpdateClientStatus,
+  getClientDocumentUrl,
 } from "@/controller/client.controller";
 
 const router = Router();
@@ -33,6 +47,14 @@ router.use(authenticateUser);
 
 router.get("/", read, validate.query(listClientsQuery), listClients);
 router.post("/", authorize("clients.create"), validate.body(createClientBody), createClient);
+
+// bulk — before /:id so "bulk-status" isn't read as an id
+router.patch(
+  "/bulk-status",
+  authorize("clients.approve"),
+  validate.body(bulkClientStatusBody),
+  bulkUpdateClientStatus,
+);
 
 router.get("/:id", read, validate.params(idParams), getClientById);
 router.patch(
@@ -56,13 +78,54 @@ router.get(
   listClientActivities,
 );
 
-// notes — anyone who can see the client
+// documents — presigned read URL, never the raw S3 key
+router.get(
+  "/:id/documents/:documentId/url",
+  authorize("client_documents.read"),
+  validate.params(documentParams),
+  getClientDocumentUrl,
+);
+
+// notes — read with the client; delete: own notes, or anyone's with client_notes.delete_any
 router.post(
   "/:id/notes",
-  read,
+  authorize("client_notes.create"),
   validate.request({ params: idParams, body: clientNoteBody }),
   addClientNote,
 );
 router.delete("/:id/notes/:noteId", read, validate.params(noteParams), deleteClientNote);
+
+// locations + technologies
+router.post(
+  "/:id/locations",
+  authorize("client_locations.create"),
+  validate.request({ params: idParams, body: createLocationBody }),
+  addClientLocation,
+);
+router.patch(
+  "/:id/locations/:locationId",
+  authorize("client_locations.update"),
+  validate.request({ params: locationParams, body: updateLocationBody }),
+  updateClientLocation,
+);
+router.delete(
+  "/:id/locations/:locationId",
+  authorize("client_locations.delete"),
+  validate.params(locationParams),
+  removeClientLocation,
+);
+
+router.put(
+  "/:id/technologies",
+  authorize("client_technologies.update"),
+  validate.request({ params: idParams, body: saveTechnologyBody }),
+  saveClientTechnology,
+);
+router.delete(
+  "/:id/technologies/:technologyId",
+  authorize("client_technologies.delete"),
+  validate.params(technologyParams),
+  removeClientTechnology,
+);
 
 export default router;

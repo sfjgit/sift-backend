@@ -41,6 +41,9 @@ const allowedOrigins = [
   "http://localhost:3001",
   "http://localhost:3002",
   "http://localhost:3003",
+  // local production-build / automated UI testing
+  "http://localhost:3123",
+  "http://localhost:3177",
   "https://ats-alpha-olive.vercel.app",
   "https://ats-frontend-rose.vercel.app",
   "https://sfj-web-usq5.vercel.app",

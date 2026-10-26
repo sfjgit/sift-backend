@@ -9,15 +9,18 @@ import prisma from "@/utils/prisma/client";
 import { getReportingLineIds, userScopeWhere } from "@/services/scope.service";
 import { logAuthEvent } from "@/services/authLog.service";
 import { sendMail } from "@/utils/mailer";
+import { getUserPermissionMap } from "@/services/permission.service";
+import { forbidden, grantScope } from "@/services/grant.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
 import type {
   CreateUserInput,
   ListUsersQuery,
   UpdateUserInput,
+  UserOptionsQuery,
 } from "@/validators/user.validators";
 
-const PERSON = { id: true, firstName: true, lastName: true, employeeId: true } as const;
+const PERSON = { id: true, firstName: true, lastName: true, employeeId: true } as const satisfies Prisma.UserSelect;
 
 const USER_LIST_SELECT = {
   id: true,
@@ -44,7 +47,7 @@ const USER_LIST_SELECT = {
       spocsHandled: { where: { isActive: true } },
     },
   },
-} as const;
+} as const satisfies Prisma.UserSelect;
 
 const USER_DETAIL_SELECT = {
   ...USER_LIST_SELECT,
@@ -57,7 +60,7 @@ const USER_DETAIL_SELECT = {
   serviceLines: { select: { serviceLine: { select: { id: true, name: true } } } },
   subordinates: { where: { isActive: true }, select: PERSON, orderBy: { firstName: "asc" } },
   teamMembers: { where: { isActive: true }, select: PERSON, orderBy: { firstName: "asc" } },
-} as const;
+} as const satisfies Prisma.UserSelect;
 
 // non-super-admins can't create, edit or reset a super admin
 const assertCanManage = (actor: Request["user"], target: { isSuperAdmin: boolean }) => {
@@ -328,4 +331,50 @@ export const adminResetPassword = async (req: Request, res: Response) => {
     success: true,
     message: `Password reset for ${target.firstName} ${target.lastName}. All sessions invalidated.`,
   });
+};
+
+// ── GET /users/options — picker rows; scope depends on what the list is for
+//   assign → spocs.assign scope (403 without it)
+//   filter → spocs.read scope, else users.read, else just the caller
+export const listUserOptions = async (req: Request, res: Response) => {
+  const q = req.validatedQuery as UserOptionsQuery;
+  const map = await getUserPermissionMap(req.user);
+
+  let scopeWhere: Prisma.UserWhereInput;
+  if (q.for === "assign") {
+    const scope = grantScope(map, "spocs.assign");
+    if (!scope) throw forbidden(["spocs.assign"]);
+    scopeWhere = await userScopeWhere(req.user, scope);
+  } else {
+    const scope = grantScope(map, "spocs.read") ?? grantScope(map, "users.read");
+    scopeWhere = scope ? await userScopeWhere(req.user, scope) : { id: req.user.id };
+  }
+
+  const users = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      AND: [
+        scopeWhere,
+        q.search
+          ? {
+              OR: (["firstName", "lastName", "email", "employeeId"] as const).map((field) => ({
+                [field]: { contains: q.search, mode: "insensitive" },
+              })),
+            }
+          : {},
+      ],
+    },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      employeeId: true,
+      designation: { select: { id: true, name: true } },
+    },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+    take: q.limit,
+  });
+
+  res.json({ success: true, data: users });
 };

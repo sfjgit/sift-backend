@@ -2,7 +2,7 @@
 // Path: src/routes/master.routes.ts
 //
 // /service-lines, /departments, /designations — read: any logged-in user,
-// write: admin.manage_lookups
+// write: org.manage
 
 import { Router } from "express";
 import { z } from "zod";
@@ -23,7 +23,7 @@ export const masterRouter = (
 ) => {
   const c = masterController(model, label);
   const router = Router();
-  const manage = authorize("admin.manage_lookups");
+  const manage = authorize("org.manage");
 
   router.use(authenticateUser);
 

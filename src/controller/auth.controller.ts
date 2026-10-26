@@ -1,6 +1,7 @@
 // File: auth.controller.ts
 // Path: src/controller/auth.controller.ts
 
+import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
@@ -32,7 +33,7 @@ const SESSION_USER_SELECT = {
   role: { select: { id: true, name: true } },
   department: { select: { id: true, name: true } },
   designation: { select: { id: true, name: true } },
-} as const;
+} as const satisfies Prisma.UserSelect;
 
 const sessionPayload = async (userId: string) => {
   const user = await prisma.user.findUniqueOrThrow({

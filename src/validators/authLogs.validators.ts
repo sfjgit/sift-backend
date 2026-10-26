@@ -21,3 +21,16 @@ export const listAuthLogsQuery = z.object({
 });
 
 export type ListAuthLogsQuery = z.infer<typeof listAuthLogsQuery>;
+
+export const listAuditLogsQuery = z.object({
+  actorId: z.string().uuid("actorId must be a valid UUID").optional(),
+  module: z.string().trim().optional(),
+  action: z.string().trim().optional(),
+  recordId: z.string().trim().optional(),
+  startDate: isoDateString,
+  endDate: isoDateString,
+  ...paginationQuery,
+  sortDir: z.enum(["asc", "desc"]).default("desc"),
+});
+
+export type ListAuditLogsQuery = z.infer<typeof listAuditLogsQuery>;

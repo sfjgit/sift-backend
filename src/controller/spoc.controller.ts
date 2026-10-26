@@ -12,6 +12,7 @@ import type { PermissionMap } from "@/services/permission.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
 import type {
+  BulkAssignSpocsInput,
   CreateSpocInput,
   ListSpocsQuery,
   UpdateSpocInput,
@@ -46,10 +47,11 @@ const SPOC_SELECT = {
   addedBy: { select: PERSON },
   businessUnit: { select: { id: true, name: true } },
   serviceLine: { select: { id: true, name: true } },
+  location: { select: { id: true, name: true, city: true, state: true } },
   source: { select: LOOKUP },
   emailSource: { select: LOOKUP },
   salesStatus: { select: LOOKUP },
-} as const;
+} as const satisfies Prisma.ClientSpocSelect;
 
 // ── field mask ───────────────────────────────────────────────────────────────
 
@@ -72,6 +74,15 @@ const spocLookups = (body: UpdateSpocInput) =>
     emailSourceId: [body.emailSourceId, "EMAIL_SOURCE"],
     salesStatusId: [body.salesStatusId, "SALES_STATUS"],
   });
+
+// location must be an active address of the SPOC's own client
+const assertLocation = async (clientId: string, locationId: string | null | undefined) => {
+  if (!locationId) return;
+  const found = await prisma.clientLocation.count({
+    where: { id: locationId, clientId, isActive: true },
+  });
+  if (!found) throw ApiError(400, "Location does not belong to this client", "INVALID_LOCATION");
+};
 
 // SPOC by id within the caller's scope for this action — out of scope = 404
 const findSpocInScope = async (req: Request, id: string) => {
@@ -185,6 +196,7 @@ export const createSpoc = async (req: Request, res: Response) => {
 
   await assertAssignable(req, body.handlerId);
   await spocLookups(body);
+  await assertLocation(client.id, body.locationId);
 
   const spoc = await prisma.$transaction(async (tx) => {
     const s = await tx.clientSpoc.create({
@@ -234,6 +246,7 @@ export const updateSpoc = async (req: Request, res: Response) => {
 
   const existing = await findSpocInScope(req, id);
   await spocLookups(body);
+  await assertLocation(existing.clientId, body.locationId);
 
   const data: Prisma.ClientSpocUncheckedUpdateInput = definedOnly(body);
 
@@ -346,4 +359,99 @@ export const deleteSpoc = async (req: Request, res: Response) => {
   });
 
   res.json({ success: true, message: "SPOC removed" });
+};
+
+// ── PATCH /spocs/bulk-assign — assignSpoc's rules per SPOC; one notification
+export const bulkAssignSpocs = async (req: Request, res: Response) => {
+  const { spocIds, assignToId, reason } = req.validatedBody as BulkAssignSpocsInput;
+
+  // target is the same for every row — a bad target fails the whole request
+  await assertAssignable(req, assignToId);
+
+  const found = await prisma.clientSpoc.findMany({
+    where: { id: { in: spocIds }, ...(await spocScopeWhere(req.user, req.scope!)) },
+    select: {
+      id: true,
+      clientId: true,
+      firstName: true,
+      lastName: true,
+      handlerId: true,
+      isActive: true,
+    },
+  });
+  const byId = new Map(found.map((s) => [s.id, s]));
+
+  const skipped: { id: string; reason: string }[] = [];
+  const eligible: typeof found = [];
+  for (const id of spocIds) {
+    const s = byId.get(id);
+    // out of scope looks the same as missing
+    if (!s) skipped.push({ id, reason: "SPOC not found" });
+    else if (!s.isActive) skipped.push({ id, reason: "SPOC is inactive" });
+    else if (s.handlerId === assignToId) {
+      skipped.push({ id, reason: "SPOC is already assigned to this user" });
+    } else eligible.push(s);
+  }
+
+  if (eligible.length) {
+    const now = new Date();
+    const ids = eligible.map((s) => s.id);
+
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.clientSpocAssignment.updateMany({
+          where: { spocId: { in: ids }, endedAt: null },
+          data: { endedAt: now },
+        });
+        await tx.clientSpocAssignment.createMany({
+          data: ids.map((spocId) => ({
+            spocId,
+            assignedToId: assignToId,
+            assignedById: req.user.id,
+            reason: reason ?? null,
+            assignedAt: now,
+          })),
+        });
+        await tx.clientSpoc.updateMany({
+          where: { id: { in: ids } },
+          data: { handlerId: assignToId },
+        });
+
+        for (const s of eligible) {
+          await logClientActivity(tx, {
+            clientId: s.clientId,
+            spocId: s.id,
+            actorId: req.user.id,
+            type: "SPOC_REASSIGNED",
+            summary: `SPOC ${`${s.firstName} ${s.lastName ?? ""}`.trim()} reassigned`,
+            meta: {
+              fromUserId: s.handlerId,
+              toUserId: assignToId,
+              reason: reason ?? null,
+              bulk: true,
+            },
+          });
+        }
+
+        const first = eligible[0]!;
+        await notifyUsers(tx, [assignToId], req.user.id, {
+          type: "SPOC_ASSIGNED",
+          title:
+            eligible.length === 1
+              ? `SPOC assigned to you: ${`${first.firstName} ${first.lastName ?? ""}`.trim()}`
+              : `${eligible.length} SPOCs assigned to you`,
+          body: reason ?? null,
+          referenceId: first.id,
+          referenceType: "SPOC",
+        });
+      },
+      { timeout: 30_000 }, // up to 200 activity rows
+    );
+  }
+
+  res.json({
+    success: true,
+    message: `${eligible.length} SPOC${eligible.length === 1 ? "" : "s"} reassigned`,
+    data: { updated: eligible.length, skipped },
+  });
 };

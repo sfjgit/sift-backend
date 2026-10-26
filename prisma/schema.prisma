@@ -1,7 +1,7 @@
 // File: schema.prisma
 // Path: prisma/schema.prisma
 //
-// SFJBS Sales & Marketing CRM — fresh start. CRM is the system of record.
+// SFJBS Sales & Marketing CRM — CRM is the system of record.
 // External services (CSR pipeline) talk only via /api/svc/* — never the DB.
 //
 // Rule of thumb:
@@ -9,6 +9,8 @@
 //   Lookup    → admin-editable labels / pick-lists (no logic)
 //   table     → masters with relations or attributes
 //   constants → modules + actions (src/config/permissions.registry.ts)
+//
+// Org masters are flat. BU and SL are independent — they combine only on ClientSpoc.
 
 generator client {
   provider = "prisma-client-js"
@@ -89,6 +91,8 @@ enum ClientActivityType {
   SPOC_UPDATED
   SPOC_REASSIGNED
   NOTE_ADDED
+  LOCATION_ADDED
+  TECHNOLOGY_UPDATED
   DOCUMENT_ADDED
   FINANCIALS_UPDATED
   PROGRAMS_ADDED
@@ -113,8 +117,8 @@ enum NotificationReferenceType {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOKUP — one table for every admin-managed pick-list
-// type: INDUSTRY, CLIENT_CATEGORY, DOCUMENT_TYPE, SPOC_SOURCE,
-//       SALES_STATUS, PROGRAM_SECTOR ... (validated in service, seeded)
+// type: INDUSTRY, CLIENT_CATEGORY, LOCATION_TYPE, TECH_CATEGORY, DOCUMENT_TYPE,
+//       SPOC_SOURCE, SALES_STATUS, PROGRAM_SECTOR ... (validated in service, seeded)
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Lookup {
@@ -127,13 +131,15 @@ model Lookup {
   isSystem Boolean @default(false) // seeded rows code may reference — not deletable
   meta     Json?
 
-  clientsByIndustry  Client[]         @relation("ClientIndustry")
-  clientsByCategory  Client[]         @relation("ClientCategory")
-  spocsBySource      ClientSpoc[]     @relation("SpocSource")
-  spocsByEmailSource ClientSpoc[]     @relation("SpocEmailSource")
-  spocsBySalesStatus ClientSpoc[]     @relation("SpocSalesStatus")
-  documentsByType    ClientDocument[] @relation("DocumentType")
-  programsBySector   ClientProgram[]  @relation("ProgramSector")
+  clientsByIndustry      Client[]           @relation("ClientIndustry")
+  clientsByCategory      Client[]           @relation("ClientCategory")
+  locationsByType        ClientLocation[]   @relation("LocationType")
+  technologiesByCategory ClientTechnology[] @relation("TechCategory")
+  spocsBySource          ClientSpoc[]       @relation("SpocSource")
+  spocsByEmailSource     ClientSpoc[]       @relation("SpocEmailSource")
+  spocsBySalesStatus     ClientSpoc[]       @relation("SpocSalesStatus")
+  documentsByType        ClientDocument[]   @relation("DocumentType")
+  programsBySector       ClientProgram[]    @relation("ProgramSector")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -143,7 +149,7 @@ model Lookup {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ORG MASTERS
+// ORG MASTERS — all flat, no parent/child
 // ─────────────────────────────────────────────────────────────────────────────
 
 model BusinessUnit {
@@ -152,21 +158,12 @@ model BusinessUnit {
   code     String? @unique
   isActive Boolean @default(true)
 
-  parentBUId String?
-  parentBU   BusinessUnit?  @relation("BUHierarchy", fields: [parentBUId], references: [id])
-  childBUs   BusinessUnit[] @relation("BUHierarchy")
-
-  ancestorIds String[] // self + all ancestors, maintained by buService
-
-  serviceLines BusinessUnitServiceLine[]
-  users        UserBusinessUnit[]
-  clientSpocs  ClientSpoc[]
+  users       UserBusinessUnit[]
+  clientSpocs ClientSpoc[]
 
   createdAt DateTime @default(now())
 
   @@index([isActive])
-  @@index([parentBUId])
-  @@index([ancestorIds], type: Gin)
 }
 
 model ServiceLine {
@@ -175,26 +172,12 @@ model ServiceLine {
   code     String? @unique
   isActive Boolean @default(true)
 
-  businessUnits BusinessUnitServiceLine[]
-  users         UserServiceLine[]
-  clientSpocs   ClientSpoc[]
+  users       UserServiceLine[]
+  clientSpocs ClientSpoc[]
 
   createdAt DateTime @default(now())
 
   @@index([isActive])
-}
-
-model BusinessUnitServiceLine {
-  id             String       @id @default(uuid())
-  businessUnitId String
-  businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
-  serviceLineId  String
-  serviceLine    ServiceLine  @relation(fields: [serviceLineId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@unique([businessUnitId, serviceLineId])
-  @@index([serviceLineId])
 }
 
 model Department {
@@ -224,8 +207,12 @@ model Designation {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// USER
+// USER — people hierarchy (reportingTo / teamLead) stays: scopes depend on it
 // ─────────────────────────────────────────────────────────────────────────────
+
+// File: schema.prisma
+// Path: prisma/schema.prisma
+// (User model — only change: legacyCaspaId added)
 
 model User {
   id           String @id @default(uuid())
@@ -249,6 +236,8 @@ model User {
   isSuperAdmin Boolean @default(false)
   isActive     Boolean @default(true)
 
+  legacyCaspaId Int? @unique // tbl_userdetails.id
+
   roleId String
   role   Role   @relation(fields: [roleId], references: [id])
 
@@ -259,16 +248,16 @@ model User {
   designation   Designation? @relation(fields: [designationId], references: [id])
 
   reportingToId String?
-  reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
-  subordinates  User[]  @relation("ReportsTo")
+  reportingTo   User?  @relation("ReportsTo", fields: [reportingToId], references: [id])
+  subordinates  User[] @relation("ReportsTo")
 
   teamLeadId  String?
-  teamLead    User?   @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
-  teamMembers User[]  @relation("TeamLeadOf")
+  teamLead    User?  @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
+  teamMembers User[] @relation("TeamLeadOf")
 
   createdById String?
-  createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdByMe User[]  @relation("UserCreatedBy")
+  createdBy   User?  @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdByMe User[] @relation("UserCreatedBy")
 
   businessUnits UserBusinessUnit[]
   serviceLines  UserServiceLine[]
@@ -278,9 +267,11 @@ model User {
   impersonationsDone     ImpersonationLog[] @relation("ImpersonatorLogs")
   impersonationsReceived ImpersonationLog[] @relation("ImpersonatedLogs")
 
-  clientsCreated  Client[]     @relation("ClientCreatedBy")
-  clientsApproved Client[]     @relation("ClientApprovedBy")
-  clientNotes     ClientNote[] @relation("ClientNoteAuthor")
+  clientsCreated    Client[]           @relation("ClientCreatedBy")
+  clientsApproved   Client[]           @relation("ClientApprovedBy")
+  clientNotes       ClientNote[]       @relation("ClientNoteAuthor")
+  locationsAdded    ClientLocation[]   @relation("LocationAddedBy")
+  technologiesAdded ClientTechnology[] @relation("TechnologyAddedBy")
 
   spocsHandled            ClientSpoc[]           @relation("SpocHandler")
   spocsAdded              ClientSpoc[]           @relation("SpocAddedBy")
@@ -291,6 +282,9 @@ model User {
   stepRuns         StepRun[]        @relation("StepRunRequestedBy")
   notifications    Notification[]   @relation("UserNotifications")
   auditLogs        AuditLog[]       @relation("AuditLogActor")
+
+  savedViews  SavedView[] @relation("UserSavedViews")
+  faqsCreated Faq[]       @relation("FaqCreatedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -402,7 +396,7 @@ model RolePermission {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CLIENT — company master, shared across BUs
+// CLIENT — company master, flat (no parent/child). Addresses in ClientLocation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Client {
@@ -412,22 +406,12 @@ model Client {
   cin         String?      @unique
   website     String?
   linkedinUrl String?
-  country     String?
-  state       String?
-  district    String?
-  city        String?
-  pincode     String?
-  address     String?
   status      ClientStatus @default(PENDING)
 
   industryId String?
   industry   Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
   categoryId String?
   category   Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
-
-  parentClientId String?
-  parentClient   Client?  @relation("ClientFamily", fields: [parentClientId], references: [id])
-  childClients   Client[] @relation("ClientFamily")
 
   legacyCaspaId Int? @unique
 
@@ -439,6 +423,8 @@ model Client {
 
   deletedAt DateTime?
 
+  locations     ClientLocation[]
+  technologies  ClientTechnology[]
   spocs         ClientSpoc[]
   notes         ClientNote[]
   activities    ClientActivity[]
@@ -454,13 +440,75 @@ model Client {
   @@index([status])
   @@index([industryId])
   @@index([categoryId])
-  @@index([parentClientId])
   @@index([createdById])
   @@index([deletedAt])
 }
 
+// every address of a client — HQ, branches, dev centres, plants
+// one primary per client: partial unique index in migration SQL
+model ClientLocation {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  typeId String? // Lookup LOCATION_TYPE: HQ, REGISTERED_OFFICE, BRANCH, DEV_CENTER, PLANT, OFFICE
+  type   Lookup? @relation("LocationType", fields: [typeId], references: [id])
+
+  name        String? // "ASM Technologies, NASSCOM IT Park"
+  addressLine String?
+  city        String?
+  district    String?
+  state       String?
+  country     String?  @default("India")
+  pincode     String? // identifier, not a number
+  latitude    Decimal? @db.Decimal(9, 6)
+  longitude   Decimal? @db.Decimal(9, 6)
+
+  isPrimary  Boolean @default(false) // main / HQ address
+  isActive   Boolean @default(true)
+  dmEvidence String? // why decision-makers are here
+
+  addedById   String?
+  addedBy     User?    @relation("LocationAddedBy", fields: [addedById], references: [id])
+  sourceRunId String?
+  sourceRun   StepRun? @relation("LocationSourceRun", fields: [sourceRunId], references: [id])
+
+  spocs ClientSpoc[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId, isActive])
+  @@index([typeId])
+  @@index([state, district])
+}
+
+// CASPA's cloud / cyber_security / infra / ... columns, as rows
+model ClientTechnology {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  categoryId String // Lookup TECH_CATEGORY: CLOUD, CYBER_SECURITY, INFRA, DNI, APPLICATION, CRM, HRMS, LMS, ERP, DIGITAL_MANUFACTURING
+  category   Lookup @relation("TechCategory", fields: [categoryId], references: [id])
+
+  details String // what they use / need, e.g. "AWS, Azure"
+
+  addedById   String?
+  addedBy     User?    @relation("TechnologyAddedBy", fields: [addedById], references: [id])
+  sourceRunId String?
+  sourceRun   StepRun? @relation("TechnologySourceRun", fields: [sourceRunId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clientId, categoryId])
+  @@index([categoryId])
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENT SPOC — one row per person; email globally unique (store lowercased)
+// BU + SL meet here — this is where the combo lives
 // ─────────────────────────────────────────────────────────────────────────────
 
 model ClientSpoc {
@@ -468,6 +516,9 @@ model ClientSpoc {
 
   clientId String
   client   Client @relation(fields: [clientId], references: [id])
+
+  locationId String?
+  location   ClientLocation? @relation(fields: [locationId], references: [id])
 
   firstName   String
   lastName    String?
@@ -526,8 +577,9 @@ model ClientSpoc {
 
   @@index([clientId, isActive])
   @@index([clientId, nameKey])
+  @@index([locationId])
   @@index([handlerId, isActive])
-  @@index([businessUnitId])
+  @@index([businessUnitId, serviceLineId])
   @@index([serviceLineId])
   @@index([salesStatusId])
   @@index([validationBand])
@@ -763,6 +815,7 @@ model StepRun {
   idempotencyKey String  @unique // hash(step + client + spoc + options) — blocks double clicks
   externalJobId  String? @unique
 
+  // "Run all steps" grouping — technical, not org hierarchy
   parentRunId String?
   parentRun   StepRun?  @relation("RunChain", fields: [parentRunId], references: [id])
   childRuns   StepRun[] @relation("RunChain")
@@ -798,11 +851,13 @@ model StepRun {
 
   events StepRunEvent[]
 
-  spocsCreated  ClientSpoc[]      @relation("SpocSourceRun")
-  documents     ClientDocument[]  @relation("DocumentSourceRun")
-  financials    ClientFinancial[] @relation("FinancialSourceRun")
-  programs      ClientProgram[]   @relation("ProgramSourceRun")
-  outreachPacks OutreachPack[]    @relation("OutreachSourceRun")
+  spocsCreated  ClientSpoc[]       @relation("SpocSourceRun")
+  locations     ClientLocation[]   @relation("LocationSourceRun")
+  technologies  ClientTechnology[] @relation("TechnologySourceRun")
+  documents     ClientDocument[]   @relation("DocumentSourceRun")
+  financials    ClientFinancial[]  @relation("FinancialSourceRun")
+  programs      ClientProgram[]    @relation("ProgramSourceRun")
+  outreachPacks OutreachPack[]     @relation("OutreachSourceRun")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -873,4 +928,44 @@ model AuditLog {
   @@index([module, recordId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SAVED VIEWS + HELP
+// ─────────────────────────────────────────────────────────────────────────────
+
+// table / report presets; config is opaque to the backend
+model SavedView {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation("UserSavedViews", fields: [userId], references: [id], onDelete: Cascade)
+  module    String // "clients" | "spocs" | "users" | "reports" | "step_runs" ...
+  name      String
+  config    Json // columns, filters, sort, density, pageSize, report spec
+  isDefault Boolean  @default(false) // one default per user+module
+  isShared  Boolean  @default(false) // visible (read-only) to everyone
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, module])
+  @@index([module, isShared])
+}
+
+model Faq {
+  id              String   @id @default(uuid())
+  question        String
+  answer          String // markdown-lite: paragraphs, "- " bullets, **bold**, `code`
+  category        String // "Getting started", "Clients", "SPOCs", "Reports", "Admin", ...
+  module          String? // page key for contextual help
+  order           Int      @default(0)
+  isPublished     Boolean  @default(true)
+  helpfulCount    Int      @default(0)
+  notHelpfulCount Int      @default(0)
+  createdById     String?
+  createdBy       User?    @relation("FaqCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([category, order])
+  @@index([module])
 }

@@ -70,3 +70,12 @@ export const listUsersQuery = z.object({
 export type CreateUserInput = z.infer<typeof createUserBody>;
 export type UpdateUserInput = z.infer<typeof updateUserBody>;
 export type ListUsersQuery = z.infer<typeof listUsersQuery>;
+
+// lightweight picker — see GET /users/options
+export const userOptionsQuery = z.object({
+  search: z.string().trim().optional(),
+  for: z.enum(["assign", "filter"]).default("filter"),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type UserOptionsQuery = z.infer<typeof userOptionsQuery>;

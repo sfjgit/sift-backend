@@ -8,6 +8,7 @@ import {
   MODULES,
   PermissionKey,
   SCOPE_DESCRIPTIONS,
+  findMissingRequirements,
   isScopedAction,
 } from "@/config/permissions.registry";
 import {
@@ -17,13 +18,26 @@ import {
 import type { GrantInput } from "@/validators/role.validator";
 import { ApiError, notFound } from "@/utils/httpError";
 
-// grid ticks → rows; unscoped actions always store OWN (ignored on read)
+// grid ticks → rows; unscoped actions always store OWN (ignored on read).
+// Rejects a set where an action is ticked without what it requires.
 export const toGrantRows = (grants: GrantInput[]) => {
-  const byKey = new Map<string, PermissionScope>();
+  const byKey = new Map<PermissionKey, PermissionScope>();
   for (const g of grants) {
     const key = g.permissionKey as PermissionKey;
     byKey.set(key, isScopedAction(key) ? g.scope ?? "OWN" : "OWN");
   }
+
+  const missing = findMissingRequirements([...byKey.keys()]);
+  if (missing.length) {
+    throw ApiError(
+      400,
+      `Missing required permissions: ${missing
+        .map((m) => `${m.key} needs ${m.missing.join(", ")}`)
+        .join("; ")}`,
+      "MISSING_REQUIRED_PERMISSIONS",
+    );
+  }
+
   return [...byKey].map(([permissionKey, scope]) => ({ permissionKey, scope }));
 };
 

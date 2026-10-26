@@ -15,7 +15,7 @@ import {
 } from "@/controller/bu.controller";
 
 const router = Router();
-const manage = authorize("admin.manage_lookups");
+const manage = authorize("org.manage");
 
 router.use(authenticateUser);
 

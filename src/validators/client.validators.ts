@@ -23,15 +23,8 @@ export const createClientBody = z.object({
   cin: optionalText(21).transform((v) => v?.toUpperCase() ?? v),
   website: optionalUrl,
   linkedinUrl: optionalUrl,
-  country: optionalText(100),
-  state: optionalText(100),
-  district: optionalText(100),
-  city: optionalText(100),
-  pincode: optionalText(10),
-  address: optionalText(500),
   industryId: optionalId,
   categoryId: optionalId,
-  parentClientId: optionalId,
 });
 
 export const updateClientBody = createClientBody.partial();
@@ -49,6 +42,10 @@ export const listClientsQuery = z.object({
   handlerId: z.string().uuid().optional(),
   businessUnitId: z.string().uuid().optional(),
   serviceLineId: z.string().uuid().optional(),
+  // matched through the client's active locations
+  state: z.string().trim().optional(),
+  district: z.string().trim().optional(),
+  city: z.string().trim().optional(),
   ...paginationQuery,
   sortBy: z.enum(["name", "createdAt", "updatedAt", "status"]).default("createdAt"),
   sortDir: z.enum(["asc", "desc"]).default("desc"),
@@ -63,6 +60,44 @@ export const clientNoteBody = z.object({
 export const noteParams = z.object({
   id: z.string().uuid(),
   noteId: z.string().uuid(),
+});
+
+// ── locations ────────────────────────────────────────────────────────────────
+
+const optionalCoord = (max: number) => z.number().min(-max).max(max).nullable().optional();
+
+export const createLocationBody = z.object({
+  typeId: optionalId,
+  name: optionalText(200),
+  addressLine: optionalText(500),
+  city: optionalText(100),
+  district: optionalText(100),
+  state: optionalText(100),
+  country: optionalText(100),
+  pincode: optionalText(10),
+  latitude: optionalCoord(90),
+  longitude: optionalCoord(180),
+  isPrimary: z.boolean().optional(),
+  dmEvidence: optionalText(2000),
+});
+
+export const updateLocationBody = createLocationBody.partial();
+
+export const locationParams = z.object({
+  id: z.string().uuid(),
+  locationId: z.string().uuid(),
+});
+
+// ── technologies — one row per client per category ───────────────────────────
+
+export const saveTechnologyBody = z.object({
+  categoryId: z.string().uuid("Category is required"),
+  details: z.string().trim().min(1, "Details are required").max(2000),
+});
+
+export const technologyParams = z.object({
+  id: z.string().uuid(),
+  technologyId: z.string().uuid(),
 });
 
 // ── spocs ────────────────────────────────────────────────────────────────────
@@ -87,6 +122,7 @@ const spocFields = {
   currentOrgExpYears: optionalYears,
   businessUnitId: z.string().uuid("Business unit is required"),
   serviceLineId: z.string().uuid("Service line is required"),
+  locationId: optionalId, // must belong to the same client
   sourceId: optionalId,
   emailSourceId: optionalId,
   salesStatusId: optionalId,
@@ -128,7 +164,37 @@ export const listSpocsQuery = z.object({
 
 export type CreateClientInput = z.infer<typeof createClientBody>;
 export type UpdateClientInput = z.infer<typeof updateClientBody>;
+export type CreateLocationInput = z.infer<typeof createLocationBody>;
+export type UpdateLocationInput = z.infer<typeof updateLocationBody>;
 export type ListClientsQuery = z.infer<typeof listClientsQuery>;
 export type CreateSpocInput = z.infer<typeof createSpocBody>;
 export type UpdateSpocInput = z.infer<typeof updateSpocBody>;
 export type ListSpocsQuery = z.infer<typeof listSpocsQuery>;
+
+// ── bulk actions ─────────────────────────────────────────────────────────────
+
+const bulkIds = (what: string) =>
+  z
+    .array(z.string().uuid(`Invalid ${what} id`))
+    .min(1, `Select at least one ${what}`)
+    .max(200, "At most 200 at a time")
+    .transform((ids) => [...new Set(ids)]);
+
+export const bulkAssignSpocsBody = z.object({
+  spocIds: bulkIds("SPOC"),
+  assignToId: z.string().uuid("assignToId is required"),
+  reason: optionalText(500),
+});
+
+export const bulkClientStatusBody = z.object({
+  clientIds: bulkIds("client"),
+  status: z.nativeEnum(ClientStatus),
+});
+
+export const documentParams = z.object({
+  id: z.string().uuid(),
+  documentId: z.string().uuid(),
+});
+
+export type BulkAssignSpocsInput = z.infer<typeof bulkAssignSpocsBody>;
+export type BulkClientStatusInput = z.infer<typeof bulkClientStatusBody>;

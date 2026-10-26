@@ -7,6 +7,7 @@ import { authorize } from "@/middleware/authorize";
 import { validate, idParams } from "@/validators/validator";
 import {
   assignSpocBody,
+  bulkAssignSpocsBody,
   createSpocBody,
   listSpocsQuery,
   updateSpocBody,
@@ -18,6 +19,7 @@ import {
   updateSpoc,
   assignSpoc,
   deleteSpoc,
+  bulkAssignSpocs,
 } from "@/controller/spoc.controller";
 
 const router = Router();
@@ -27,6 +29,14 @@ router.use(authenticateUser);
 
 router.get("/", read, validate.query(listSpocsQuery), listSpocs);
 router.post("/", authorize("spocs.create"), validate.body(createSpocBody), createSpoc);
+
+// bulk — before /:id so "bulk-assign" isn't read as an id
+router.patch(
+  "/bulk-assign",
+  authorize("spocs.assign"),
+  validate.body(bulkAssignSpocsBody),
+  bulkAssignSpocs,
+);
 
 // out of scope = 404, never 403
 router.get("/:id", read, validate.params(idParams), getSpocById);

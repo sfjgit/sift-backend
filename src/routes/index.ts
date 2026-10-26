@@ -13,8 +13,15 @@ import lookupRoutes from "./lookup.routes";
 import clientRoutes from "./client.routes";
 import spocRoutes from "./spoc.routes";
 import notificationRoutes from "./notification.routes";
-import authLogRoutes from "./auth-logs.routes";
+import { authLogRoutes, auditLogRoutes } from "./auth-logs.routes";
 import impersonationRoutes from "./impersonation.routes";
+import reportRoutes from "./report.routes";
+import searchRoutes from "./search.routes";
+import viewRoutes from "./view.routes";
+import faqRoutes from "./faq.routes";
+import pipelineStepRoutes from "./pipelineStep.routes";
+import stepRunRoutes from "./stepRun.routes";
+import outreachRoutes from "./outreach.routes";
 
 const router = Router();
 
@@ -31,11 +38,21 @@ router.use("/departments", masterRouter("department", "Department"));
 router.use("/designations", masterRouter("designation", "Designation"));
 router.use("/lookups", lookupRoutes);
 router.use("/auth-logs", authLogRoutes);
+router.use("/audit-logs", auditLogRoutes);
 router.use("/admin", impersonationRoutes);
 
 // CRM
 router.use("/clients", clientRoutes);
 router.use("/spocs", spocRoutes);
 router.use("/notifications", notificationRoutes);
+router.use("/pipeline-steps", pipelineStepRoutes);
+router.use("/step-runs", stepRunRoutes);
+router.use("/outreach", outreachRoutes);
+router.use("/reports", reportRoutes);
+router.use("/search", searchRoutes);
+
+// per-user + help
+router.use("/views", viewRoutes);
+router.use("/faqs", faqRoutes);
 
 export default router;
