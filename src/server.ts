@@ -239,9 +239,17 @@ process.on("uncaughtException", (err) => {
 });
 
 // Unhandled promise rejection handler
-process.on("unhandledRejection", (reason, promise) => {
-  loggers.error("Unhandled Promise Rejection", new Error(String(reason)));
-  process.exit(1);
+// A stray rejected promise (e.g. a background job hit a dropped DB connection)
+// is logged and raised as an alert; it must not take the whole API down.
+process.on("unhandledRejection", (reason) => {
+  loggers.error("Unhandled Promise Rejection", reason instanceof Error ? reason : new Error(String(reason)));
+  void raiseAlert({
+    key: "process:unhandled-rejection",
+    severity: "ERROR",
+    source: "api",
+    title: "A background task failed",
+    body: String((reason as Error)?.message ?? reason).slice(0, 500),
+  });
 });
 
 export default app;

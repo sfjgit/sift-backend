@@ -192,6 +192,9 @@ export const reconcileOnce = async () => {
       lastHealth = Date.now();
       await checkHealth().catch((e) => loggers.error("Service health check failed", e));
     }
+  } catch (e) {
+    // the DB dropped the connection (Neon idles out) — try again next tick
+    loggers.error("Pipeline reconcile tick failed", e);
   } finally {
     running = false;
   }

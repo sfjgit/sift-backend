@@ -25,6 +25,7 @@ import outreachRoutes from "./outreach.routes";
 import integrationRoutes from "./integration.routes";
 import alertRoutes from "./alert.routes";
 import runQuotaRoutes from "./runQuota.routes";
+import geoRoutes from "./geo.routes";
 import svcRoutes from "./svc.routes";
 
 const router = Router();
@@ -55,6 +56,7 @@ router.use("/outreach", outreachRoutes);
 router.use("/integrations", integrationRoutes);
 router.use("/system-alerts", alertRoutes);
 router.use("/run-quotas", runQuotaRoutes);
+router.use("/geo", geoRoutes);
 router.use("/reports", reportRoutes);
 router.use("/search", searchRoutes);
 

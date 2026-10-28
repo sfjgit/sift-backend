@@ -69,9 +69,11 @@ export const listClientsQuery = z.object({
   lastRunFrom: day,
   lastRunTo: day,
   // matched through the client's active locations
-  state: z.string().trim().max(100).optional(),
+  // several = any of them; country + state + city must match the same location
+  country: csv(z.string().trim().min(1).max(100)),
+  state: csv(z.string().trim().min(1).max(100)),
   district: z.string().trim().max(100).optional(),
-  city: z.string().trim().max(100).optional(),
+  city: csv(z.string().trim().min(1).max(100)),
   ...paginationQuery,
   // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
   sortBy: z.enum(["name", "createdAt", "updatedAt", "status"]).catch("createdAt"),

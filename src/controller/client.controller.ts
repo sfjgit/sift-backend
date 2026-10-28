@@ -11,6 +11,7 @@ import { notifyUsers } from "@/services/notification.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
 import { getSignedUrl } from "@/lib/s3";
+import { normaliseLocation } from "@/services/geo.service";
 import type {
   BulkClientStatusInput,
   CreateClientInput,
@@ -253,12 +254,16 @@ const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereI
   const ran = range(q.lastRunFrom, q.lastRunTo);
   if (ran) and.push({ stepRuns: { some: { parentRunId: null, createdAt: ran } } });
 
-  const loc: Prisma.ClientLocationWhereInput = {
-    ...(q.state && { state: { equals: q.state, mode: "insensitive" } }),
-    ...(q.district && { district: { equals: q.district, mode: "insensitive" } }),
-    ...(q.city && { city: { equals: q.city, mode: "insensitive" } }),
-  };
-  if (Object.keys(loc).length) and.push({ locations: { some: { isActive: true, ...loc } } });
+  // names are stored normalised ("Bengaluru"); case-insensitive for old rows
+  const anyOf = (field: "country" | "state" | "city", vals?: string[]): Prisma.ClientLocationWhereInput[] =>
+    vals?.length ? [{ OR: vals.map((v) => ({ [field]: { equals: v, mode: "insensitive" } })) }] : [];
+  const loc = [
+    ...anyOf("country", q.country),
+    ...anyOf("state", q.state),
+    ...anyOf("city", q.city),
+    ...(q.district ? [{ district: { equals: q.district, mode: "insensitive" as const } }] : []),
+  ];
+  if (loc.length) and.push({ locations: { some: { isActive: true, AND: loc } } });
 
   if (q.search) {
     and.push({
@@ -622,7 +627,8 @@ export const addClientLocation = async (req: Request, res: Response) => {
     const hasAny = await tx.clientLocation.count({ where: { clientId: id, isActive: true } });
     const l = await tx.clientLocation.create({
       data: {
-        ...definedOnly(body),
+        // "BANGALORE." → "Bengaluru": one spelling per place, so filters match
+        ...normaliseLocation(definedOnly(body)),
         isPrimary: body.isPrimary ?? hasAny === 0,
         clientId: id,
         addedById: req.user.id,
@@ -653,14 +659,19 @@ export const updateClientLocation = async (req: Request, res: Response) => {
 
   const existing = await prisma.clientLocation.findFirst({
     where: { id: locationId, clientId: id },
-    select: { id: true },
+    select: { id: true, country: true, state: true, city: true },
   });
   if (!existing) throw notFound("Location");
+
+  // normalise with the stored values as context, write back only what was sent
+  const fields = definedOnly(body);
+  const geo = normaliseLocation({ country: existing.country, state: existing.state, city: existing.city, ...fields });
+  for (const k of ["country", "state", "city"] as const) if (k in fields) (fields as Record<string, unknown>)[k] = geo[k];
 
   const location = await prisma.$transaction(async (tx) => {
     const l = await tx.clientLocation.update({
       where: { id: locationId },
-      data: definedOnly(body),
+      data: fields,
       select: LOCATION_SELECT,
     });
     if (body.isPrimary) await clearOtherPrimaries(tx, id, locationId);
