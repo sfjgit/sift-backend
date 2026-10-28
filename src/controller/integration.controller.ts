@@ -12,7 +12,7 @@ import { notFound } from "@/utils/httpError";
 import { definedOnly } from "@/utils/pagination";
 import { createAuditLog } from "@/services/auditLogs.service";
 import { hashServiceKey } from "@/middleware/serviceAuth";
-import { engine } from "@/services/pipeline/engineClient";
+import { engine, resolveBaseUrl, urlEnvName } from "@/services/pipeline/engineClient";
 import type { UpdatePipelineStepInput, UpdateServiceInput } from "@/validators/integration.validators";
 
 const SERVICE_SELECT = {
@@ -37,6 +37,11 @@ const SERVICE_SELECT = {
 
 const toServiceResponse = ({ inboundKeyHash, outboundKeyEnv, ...s }: Prisma.ExternalServiceGetPayload<{ select: typeof SERVICE_SELECT }>) => ({
   ...s,
+  // what this server really calls: its env (CSR_PIPELINE_URL) wins over the saved one
+  baseUrl: resolveBaseUrl({ baseUrl: s.baseUrl, outboundKeyEnv }).url,
+  savedBaseUrl: s.baseUrl,
+  baseUrlEnv: urlEnvName({ baseUrl: s.baseUrl, outboundKeyEnv }),
+  baseUrlFromEnv: resolveBaseUrl({ baseUrl: s.baseUrl, outboundKeyEnv }).fromEnv,
   outboundKeyEnv,
   outboundKeySet: !!(outboundKeyEnv && process.env[outboundKeyEnv]),
   inboundKeySet: !!inboundKeyHash,

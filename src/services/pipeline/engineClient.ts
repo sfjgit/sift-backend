@@ -11,6 +11,17 @@ export type EngineService = {
   outboundKeyEnv: string | null;
 };
 
+// The address from this server's env wins over the one saved in the DB:
+// CSR_PIPELINE_KEY → CSR_PIPELINE_URL. Each deployment (local, live) can point
+// at its own engine even when they share one database.
+export const urlEnvName = (svc: EngineService) => svc.outboundKeyEnv?.replace(/_KEY$/, "_URL") ?? null;
+
+export const resolveBaseUrl = (svc: EngineService): { url: string | null; fromEnv: boolean } => {
+  const name = urlEnvName(svc);
+  const fromEnv = name ? process.env[name]?.trim() : undefined;
+  return fromEnv ? { url: fromEnv, fromEnv: true } : { url: svc.baseUrl, fromEnv: false };
+};
+
 export type EngineReply<T = any> = {
   ok: boolean;
   status: number | null; // null = never reached the service
@@ -25,7 +36,8 @@ const call = async <T>(
   body?: unknown,
   timeoutMs = 20_000,
 ): Promise<EngineReply<T>> => {
-  if (!svc.baseUrl) return { ok: false, status: null, data: null, error: "Service has no base URL" };
+  const baseUrl = resolveBaseUrl(svc).url;
+  if (!baseUrl) return { ok: false, status: null, data: null, error: "Service has no base URL" };
   const key = svc.outboundKeyEnv ? process.env[svc.outboundKeyEnv] : undefined;
   if (!key) {
     return { ok: false, status: null, data: null, error: `Env ${svc.outboundKeyEnv ?? "(none)"} is not set` };
@@ -34,7 +46,7 @@ const call = async <T>(
   try {
     const res = await axios.request<T>({
       method,
-      url: `${svc.baseUrl.replace(/\/+$/, "")}${path}`,
+      url: `${baseUrl.replace(/\/+$/, "")}${path}`,
       data: body,
       timeout: timeoutMs,
       headers: { "X-Service-Key": key },
