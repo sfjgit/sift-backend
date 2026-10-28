@@ -2,8 +2,8 @@
 // Path: src/validators/client.validators.ts
 
 import { z } from "zod";
-import { ClientStatus, EmailStatus, SpocApprovalStatus, ValidationBand } from "@prisma/client";
-import { optionalId, optionalText, paginationQuery } from "@/validators/validator";
+import { ClientStatus, EmailStatus, OutreachStatus, SpocApprovalStatus, ValidationBand } from "@prisma/client";
+import { csv, csvIds, optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
 const optionalUrl = z
   .string()
@@ -25,6 +25,9 @@ export const createClientBody = z.object({
   linkedinUrl: optionalUrl,
   industryId: optionalId,
   categoryId: optionalId,
+  businessUnitId: optionalId,
+  // replaces the whole set when sent
+  serviceLineIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
 export const updateClientBody = createClientBody.partial();
@@ -33,22 +36,46 @@ export const clientStatusBody = z.object({
   status: z.nativeEnum(ClientStatus),
 });
 
+const ids = csvIds;
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").optional();
+
+export const CLIENT_GAPS = ["website", "reports", "spocs", "approved", "figures", "outreach"] as const;
+export const STEP_KEYS = ["reports", "report_spocs", "figures", "enrich", "apollo", "validate", "emails"] as const;
+
 export const listClientsQuery = z.object({
-  search: z.string().trim().optional(),
+  search: z.string().trim().max(200).optional(),
   status: z.nativeEnum(ClientStatus).optional(),
-  industryId: z.string().uuid().optional(),
-  categoryId: z.string().uuid().optional(),
+  industryId: ids,
+  categoryId: ids,
+  // the client's own BU / service lines
+  businessUnitId: ids,
+  serviceLineId: ids,
   // matched through the client's active SPOCs
-  handlerId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
-  serviceLineId: z.string().uuid().optional(),
+  handlerId: ids,
+  createdById: ids,
+  // "me", "none" (nobody assigned) or a user id
+  assignedTo: z.union([z.literal("me"), z.literal("none"), z.string().uuid()]).optional(),
+  assignedToId: ids,
+  assignedById: ids,
+  // data gaps (all picked must be missing) / pipeline coverage
+  missing: csv(z.enum(CLIENT_GAPS)),
+  pipeline: z.enum(["never", "run", "failed"]).optional(),
+  // a DONE run of every picked step / no DONE run of any picked step
+  stepsDone: csv(z.enum(STEP_KEYS)),
+  stepsNotDone: csv(z.enum(STEP_KEYS)),
+  outreachStatus: csv(z.nativeEnum(OutreachStatus)),
+  createdFrom: day,
+  createdTo: day,
+  lastRunFrom: day,
+  lastRunTo: day,
   // matched through the client's active locations
-  state: z.string().trim().optional(),
-  district: z.string().trim().optional(),
-  city: z.string().trim().optional(),
+  state: z.string().trim().max(100).optional(),
+  district: z.string().trim().max(100).optional(),
+  city: z.string().trim().max(100).optional(),
   ...paginationQuery,
-  sortBy: z.enum(["name", "createdAt", "updatedAt", "status"]).default("createdAt"),
-  sortDir: z.enum(["asc", "desc"]).default("desc"),
+  // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
+  sortBy: z.enum(["name", "createdAt", "updatedAt", "status"]).catch("createdAt"),
+  sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
 export const clientActivitiesQuery = z.object(paginationQuery);
@@ -147,13 +174,13 @@ export const assignSpocBody = z.object({
 export const listSpocsQuery = z.object({
   search: z.string().trim().optional(),
   clientId: z.string().uuid().optional(),
-  handlerId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
-  serviceLineId: z.string().uuid().optional(),
-  salesStatusId: z.string().uuid().optional(),
-  emailStatus: z.nativeEnum(EmailStatus).optional(),
-  validationBand: z.nativeEnum(ValidationBand).optional(),
-  approvalStatus: z.nativeEnum(SpocApprovalStatus).optional(),
+  handlerId: csvIds,
+  businessUnitId: csvIds,
+  serviceLineId: csvIds,
+  salesStatusId: csvIds,
+  emailStatus: csv(z.nativeEnum(EmailStatus)),
+  validationBand: csv(z.nativeEnum(ValidationBand)),
+  approvalStatus: csv(z.nativeEnum(SpocApprovalStatus)),
   reviewFlag: z
     .enum(["true", "false"])
     .transform((v) => v === "true")
@@ -163,8 +190,8 @@ export const listSpocsQuery = z.object({
     .transform((v) => v === "true")
     .default(true),
   ...paginationQuery,
-  sortBy: z.enum(["firstName", "createdAt", "updatedAt", "validationScore"]).default("createdAt"),
-  sortDir: z.enum(["asc", "desc"]).default("desc"),
+  sortBy: z.enum(["firstName", "createdAt", "updatedAt", "validationScore"]).catch("createdAt"),
+  sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
 export type CreateClientInput = z.infer<typeof createClientBody>;
@@ -211,3 +238,19 @@ export const documentParams = z.object({
 
 export type BulkAssignSpocsInput = z.infer<typeof bulkAssignSpocsBody>;
 export type BulkClientStatusInput = z.infer<typeof bulkClientStatusBody>;
+
+// ── assignment — who works a client
+export const setAssignmentsBody = z.object({
+  userIds: z.array(z.string().uuid()).max(50),
+  note: z.string().trim().max(500).optional(),
+});
+
+export const bulkAssignBody = z.object({
+  clientIds: z.array(z.string().uuid()).min(1).max(500),
+  userIds: z.array(z.string().uuid()).min(1).max(50),
+  mode: z.enum(["add", "remove", "replace"]).default("add"),
+  note: z.string().trim().max(500).optional(),
+});
+
+export type SetAssignmentsInput = z.infer<typeof setAssignmentsBody>;
+export type BulkAssignInput = z.infer<typeof bulkAssignBody>;

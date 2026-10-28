@@ -80,3 +80,13 @@ export const optionalText = (max: number) =>
     .optional();
 
 export const optionalId = z.string().uuid().nullable().optional();
+
+// "a,b,c" (or a repeated param) → string[] — multi-select list filters
+export const csv = <T extends z.ZodTypeAny>(item: T) =>
+  z
+    .preprocess(
+      (v) => (Array.isArray(v) ? v : typeof v === "string" ? v.split(",").filter(Boolean) : v),
+      z.array(item).max(100),
+    )
+    .optional();
+export const csvIds = csv(z.string().trim().uuid());

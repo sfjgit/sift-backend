@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { AuthLogType } from "@prisma/client";
-import { paginationQuery } from "@/validators/validator";
+import { csv, csvIds, paginationQuery } from "@/validators/validator";
 
 const isoDateString = z
   .string()
@@ -11,13 +11,13 @@ const isoDateString = z
   .optional();
 
 export const listAuthLogsQuery = z.object({
-  userId: z.string().uuid("userId must be a valid UUID").optional(),
-  departmentId: z.string().uuid("departmentId must be a valid UUID").optional(),
-  type: z.nativeEnum(AuthLogType).optional(),
+  userId: csvIds,
+  departmentId: csvIds,
+  type: csv(z.nativeEnum(AuthLogType)),
   startDate: isoDateString,
   endDate: isoDateString,
   ...paginationQuery,
-  sortDir: z.enum(["asc", "desc"]).default("desc"),
+  sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
 export type ListAuthLogsQuery = z.infer<typeof listAuthLogsQuery>;
@@ -30,7 +30,7 @@ export const listAuditLogsQuery = z.object({
   startDate: isoDateString,
   endDate: isoDateString,
   ...paginationQuery,
-  sortDir: z.enum(["asc", "desc"]).default("desc"),
+  sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
 export type ListAuditLogsQuery = z.infer<typeof listAuditLogsQuery>;

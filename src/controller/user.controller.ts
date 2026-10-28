@@ -78,16 +78,16 @@ export const listUsers = async (req: Request, res: Response) => {
       await userScopeWhere(req.user, req.scope!),
       {
         ...(q.isActive !== undefined && { isActive: q.isActive }),
-        ...(q.roleId && { roleId: q.roleId }),
-        ...(q.departmentId && { departmentId: q.departmentId }),
-        ...(q.designationId && { designationId: q.designationId }),
-        ...(q.reportingToId && { reportingToId: q.reportingToId }),
-        ...(q.teamLeadId && { teamLeadId: q.teamLeadId }),
-        ...(q.businessUnitId && {
-          businessUnits: { some: { businessUnitId: q.businessUnitId } },
+        ...(q.roleId?.length && { roleId: { in: q.roleId } }),
+        ...(q.departmentId?.length && { departmentId: { in: q.departmentId } }),
+        ...(q.designationId?.length && { designationId: { in: q.designationId } }),
+        ...(q.reportingToId?.length && { reportingToId: { in: q.reportingToId } }),
+        ...(q.teamLeadId?.length && { teamLeadId: { in: q.teamLeadId } }),
+        ...(q.businessUnitId?.length && {
+          businessUnits: { some: { businessUnitId: { in: q.businessUnitId } } },
         }),
-        ...(q.serviceLineId && {
-          serviceLines: { some: { serviceLineId: q.serviceLineId } },
+        ...(q.serviceLineId?.length && {
+          serviceLines: { some: { serviceLineId: { in: q.serviceLineId } } },
         }),
         ...(q.search && {
           OR: (["firstName", "lastName", "email", "employeeId", "phone"] as const).map(
@@ -334,16 +334,17 @@ export const adminResetPassword = async (req: Request, res: Response) => {
 };
 
 // ── GET /users/options — picker rows; scope depends on what the list is for
-//   assign → spocs.assign scope (403 without it)
+//   assign → spocs.assign scope (403 without it); client_assign → clients.assign
 //   filter → spocs.read scope, else users.read, else just the caller
 export const listUserOptions = async (req: Request, res: Response) => {
   const q = req.validatedQuery as UserOptionsQuery;
   const map = await getUserPermissionMap(req.user);
 
   let scopeWhere: Prisma.UserWhereInput;
-  if (q.for === "assign") {
-    const scope = grantScope(map, "spocs.assign");
-    if (!scope) throw forbidden(["spocs.assign"]);
+  if (q.for === "assign" || q.for === "client_assign") {
+    const key = q.for === "assign" ? "spocs.assign" : "clients.assign";
+    const scope = grantScope(map, key);
+    if (!scope) throw forbidden([key]);
     scopeWhere = await userScopeWhere(req.user, scope);
   } else {
     const scope = grantScope(map, "spocs.read") ?? grantScope(map, "users.read");

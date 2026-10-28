@@ -99,14 +99,21 @@ export const deleteFromS3 = async (fileKey: string): Promise<void> => {
 /** temporary read URL, default 15 min */
 export const getSignedUrl = async (
   fileKey: string,
-  expiresIn = 60 * 15
+  expiresIn = 60 * 15,
+  downloadAs?: string // set → the browser saves the file under this name
 ): Promise<string | null> => {
   if (!fileKey) return null;
 
   try {
     return await presign(
       s3,
-      new GetObjectCommand({ Bucket: BUCKET, Key: fileKey }),
+      new GetObjectCommand({
+        Bucket: BUCKET,
+        Key: fileKey,
+        ...(downloadAs && {
+          ResponseContentDisposition: `attachment; filename="${downloadAs.replace(/["\\\r\n]/g, "_")}"`,
+        }),
+      }),
       { expiresIn }
     );
   } catch (err) {

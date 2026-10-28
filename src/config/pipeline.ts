@@ -21,6 +21,7 @@ export type StepDef = {
   createsSpocs: boolean; // needs BU + SL for the new rows
   spocInput: "none" | "all" | "approved"; // which of the client's SPOCs go in the job
   defaultLimit: number | null; // clients per user, null = unlimited
+  defaultRerunDays: number | null; // no re-run within N days unless the input changed
 };
 
 export const PIPELINE_STEPS: readonly StepDef[] = [
@@ -33,6 +34,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: false,
     spocInput: "none",
     defaultLimit: null,
+    defaultRerunDays: 90,
   },
   {
     key: "report_spocs",
@@ -43,6 +45,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: true,
     spocInput: "all",
     defaultLimit: null,
+    defaultRerunDays: 90,
   },
   {
     key: "figures",
@@ -53,6 +56,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: false,
     spocInput: "none",
     defaultLimit: null,
+    defaultRerunDays: 90,
   },
   {
     key: "enrich",
@@ -63,6 +67,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: true,
     spocInput: "all",
     defaultLimit: 20,
+    defaultRerunDays: 30,
   },
   {
     key: "apollo",
@@ -73,6 +78,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: true,
     spocInput: "all",
     defaultLimit: 20,
+    defaultRerunDays: 30,
   },
   {
     key: "validate",
@@ -83,6 +89,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: false,
     spocInput: "all",
     defaultLimit: null,
+    defaultRerunDays: 14,
   },
   {
     key: "emails",
@@ -93,6 +100,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: false,
     spocInput: "approved",
     defaultLimit: 50,
+    defaultRerunDays: 30,
   },
   {
     key: "run_all",
@@ -103,6 +111,7 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     createsSpocs: true,
     spocInput: "none",
     defaultLimit: null,
+    defaultRerunDays: null,
   },
 ] as const;
 

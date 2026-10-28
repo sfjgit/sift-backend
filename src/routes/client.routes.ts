@@ -6,7 +6,9 @@ import { authenticateUser } from "@/middleware/auth";
 import { authorize } from "@/middleware/authorize";
 import { validate, idParams } from "@/validators/validator";
 import {
+  bulkAssignBody,
   bulkClientStatusBody,
+  setAssignmentsBody,
   clientActivitiesQuery,
   clientNoteBody,
   clientStatusBody,
@@ -39,6 +41,7 @@ import {
   bulkUpdateClientStatus,
   getClientDocumentUrl,
 } from "@/controller/client.controller";
+import { bulkAssignClients, listClientAssignments, setClientAssignments } from "@/controller/clientAssignment.controller";
 
 const router = Router();
 const read = authorize("clients.read");
@@ -56,7 +59,16 @@ router.patch(
   bulkUpdateClientStatus,
 );
 
+router.post("/assign", authorize("clients.assign"), validate.body(bulkAssignBody), bulkAssignClients);
+
 router.get("/:id", read, validate.params(idParams), getClientById);
+router.get("/:id/assignments", read, validate.params(idParams), listClientAssignments);
+router.put(
+  "/:id/assignments",
+  authorize("clients.assign"),
+  validate.request({ params: idParams, body: setAssignmentsBody }),
+  setClientAssignments,
+);
 router.patch(
   "/:id",
   authorize("clients.update"),

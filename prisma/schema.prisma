@@ -108,6 +108,20 @@ enum ClientActivityType {
   STEP_RUN_FAILED
   SPOC_APPROVED
   SPOC_REJECTED
+  OUTREACH_UPDATED
+  CLIENT_ASSIGNED
+}
+
+// Outreach is sent by people from their own mailbox; the CRM tracks it.
+// DRAFT (written by the pipeline) → REVIEWED (checked by a person) → SENT
+// (at least one mail marked sent) → REPLIED | NO_REPLY | BOUNCED.
+enum OutreachStatus {
+  DRAFT
+  REVIEWED
+  SENT
+  REPLIED
+  NO_REPLY
+  BOUNCED
 }
 
 enum NotificationType {
@@ -115,12 +129,30 @@ enum NotificationType {
   NOTE_ADDED
   STEP_RUN_FINISHED
   STEP_RUN_FAILED
+  SPOC_APPROVAL_NEEDED
+  SYSTEM_ALERT
+  CLIENT_ASSIGNED
 }
 
 enum NotificationReferenceType {
   CLIENT
   SPOC
   STEP_RUN
+  SYSTEM_ALERT
+}
+
+// run slots reset at the start of each period (Asia/Kolkata)
+enum QuotaPeriod {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum NotificationSeverity {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +200,7 @@ model BusinessUnit {
 
   users       UserBusinessUnit[]
   clientSpocs ClientSpoc[]
+  clients     Client[]
 
   createdAt DateTime @default(now())
 
@@ -182,6 +215,7 @@ model ServiceLine {
 
   users       UserServiceLine[]
   clientSpocs ClientSpoc[]
+  clients     ClientServiceLine[]
 
   createdAt DateTime @default(now())
 
@@ -256,16 +290,16 @@ model User {
   designation   Designation? @relation(fields: [designationId], references: [id])
 
   reportingToId String?
-  reportingTo   User?  @relation("ReportsTo", fields: [reportingToId], references: [id])
-  subordinates  User[] @relation("ReportsTo")
+  reportingTo   User?   @relation("ReportsTo", fields: [reportingToId], references: [id])
+  subordinates  User[]  @relation("ReportsTo")
 
   teamLeadId  String?
-  teamLead    User?  @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
-  teamMembers User[] @relation("TeamLeadOf")
+  teamLead    User?   @relation("TeamLeadOf", fields: [teamLeadId], references: [id])
+  teamMembers User[]  @relation("TeamLeadOf")
 
   createdById String?
-  createdBy   User?  @relation("UserCreatedBy", fields: [createdById], references: [id])
-  createdByMe User[] @relation("UserCreatedBy")
+  createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id])
+  createdByMe User[]  @relation("UserCreatedBy")
 
   businessUnits UserBusinessUnit[]
   serviceLines  UserServiceLine[]
@@ -281,16 +315,25 @@ model User {
   locationsAdded    ClientLocation[]   @relation("LocationAddedBy")
   technologiesAdded ClientTechnology[] @relation("TechnologyAddedBy")
 
+  clientAssignments       ClientAssignment[]     @relation("ClientAssignedTo")
+  clientAssignmentsGiven  ClientAssignment[]     @relation("ClientAssignedBy")
+  runQuotas               RunQuota[]             @relation("RunQuotaUser")
+  runQuotasCreated        RunQuota[]             @relation("RunQuotaCreatedBy")
   spocsHandled            ClientSpoc[]           @relation("SpocHandler")
   spocsAdded              ClientSpoc[]           @relation("SpocAddedBy")
   spocsApproved           ClientSpoc[]           @relation("SpocApprovedBy")
   spocAssignmentsReceived ClientSpocAssignment[] @relation("SpocAssignedTo")
   spocAssignmentsGiven    ClientSpocAssignment[] @relation("SpocAssignedBy")
 
-  clientActivities ClientActivity[] @relation("ClientActivityActor")
-  stepRuns         StepRun[]        @relation("StepRunRequestedBy")
-  notifications    Notification[]   @relation("UserNotifications")
-  auditLogs        AuditLog[]       @relation("AuditLogActor")
+  clientActivities ClientActivity[]  @relation("ClientActivityActor")
+  stepRuns         StepRun[]         @relation("StepRunRequestedBy")
+  notifications    Notification[]    @relation("UserNotifications")
+  alertsResolved   SystemAlert[]     @relation("SystemAlertResolvedBy")
+  outreachReviewed OutreachPack[]    @relation("OutreachReviewedBy")
+  outreachUpdated  OutreachPack[]    @relation("OutreachStatusBy")
+  outreachSent     OutreachMessage[] @relation("OutreachMessageSentBy")
+  outreachEdited   OutreachMessage[] @relation("OutreachMessageEditedBy")
+  auditLogs        AuditLog[]        @relation("AuditLogActor")
 
   savedViews  SavedView[] @relation("UserSavedViews")
   faqsCreated Faq[]       @relation("FaqCreatedBy")
@@ -386,6 +429,7 @@ model Role {
 
   users       User[]
   permissions RolePermission[]
+  runQuotas   RunQuota[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -424,6 +468,12 @@ model Client {
 
   legacyCaspaId Int? @unique
 
+  // one BU owns the client; it can be served by several service lines.
+  // New SPOCs from pipeline runs take the BU from here.
+  businessUnitId String?
+  businessUnit   BusinessUnit?       @relation(fields: [businessUnitId], references: [id])
+  serviceLines   ClientServiceLine[]
+
   createdById  String
   createdBy    User      @relation("ClientCreatedBy", fields: [createdById], references: [id])
   approvedById String?
@@ -442,6 +492,7 @@ model Client {
   programs      ClientProgram[]
   outreachPacks OutreachPack[]
   stepRuns      StepRun[]
+  assignments   ClientAssignment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -451,6 +502,48 @@ model Client {
   @@index([categoryId])
   @@index([createdById])
   @@index([deletedAt])
+  @@index([businessUnitId])
+  // list: default sort + name sort over live rows
+  @@index([deletedAt, createdAt])
+  @@index([deletedAt, name])
+  // "contains" search (ILIKE '%x%') — trigram, needs pg_trgm
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([shortName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([cin(ops: raw("gin_trgm_ops"))], type: Gin)
+}
+
+// who works a client — set by super admin / clients.assign. Assigned users see
+// the client (clients.read scope); SPOCs stay private to their handler.
+// History is kept; the active row has endedAt null.
+model ClientAssignment {
+  id           String @id @default(uuid())
+  clientId     String
+  client       Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User   @relation("ClientAssignedTo", fields: [userId], references: [id])
+  assignedById String
+  assignedBy   User   @relation("ClientAssignedBy", fields: [assignedById], references: [id])
+
+  note       String?
+  assignedAt DateTime  @default(now())
+  endedAt    DateTime?
+
+  @@index([clientId, endedAt])
+  @@index([userId, endedAt])
+  @@index([assignedById, endedAt])
+}
+
+model ClientServiceLine {
+  id            String      @id @default(uuid())
+  clientId      String
+  client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  serviceLineId String
+  serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([clientId, serviceLineId])
+  @@index([serviceLineId])
 }
 
 // every address of a client — HQ, branches, dev centres, plants
@@ -490,6 +583,9 @@ model ClientLocation {
   @@index([clientId, isActive])
   @@index([typeId])
   @@index([state, district])
+  // case-insensitive state / city filters (ILIKE)
+  @@index([state(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([city(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 // CASPA's cloud / cyber_security / infra / ... columns, as rows
@@ -605,6 +701,10 @@ model ClientSpoc {
   @@index([salesStatusId])
   @@index([validationBand])
   @@index([approvalStatus])
+  // SPOC + global search
+  @@index([firstName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([lastName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 // handler history; active row = endedAt null
@@ -759,10 +859,21 @@ model OutreachPack {
 
   messages OutreachMessage[]
 
+  status       OutreachStatus @default(DRAFT)
+  reviewedById String?
+  reviewedBy   User?          @relation("OutreachReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  outcomeNote  String? // what the reply said, why it bounced ...
+  repliedAt    DateTime?
+  statusById   String? // who last changed the status
+  statusBy     User?          @relation("OutreachStatusBy", fields: [statusById], references: [id])
+  statusAt     DateTime?
+
   createdAt DateTime @default(now())
 
   @@index([spocId, createdAt])
-  @@index([clientId])
+  @@index([clientId, status])
+  @@index([status])
 }
 
 model OutreachMessage {
@@ -773,6 +884,14 @@ model OutreachMessage {
   sequenceNo Int // 0 = first mail, 1..n = follow-ups
   subject    String
   body       String
+
+  // a person edits before sending; the pipeline's text is not kept separately
+  editedById String?
+  editedBy   User?     @relation("OutreachMessageEditedBy", fields: [editedById], references: [id])
+  editedAt   DateTime?
+  sentAt     DateTime? // when the person sent it from their mailbox
+  sentById   String?
+  sentBy     User?     @relation("OutreachMessageSentBy", fields: [sentById], references: [id])
 
   @@unique([packId, sequenceNo])
 }
@@ -817,10 +936,14 @@ model PipelineStep {
   target          StepTarget
   uiOrder         Int?
   userClientLimit Int? // null = unlimited; super admin bypasses
+  // a finished step is not run again for the client within this many days
+  // unless its input changed; step_runs.rerun / super admin may force it
+  rerunAfterDays  Int?
   isActive        Boolean    @default(true)
   config          Json? // step-specific options sent with the job
 
-  runs StepRun[]
+  runs   StepRun[]
+  quotas RunQuota[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -887,8 +1010,35 @@ model StepRun {
   @@index([status, nextCheckAt])
   @@index([stepId, requestedById, status]) // limit check
   @@index([clientId, createdAt])
+  // per-step latest run, "steps done" filters, re-run guard
+  @@index([clientId, stepId, status, createdAt])
   @@index([spocId])
   @@index([parentRunId])
+}
+
+// Run slots: at most maxRuns started runs per period. stepId null = all steps
+// together. Subject: userId, else roleId, else everyone — for the same step +
+// period the most specific rule wins. Super admin has no slots.
+model RunQuota {
+  id     String        @id @default(uuid())
+  stepId String?
+  step   PipelineStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  roleId String?
+  role   Role?         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  userId String?
+  user   User?         @relation("RunQuotaUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  period   QuotaPeriod
+  maxRuns  Int
+  isActive Boolean     @default(true)
+
+  createdById String
+  createdBy   User   @relation("RunQuotaCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 // append-only: dispatch attempts, callbacks, status changes, errors
@@ -916,9 +1066,11 @@ model Notification {
   userId String
   user   User   @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
 
-  type  NotificationType
-  title String
-  body  String?
+  type     NotificationType
+  severity NotificationSeverity @default(INFO)
+  title    String
+  body     String?
+  link     String? // in-app path to open, e.g. /clients/<id>?tab=pipeline
 
   referenceId   String
   referenceType NotificationReferenceType
@@ -930,6 +1082,31 @@ model Notification {
 
   @@index([userId, isRead])
   @@index([userId, createdAt])
+}
+
+// Problems the system raises (engine down, runs failing, server errors).
+// One open row per key: a repeat bumps count/lastSeenAt instead of a new row,
+// so admins get one notification, not one per retry.
+model SystemAlert {
+  id       String               @id @default(uuid())
+  key      String // "engine-down:CSR_PIPELINE", "run-failed:figures:UNREACHABLE"
+  severity NotificationSeverity
+  source   String // pipeline | engine | api
+  title    String
+  body     String?
+  link     String?
+  meta     Json?
+
+  count       Int      @default(1)
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  resolvedAt   DateTime?
+  resolvedById String? // null with resolvedAt = cleared by the system
+  resolvedBy   User?     @relation("SystemAlertResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([key, resolvedAt])
+  @@index([resolvedAt, lastSeenAt])
 }
 
 model AuditLog {

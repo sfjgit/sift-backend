@@ -1,5 +1,6 @@
 // src/server.ts
 import express, { Request, Response, NextFunction } from "express";
+import { raiseAlert } from "@/services/alert.service";
 import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
 import cors from "cors";
@@ -146,7 +147,7 @@ app.use((req, res) => {
 
 // Error handling middleware (should be last)
 app.use(errorLogger);
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof HttpError) {
     res.status(err.statusCode).json({
       success: false,
@@ -200,6 +201,17 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   }
 
   loggers.error("Unhandled application error", err);
+  if ((err.status || 500) >= 500) {
+    // grouped per route: /clients/123 and /clients/456 are one alert
+    const route = `${req.method} ${req.baseUrl}${req.route?.path ?? ""}`;
+    void raiseAlert({
+      key: `api:${route}`,
+      severity: "WARNING",
+      source: "api",
+      title: `Server error on ${route}`,
+      body: String(err.message ?? err).slice(0, 500),
+    });
+  }
 
   res.status(err.status || 500).json({
     success: false,

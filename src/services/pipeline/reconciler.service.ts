@@ -13,6 +13,7 @@
 import prisma from "@/utils/prisma/client";
 import { loggers } from "@/utils/logger";
 import { svcResultsBody } from "@/validators/svc.validators";
+import { raiseAlert, resolveAlert } from "@/services/alert.service";
 import { engine } from "./engineClient";
 import { applyResults } from "./ingest.service";
 import { advanceChain } from "./launch.service";
@@ -75,6 +76,14 @@ const checkRun = async (run: {
     await recordEvent(prisma, run.id, "Engine result did not match the contract", {
       payload: parsed.error.issues.slice(0, 10),
     });
+    await raiseAlert({
+      key: `result-contract:${run.id}`,
+      severity: "ERROR",
+      source: "engine",
+      title: "The pipeline sent a result the CRM cannot read",
+      body: parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+      meta: { runId: run.id },
+    });
   }
   if (["FAILED", "STOPPED"].includes(s.status) && !s.result) {
     await moveRun(run.id, s.status as "FAILED" | "STOPPED", {
@@ -100,14 +109,37 @@ const checkRun = async (run: {
 const checkHealth = async () => {
   const services = await prisma.externalService.findMany({
     where: { isActive: true, baseUrl: { not: null } },
-    select: { id: true, baseUrl: true, outboundKeyEnv: true },
+    select: { id: true, code: true, name: true, baseUrl: true, outboundKeyEnv: true },
   });
   for (const svc of services) {
     const reply = await engine.health(svc);
+    const ok = reply.ok && (reply.data as any)?.ok !== false;
+    const workerDown = ok && (reply.data as any)?.worker?.online === false;
     await prisma.externalService.update({
       where: { id: svc.id },
-      data: { lastHealthAt: new Date(), lastHealthOk: reply.ok && (reply.data as any)?.ok !== false },
+      data: { lastHealthAt: new Date(), lastHealthOk: ok },
     });
+
+    if (ok) await resolveAlert(`engine-down:${svc.code}`);
+    else {
+      await raiseAlert({
+        key: `engine-down:${svc.code}`,
+        severity: "ERROR",
+        source: "engine",
+        title: `${svc.name} is not responding`,
+        body: reply.error ?? `HTTP ${reply.status}`,
+        link: "/admin/integrations",
+      });
+    }
+    if (workerDown) {
+      await raiseAlert({
+        key: `worker-down:${svc.code}`,
+        severity: "ERROR",
+        source: "engine",
+        title: `${svc.name}: the worker is offline — runs will wait in the queue`,
+        link: "/admin/integrations",
+      });
+    } else if (ok) await resolveAlert(`worker-down:${svc.code}`);
   }
 };
 
@@ -136,7 +168,17 @@ export const reconcileOnce = async () => {
       take: BATCH,
     });
     for (const run of due) {
-      await checkRun(run).catch((e) => loggers.error(`Reconcile run ${run.id} failed`, e));
+      await checkRun(run).catch(async (e) => {
+        loggers.error(`Reconcile run ${run.id} failed`, e);
+        await raiseAlert({
+          key: `reconcile:${run.id}`,
+          severity: "WARNING",
+          source: "pipeline",
+          title: "A pipeline run could not be checked",
+          body: String((e as Error)?.message ?? e).slice(0, 500),
+          meta: { runId: run.id },
+        });
+      });
     }
 
     const parents = await prisma.stepRun.findMany({

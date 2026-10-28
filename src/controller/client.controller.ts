@@ -4,7 +4,7 @@
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { clientScopeWhere } from "@/services/scope.service";
+import { clientScopeWhere, spocWhereForUserId } from "@/services/scope.service";
 import { assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers } from "@/services/notification.service";
@@ -22,6 +22,7 @@ import type {
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const LOOKUP = { id: true, code: true, label: true } as const;
+const ORG = { id: true, name: true, code: true } as const;
 
 const CLIENT_LIST_SELECT = {
   id: true,
@@ -34,7 +35,15 @@ const CLIENT_LIST_SELECT = {
   updatedAt: true,
   industry: { select: LOOKUP },
   category: { select: LOOKUP },
+  businessUnit: { select: ORG },
+  serviceLines: { select: { serviceLine: { select: ORG } }, orderBy: { createdAt: "asc" } },
   createdBy: { select: PERSON },
+  // who works the client (set by super admin / clients.assign)
+  assignments: {
+    where: { endedAt: null },
+    select: { assignedAt: true, user: { select: PERSON } },
+    orderBy: { assignedAt: "asc" },
+  },
   // primary address for the list row
   locations: {
     where: { isPrimary: true, isActive: true },
@@ -43,6 +52,40 @@ const CLIENT_LIST_SELECT = {
   },
   _count: { select: { spocs: { where: { isActive: true } } } },
 } as const satisfies Prisma.ClientSelect;
+
+// list rows also carry what the CRM holds and the last pipeline run
+const COVERAGE_SELECT = {
+  _count: {
+    select: {
+      spocs: { where: { isActive: true } },
+      documents: true,
+      financials: true,
+      programs: true,
+      outreachPacks: true,
+    },
+  },
+  stepRuns: {
+    where: { parentRunId: null },
+    orderBy: { createdAt: "desc" },
+    take: 1,
+    select: { id: true, status: true, note: true, createdAt: true, step: { select: { key: true, label: true } } },
+  },
+} as const satisfies Prisma.ClientSelect;
+
+const MISSING_WHERE: Record<string, Prisma.ClientWhereInput> = {
+  website: { OR: [{ website: null }, { website: "" }] },
+  reports: { documents: { none: {} } },
+  spocs: { spocs: { none: { isActive: true } } },
+  approved: { spocs: { none: { isActive: true, approvalStatus: "APPROVED" } } },
+  figures: { financials: { none: {} } },
+  outreach: { outreachPacks: { none: {} } },
+};
+
+const PIPELINE_WHERE: Record<string, Prisma.ClientWhereInput> = {
+  never: { stepRuns: { none: {} } },
+  run: { stepRuns: { some: {} } },
+  failed: { stepRuns: { some: { parentRunId: null, status: { in: ["FAILED", "DISPATCH_FAILED", "TIMED_OUT"] } } } },
+};
 
 const LOCATION_SELECT = {
   id: true,
@@ -145,56 +188,166 @@ const findClientInScope = async (req: Request, id: string) => {
   return client;
 };
 
-// ── GET /clients
-export const listClients = async (req: Request, res: Response) => {
-  const q = req.validatedQuery as ListClientsQuery;
+// BU and service lines must exist and be active
+const assertOrg = async (businessUnitId?: string | null, serviceLineIds?: string[]) => {
+  if (businessUnitId) {
+    const bu = await prisma.businessUnit.findFirst({ where: { id: businessUnitId, isActive: true } });
+    if (!bu) throw ApiError(400, "Unknown or inactive business unit", "INVALID_BU");
+  }
+  if (serviceLineIds?.length) {
+    const n = await prisma.serviceLine.count({ where: { id: { in: serviceLineIds }, isActive: true } });
+    if (n !== new Set(serviceLineIds).size) {
+      throw ApiError(400, "Unknown or inactive service line", "INVALID_SL");
+    }
+  }
+};
 
-  const spocFilter: Prisma.ClientSpocWhereInput = {
-    ...(q.handlerId && { handlerId: q.handlerId }),
-    ...(q.businessUnitId && { businessUnitId: q.businessUnitId }),
-    ...(q.serviceLineId && { serviceLineId: q.serviceLineId }),
-  };
+const serviceLinesData = (ids: string[]) => ({
+  create: [...new Set(ids)].map((serviceLineId) => ({ serviceLineId })),
+});
 
-  const locationFilter: Prisma.ClientLocationWhereInput = {
+// India-time day bounds for date filters: from = start of that day, to = end of it
+const dayStart = (d: string) => new Date(`${d}T00:00:00+05:30`);
+const dayEnd = (d: string) => new Date(dayStart(d).getTime() + 86_400_000);
+const range = (from?: string, to?: string) =>
+  from || to ? { ...(from && { gte: dayStart(from) }), ...(to && { lt: dayEnd(to) }) } : undefined;
+
+// Each filter is its own AND clause, so two filters on one relation never
+// overwrite each other. Multi values match any of them, except "missing" and
+// "steps done" (every picked one must hold).
+const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereInput[] => {
+  const and: Prisma.ClientWhereInput[] = [];
+  const any = <T,>(v: T[] | undefined) => (v?.length ? v : undefined);
+
+  if (q.status) and.push({ status: q.status });
+  if (any(q.industryId)) and.push({ industryId: { in: q.industryId! } });
+  if (any(q.categoryId)) and.push({ categoryId: { in: q.categoryId! } });
+  if (any(q.businessUnitId)) and.push({ businessUnitId: { in: q.businessUnitId! } });
+  if (any(q.serviceLineId)) and.push({ serviceLines: { some: { serviceLineId: { in: q.serviceLineId! } } } });
+  if (any(q.createdById)) and.push({ createdById: { in: q.createdById! } });
+  if (any(q.handlerId)) and.push({ spocs: { some: { isActive: true, handlerId: { in: q.handlerId! } } } });
+
+  // assignment: to whom and by whom match the same active assignment
+  if (q.assignedTo === "none") and.push({ assignments: { none: { endedAt: null } } });
+  const to = [...(q.assignedToId ?? []), ...(q.assignedTo === "me" ? [me] : q.assignedTo && q.assignedTo !== "none" ? [q.assignedTo] : [])];
+  if (to.length || any(q.assignedById)) {
+    and.push({
+      assignments: {
+        some: {
+          endedAt: null,
+          ...(to.length && { userId: { in: to } }),
+          ...(any(q.assignedById) && { assignedById: { in: q.assignedById! } }),
+        },
+      },
+    });
+  }
+
+  for (const gap of q.missing ?? []) and.push(MISSING_WHERE[gap]!);
+  if (q.pipeline) and.push(PIPELINE_WHERE[q.pipeline]!);
+  for (const key of q.stepsDone ?? []) and.push({ stepRuns: { some: { status: "DONE", step: { key } } } });
+  if (any(q.stepsNotDone)) and.push({ stepRuns: { none: { status: "DONE", step: { key: { in: q.stepsNotDone! } } } } });
+  if (any(q.outreachStatus)) and.push({ outreachPacks: { some: { status: { in: q.outreachStatus! } } } });
+
+  const created = range(q.createdFrom, q.createdTo);
+  if (created) and.push({ createdAt: created });
+  const ran = range(q.lastRunFrom, q.lastRunTo);
+  if (ran) and.push({ stepRuns: { some: { parentRunId: null, createdAt: ran } } });
+
+  const loc: Prisma.ClientLocationWhereInput = {
     ...(q.state && { state: { equals: q.state, mode: "insensitive" } }),
     ...(q.district && { district: { equals: q.district, mode: "insensitive" } }),
     ...(q.city && { city: { equals: q.city, mode: "insensitive" } }),
   };
+  if (Object.keys(loc).length) and.push({ locations: { some: { isActive: true, ...loc } } });
+
+  if (q.search) {
+    and.push({
+      OR: [
+        { name: { contains: q.search, mode: "insensitive" } },
+        { shortName: { contains: q.search, mode: "insensitive" } },
+        { cin: { contains: q.search, mode: "insensitive" } },
+      ],
+    });
+  }
+  return and;
+};
+
+// ── GET /clients
+export const listClients = async (req: Request, res: Response) => {
+  const q = req.validatedQuery as ListClientsQuery;
 
   const where: Prisma.ClientWhereInput = {
     deletedAt: null,
-    AND: [
-      await clientScopeWhere(req.user, req.scope!),
-      {
-        ...(q.status && { status: q.status }),
-        ...(q.industryId && { industryId: q.industryId }),
-        ...(q.categoryId && { categoryId: q.categoryId }),
-        ...(Object.keys(spocFilter).length && {
-          spocs: { some: { isActive: true, ...spocFilter } },
-        }),
-        ...(Object.keys(locationFilter).length && {
-          locations: { some: { isActive: true, ...locationFilter } },
-        }),
-        ...(q.search && {
-          OR: [
-            { name: { contains: q.search, mode: "insensitive" } },
-            { shortName: { contains: q.search, mode: "insensitive" } },
-            { cin: { contains: q.search, mode: "insensitive" } },
-          ],
-        }),
-      },
-    ],
+    AND: [await clientScopeWhere(req.user, req.scope!), ...clientFilterWhere(q, req.user.id)],
   };
 
-  const [total, clients] = await Promise.all([
+  const [total, rows] = await Promise.all([
     prisma.client.count({ where }),
     prisma.client.findMany({
       where,
-      select: CLIENT_LIST_SELECT,
+      select: { ...CLIENT_LIST_SELECT, ...COVERAGE_SELECT },
       orderBy: { [q.sortBy]: q.sortDir },
       ...toSkipTake(q),
     }),
   ]);
+
+  // approved SPOCs + sent packs for this page in two grouped queries
+  const ids = rows.map((r) => r.id);
+  const mine = await spocWhereForUserId(req.user.id);
+  const [approved, sent, stepRows, visible] = await Promise.all([
+    prisma.clientSpoc.groupBy({
+      by: ["clientId"],
+      where: { clientId: { in: ids }, isActive: true, approvalStatus: "APPROVED" },
+      _count: true,
+    }),
+    prisma.outreachPack.groupBy({
+      by: ["clientId"],
+      where: { clientId: { in: ids }, status: { notIn: ["DRAFT", "REVIEWED"] } },
+      _count: true,
+    }),
+    // latest run per step per client — the step columns of the list
+    prisma.stepRun.findMany({
+      where: { clientId: { in: ids } },
+      distinct: ["clientId", "stepId"],
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true, clientId: true, status: true, note: true, createdAt: true,
+        step: { select: { key: true } },
+        requestedBy: { select: PERSON },
+      },
+    }),
+    prisma.clientSpoc.groupBy({
+      by: ["clientId"],
+      where: { clientId: { in: ids }, isActive: true, ...mine },
+      _count: true,
+    }),
+  ]);
+  const visibleBy = new Map(visible.map((v) => [v.clientId, v._count]));
+  const stepsBy = new Map<string, Record<string, Omit<(typeof stepRows)[number], "clientId" | "step">>>();
+  for (const { clientId, step, ...r } of stepRows) {
+    const m = stepsBy.get(clientId) ?? {};
+    m[step.key] = r;
+    stepsBy.set(clientId, m);
+  }
+  const approvedBy = new Map(approved.map((a) => [a.clientId, a._count]));
+  const sentBy = new Map(sent.map((a) => [a.clientId, a._count]));
+
+  const clients = rows.map(({ stepRuns, _count, ...c }) => ({
+    ...c,
+    // SPOCs column = the ones this user sees; coverage = what the CRM holds in total
+    _count: { spocs: visibleBy.get(c.id) ?? 0 },
+    coverage: {
+      reports: _count.documents,
+      spocs: _count.spocs,
+      approvedSpocs: approvedBy.get(c.id) ?? 0,
+      figureYears: _count.financials,
+      programs: _count.programs,
+      outreachPacks: _count.outreachPacks,
+      outreachSent: sentBy.get(c.id) ?? 0,
+      lastRun: stepRuns[0] ?? null,
+      steps: stepsBy.get(c.id) ?? {},
+    },
+  }));
 
   res.json({ success: true, data: clients, meta: pageMeta(total, q.page, q.limit) });
 };
@@ -217,7 +370,11 @@ export const getClientById = async (req: Request, res: Response) => {
   });
   if (!client) throw notFound("Client");
 
-  res.json({ success: true, data: client });
+  // SPOC count = the ones this user may see (others' SPOCs stay hidden)
+  const spocs = await prisma.clientSpoc.count({
+    where: { clientId: id, isActive: true, ...(await spocWhereForUserId(req.user.id)) },
+  });
+  res.json({ success: true, data: { ...client, _count: { spocs }, spocsTotal: client._count.spocs } });
 };
 
 // ── POST /clients — starts PENDING until approved
@@ -228,10 +385,16 @@ export const createClient = async (req: Request, res: Response) => {
     industryId: [body.industryId, "INDUSTRY"],
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
   });
+  await assertOrg(body.businessUnitId, body.serviceLineIds);
+  const { serviceLineIds, ...fields } = body;
 
   const client = await prisma.$transaction(async (tx) => {
     const c = await tx.client.create({
-      data: { ...definedOnly(body), createdById: req.user.id },
+      data: {
+        ...definedOnly(fields),
+        createdById: req.user.id,
+        ...(serviceLineIds?.length && { serviceLines: serviceLinesData(serviceLineIds) }),
+      },
       select: CLIENT_LIST_SELECT,
     });
 
@@ -258,19 +421,28 @@ export const updateClient = async (req: Request, res: Response) => {
     industryId: [body.industryId, "INDUSTRY"],
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
   });
+  await assertOrg(body.businessUnitId, body.serviceLineIds);
 
-  const data = definedOnly(body);
-  const changed = Object.keys(data);
+  const { serviceLineIds, ...fields } = body;
+  const data = definedOnly(fields);
+  const changed = [...Object.keys(data), ...(serviceLineIds ? ["serviceLineIds"] : [])];
 
   const updated = await prisma.$transaction(async (tx) => {
-    const c = await tx.client.update({ where: { id }, data, select: CLIENT_LIST_SELECT });
+    const c = await tx.client.update({
+      where: { id },
+      data: {
+        ...data,
+        ...(serviceLineIds && { serviceLines: { deleteMany: {}, ...serviceLinesData(serviceLineIds) } }),
+      },
+      select: CLIENT_LIST_SELECT,
+    });
 
     await logClientActivity(tx, {
       clientId: id,
       actorId: req.user.id,
       type: "CLIENT_UPDATED",
       summary: `Updated ${changed.join(", ")}`,
-      meta: { changes: data },
+      meta: { changes: { ...data, ...(serviceLineIds && { serviceLineIds }) } },
     });
 
     return c;
@@ -344,7 +516,11 @@ export const listClientActivities = async (req: Request, res: Response) => {
   const q = req.validatedQuery as { page: number; limit: number };
   await findClientInScope(req, id);
 
-  const where = { clientId: id };
+  // activity on someone else's SPOC stays with them
+  const where: Prisma.ClientActivityWhereInput = {
+    clientId: id,
+    OR: [{ spocId: null }, { spoc: await spocWhereForUserId(req.user.id) }],
+  };
   const [total, rows] = await Promise.all([
     prisma.clientActivity.count({ where }),
     prisma.clientActivity.findMany({
@@ -651,15 +827,16 @@ export const getClientDocumentUrl = async (req: Request, res: Response) => {
 
   const doc = await prisma.clientDocument.findFirst({
     where: { id: documentId, clientId: id },
-    select: { fileKey: true },
+    select: { fileKey: true, fileName: true },
   });
   if (!doc) throw notFound("Document");
+  const download = req.query.download === "1";
 
   const unavailable = () =>
     ApiError(503, "Document storage is not configured", "STORAGE_UNAVAILABLE");
   if (!process.env.AWS_BUCKET) throw unavailable();
 
-  const url = await getSignedUrl(doc.fileKey, DOCUMENT_URL_TTL);
+  const url = await getSignedUrl(doc.fileKey, DOCUMENT_URL_TTL, download ? (doc.fileName ?? doc.fileKey.split("/").pop()) : undefined);
   if (!url) throw unavailable();
 
   res.json({ success: true, data: { url, expiresIn: DOCUMENT_URL_TTL } });

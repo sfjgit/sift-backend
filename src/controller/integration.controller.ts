@@ -30,7 +30,7 @@ const SERVICE_SELECT = {
   lastHealthOk: true,
   inboundKeyHash: true,
   steps: {
-    select: { id: true, key: true, label: true, target: true, uiOrder: true, userClientLimit: true, isActive: true, config: true },
+    select: { id: true, key: true, label: true, target: true, uiOrder: true, userClientLimit: true, rerunAfterDays: true, isActive: true, config: true },
     orderBy: [{ uiOrder: { sort: "asc" } }],
   },
 } as const satisfies Prisma.ExternalServiceSelect;
@@ -127,6 +127,7 @@ export const updatePipelineStep = async (req: Request, res: Response) => {
     },
   });
   await createAuditLog({ actorId: req.user.id, action: "UPDATE", module: "pipeline_steps", recordId: id,
-    oldData: { label: before.label, isActive: before.isActive, userClientLimit: before.userClientLimit }, newData: body, req });
+    oldData: { label: before.label, isActive: before.isActive, userClientLimit: before.userClientLimit,
+      rerunAfterDays: before.rerunAfterDays }, newData: body, req });
   res.json({ success: true, message: "Step updated", data: step });
 };

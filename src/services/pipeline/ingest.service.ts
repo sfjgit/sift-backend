@@ -10,7 +10,10 @@ import { EmailStatus, Prisma, StepRunStatus, ValidationBand } from "@prisma/clie
 import prisma from "@/utils/prisma/client";
 import { loggers } from "@/utils/logger";
 import { logClientActivity } from "@/services/clientActivity.service";
-import { notifyUsers } from "@/services/notification.service";
+import { notifyUsers, usersWithPermission } from "@/services/notification.service";
+import { raiseAlert } from "@/services/alert.service";
+import { spocWhereForUserId } from "@/services/scope.service";
+import { resultNote } from "./resultNote";
 import { toNameKey } from "@/utils/names";
 import { ResultKind, stepDef } from "@/config/pipeline";
 import type { ResultsBody, ResultSpoc } from "@/validators/svc.validators";
@@ -28,6 +31,7 @@ type Ctx = {
   businessUnitId: string | null;
   serviceLineId: string | null;
   canCreateSpocs: boolean;
+  mine: Prisma.ClientSpocWhereInput; // SPOCs the requester may see
   lookups: Map<string, Map<string, string>>; // type → code/label (lowercased) → id
   conflicts: Record<string, unknown>[];
   skipped: Record<string, unknown>[];
@@ -90,6 +94,21 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
   existing ??= await prisma.clientSpoc.findFirst({
     where: { clientId: ctx.clientId, nameKey, isActive: true },
   });
+
+  // someone else's SPOC stays theirs: not changed by this run, not shown to the runner
+  if (existing && !(await prisma.clientSpoc.count({ where: { id: existing.id, ...ctx.mine } }))) {
+    const handler = await prisma.user.findUnique({
+      where: { id: existing.handlerId },
+      select: { firstName: true, lastName: true },
+    });
+    ctx.skipped.push({
+      kind: "spocs",
+      name: label,
+      reason: `Already a SPOC of ${handler ? `${handler.firstName} ${handler.lastName}`.trim() : "another person"}`,
+      handledByOther: true,
+    });
+    return "skipped";
+  }
 
   const incoming: Record<(typeof CONTACT_FIELDS)[number], unknown> = {
     lastName: s.lastName,
@@ -414,6 +433,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     businessUnitId: opts.businessUnitId ?? null,
     serviceLineId: opts.serviceLineId ?? null,
     canCreateSpocs: !!def?.createsSpocs,
+    mine: await spocWhereForUserId(run.requestedById),
     lookups: await loadLookups(),
     conflicts: [],
     skipped: [],
@@ -442,10 +462,14 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
       }
       summary.spocs = counts;
       if (counts.created) {
-        await notifyUsers(prisma, [run.requestedById], null, {
-          type: "STEP_RUN_FINISHED",
-          title: `${counts.created} new SPOC(s) to review`,
+        // the requester and everyone who can approve; one notification each
+        const approvers = await usersWithPermission("spocs.approve");
+        await notifyUsers(prisma, [run.requestedById, ...approvers.map((u) => u.id)], null, {
+          type: "SPOC_APPROVAL_NEEDED",
+          severity: "WARNING",
+          title: `${counts.created} new SPOC(s) waiting for approval`,
           body: `${run.client.name} — approve them before outreach`,
+          link: "/approvals",
           referenceId: runId,
           referenceType: "STEP_RUN",
         });
@@ -461,6 +485,15 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     // release the claim so the engine's retry (or the reconciler) can try again
     await prisma.stepRun.update({ where: { id: runId }, data: { note: "Saving failed — will retry" } });
     loggers.error(`Step run ${runId}: saving results failed`, e);
+    await raiseAlert({
+      key: `ingest-failed:${runId}`,
+      severity: "ERROR",
+      source: "pipeline",
+      title: `Saving the results of ${run.step.label} failed`,
+      body: `${run.client.name}: ${String((e as Error)?.message ?? e).slice(0, 400)}`,
+      link: `/clients/${run.clientId}?tab=pipeline&run=${runId}`,
+      meta: { runId },
+    });
     throw e;
   }
 
@@ -475,10 +508,17 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
   const counted = ["DONE", "EMPTY", "FAILED", "STOPPED"] as const;
   const status: StepRunStatus = counted.includes(body.status) ? body.status : "DONE";
   const err = status === "FAILED" ? body.error : undefined;
+  // EMPTY may carry why (e.g. "No reports for this client yet") and what to do next
+  const why = status === "EMPTY" ? body.error : undefined;
 
   await moveRun(runId, status, {
     progress: 100,
-    note: status === "DONE" ? "Finished" : status === "EMPTY" ? "Nothing new found" : status === "STOPPED" ? "Stopped" : "Failed",
+    note:
+      status === "DONE" ? (resultNote(run.step.key, summary) ?? "Finished")
+      : status === "EMPTY" ? (why?.message ?? "Nothing new found")
+      : status === "STOPPED" ? "Stopped"
+      : "Failed",
+    ...(why?.howToContinue && { howToContinue: why.howToContinue }),
     resultSummary: summary as Prisma.InputJsonObject,
     viewData: viewData as Prisma.InputJsonObject,
     ...(body.costUsd !== undefined && body.costUsd !== null && { costUsd: body.costUsd }),

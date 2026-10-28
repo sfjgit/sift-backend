@@ -3,6 +3,7 @@
 //
 // Bodies the CSR pipeline engine sends to /api/svc/* (docs/PIPELINE_INTEGRATION.md §4-5).
 // Strings are trimmed and "" becomes undefined, so a blank never overwrites data.
+// Over-long text is cut to the limit: one wordy field must not reject a whole result.
 
 import { z } from "zod";
 
@@ -10,14 +11,30 @@ const text = (max: number) =>
   z
     .string()
     .trim()
-    .max(max)
-    .transform((v) => (v === "" ? undefined : v))
+    .transform((v) => (v === "" ? undefined : v.slice(0, max).trim()))
     .nullish()
     .transform((v) => v ?? undefined);
 
+// required text: must not be blank; over-long is cut, not rejected
+const req = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((v) => v.slice(0, max).trim());
+
 const money = z.coerce.number().finite().nonnegative().max(1e14).nullish().transform((v) => v ?? undefined);
 const years = z.coerce.number().finite().min(0).max(99.9).nullish().transform((v) => v ?? undefined);
-const fy = z.string().trim().min(4).max(20);
+// FY is stored as "2025-2026" (the CASPA format); the engine may send "2025-26" or "FY 2025-26"
+const toFy = (v: string) => {
+  const m = /^(?:FY\s*)?(\d{4})\s*[-/–]\s*(\d{2}|\d{4})$/i.exec(v);
+  if (!m) return v;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  const next = m[2]!.length === 2 ? (start + 1) % 100 : start + 1;
+  return end === next ? `${start}-${start + 1}` : v;
+};
+const fy = z.string().trim().min(4).max(20).transform(toFy);
 
 export const svcEventBody = z.object({
   status: z.literal("RUNNING").optional(),
@@ -28,7 +45,7 @@ export const svcEventBody = z.object({
 
 const resultSpoc = z.object({
   id: z.string().uuid().nullish().transform((v) => v ?? undefined),
-  firstName: z.string().trim().min(1).max(120),
+  firstName: req(120),
   lastName: text(120),
   designation: text(300),
   department: text(200),
@@ -76,7 +93,7 @@ const resultFinancial = z.object({
 
 const resultProgram = z.object({
   fy,
-  name: z.string().trim().min(1).max(500),
+  name: req(500),
   sector: text(200),
   budgetRs: money,
   locations: text(2000),
@@ -102,8 +119,8 @@ const resultOutreach = z.object({
     .array(
       z.object({
         sequenceNo: z.coerce.number().int().min(0).max(20),
-        subject: z.string().trim().min(1).max(500),
-        body: z.string().trim().min(1).max(20000),
+        subject: req(500),
+        body: req(20000),
       }),
     )
     .min(1)

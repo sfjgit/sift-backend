@@ -7,6 +7,7 @@
 import { PermissionScope, Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import type { AuthUser } from "@/types/express";
+import { getUserPermissionMap } from "@/services/permission.service";
 
 type ScopeUser = Pick<AuthUser, "id" | "departmentId">;
 
@@ -109,7 +110,7 @@ export const spocScopeWhere = async (
   return ids ? { handlerId: { in: ids } } : {};
 };
 
-// implicit access: created it, or can see any of its SPOCs
+// access: assigned to it, created it, or can see any of its SPOCs
 export const clientScopeWhere = async (
   user: ScopeUser,
   scope: PermissionScope,
@@ -118,11 +119,25 @@ export const clientScopeWhere = async (
   return ids
     ? {
         OR: [
+          { assignments: { some: { userId: { in: ids }, endedAt: null } } },
           { createdById: { in: ids } },
           { spocs: { some: { handlerId: { in: ids } } } },
         ],
       }
     : {};
+};
+
+// SPOCs a user may see under spocs.read, looked up by id — for work done on
+// their behalf (pipeline runs). No spocs.read = none.
+export const spocWhereForUserId = async (userId: string): Promise<Prisma.ClientSpocWhereInput> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, departmentId: true, isSuperAdmin: true, roleId: true },
+  });
+  if (!user) return { id: { in: [] } };
+  const grant = (await getUserPermissionMap(user))["spocs.read"];
+  if (!grant) return { id: { in: [] } };
+  return grant === true ? {} : spocScopeWhere(user, grant);
 };
 
 export const stepRunScopeWhere = async (

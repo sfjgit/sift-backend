@@ -8,6 +8,7 @@ export const updatePipelineStepBody = z
     label: z.string().trim().min(1).max(100).optional(),
     isActive: z.boolean().optional(),
     userClientLimit: z.number().int().min(1).max(100000).nullable().optional(),
+    rerunAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
     config: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "Nothing to update");

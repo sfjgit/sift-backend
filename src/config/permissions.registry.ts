@@ -34,13 +34,14 @@ export const MODULES = {
     label: "Clients",
     group: "CRM",
     order: 1,
-    description: "Company master. Visible if you created it or can see one of its SPOCs.",
+    description: "Company master. Visible if it is assigned to you, you created it, or you can see one of its SPOCs.",
     actions: {
       read: { label: "View", scoped: true },
       create: { label: "Add", scoped: false },
       update: { label: "Edit", scoped: true, requires: ["clients.read"] },
       delete: { label: "Delete", scoped: true, requires: ["clients.read"] },
       approve: { label: "Approve / change status", scoped: false, requires: ["clients.read"] },
+      assign: { label: "Assign to people", scoped: true, requires: ["clients.read", "users.read"] },
       export: { label: "Export", scoped: true, requires: ["clients.read"], reserved: true },
     },
   },
@@ -129,6 +130,7 @@ export const MODULES = {
     actions: {
       read: { label: "View", scoped: true, requires: ["clients.read"] },
       generate: { label: "Generate", scoped: false, requires: ["outreach.read", "step_runs.run"] },
+      manage: { label: "Review & track sending", scoped: true, requires: ["outreach.read"] },
     },
   },
   step_runs: {
@@ -140,6 +142,8 @@ export const MODULES = {
       read: { label: "View runs", scoped: true },
       run: { label: "Run steps", scoped: false, requires: ["step_runs.read"] },
       cancel: { label: "Stop runs", scoped: true, requires: ["step_runs.read"] },
+      rerun: { label: "Re-run a finished step early", scoped: false, requires: ["step_runs.run"] },
+      unlimited: { label: "No run-slot limit", scoped: false, requires: ["step_runs.run"] },
     },
   },
 
@@ -216,6 +220,25 @@ export const MODULES = {
     description: "External services and pipeline step configuration.",
     actions: {
       manage: { label: "Configure", scoped: false },
+    },
+  },
+  run_slots: {
+    label: "Run slots",
+    group: "Administration",
+    order: 34.2,
+    description: "How many pipeline runs people may start per day / week / month.",
+    actions: {
+      manage: { label: "Set run slots", scoped: false },
+    },
+  },
+  system_alerts: {
+    label: "System alerts",
+    group: "Administration",
+    order: 34.5,
+    description: "Engine down, runs failing, server errors. Holders of View get the alert notifications.",
+    actions: {
+      read: { label: "View (and get alerts)", scoped: false },
+      manage: { label: "Resolve", scoped: false, requires: ["system_alerts.read"] },
     },
   },
   audit: {

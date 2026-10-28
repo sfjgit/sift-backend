@@ -12,9 +12,9 @@ export const listAuthLogs = async (req: Request, res: Response) => {
   const q = req.validatedQuery as ListAuthLogsQuery;
 
   const where: Prisma.AuthLogsWhereInput = {
-    ...(q.userId && { userId: q.userId }),
-    ...(q.departmentId && { user: { departmentId: q.departmentId } }),
-    ...(q.type && { type: q.type }),
+    ...(q.userId?.length && { userId: { in: q.userId } }),
+    ...(q.departmentId?.length && { user: { departmentId: { in: q.departmentId } } }),
+    ...(q.type?.length && { type: { in: q.type } }),
     ...((q.startDate || q.endDate) && {
       createdAt: {
         ...(q.startDate && { gte: new Date(q.startDate) }),

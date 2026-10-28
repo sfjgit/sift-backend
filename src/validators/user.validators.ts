@@ -2,7 +2,7 @@
 // Path: src/validators/user.validators.ts
 
 import { z } from "zod";
-import { optionalId, optionalText, paginationQuery } from "@/validators/validator";
+import { csvIds, optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
 // accepts "2024-05-01" as well as full ISO; "" clears
 const optionalDate = z
@@ -51,20 +51,20 @@ export const adminResetPasswordBody = z.object({
 
 export const listUsersQuery = z.object({
   search: z.string().trim().optional(),
-  roleId: z.string().uuid().optional(),
-  departmentId: z.string().uuid().optional(),
-  designationId: z.string().uuid().optional(),
-  reportingToId: z.string().uuid().optional(),
-  teamLeadId: z.string().uuid().optional(),
-  businessUnitId: z.string().uuid().optional(),
-  serviceLineId: z.string().uuid().optional(),
+  roleId: csvIds,
+  departmentId: csvIds,
+  designationId: csvIds,
+  reportingToId: csvIds,
+  teamLeadId: csvIds,
+  businessUnitId: csvIds,
+  serviceLineId: csvIds,
   isActive: z
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .optional(),
   ...paginationQuery,
-  sortBy: z.enum(["firstName", "lastName", "createdAt", "dateOfJoin"]).default("firstName"),
-  sortDir: z.enum(["asc", "desc"]).default("asc"),
+  sortBy: z.enum(["firstName", "lastName", "createdAt", "dateOfJoin"]).catch("firstName"),
+  sortDir: z.enum(["asc", "desc"]).catch("asc"),
 });
 
 export type CreateUserInput = z.infer<typeof createUserBody>;
@@ -74,7 +74,7 @@ export type ListUsersQuery = z.infer<typeof listUsersQuery>;
 // lightweight picker — see GET /users/options
 export const userOptionsQuery = z.object({
   search: z.string().trim().optional(),
-  for: z.enum(["assign", "filter"]).default("filter"),
+  for: z.enum(["assign", "client_assign", "filter"]).default("filter"),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 

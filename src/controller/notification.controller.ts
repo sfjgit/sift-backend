@@ -28,8 +28,10 @@ export const getNotifications = async (req: Request, res: Response) => {
         select: {
           id: true,
           type: true,
+          severity: true,
           title: true,
           body: true,
+          link: true,
           referenceId: true,
           referenceType: true,
           isRead: true,

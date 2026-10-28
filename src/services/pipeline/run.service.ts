@@ -10,8 +10,10 @@ import prisma from "@/utils/prisma/client";
 import { getSignedUrl } from "@/lib/s3";
 import { loggers } from "@/utils/logger";
 import { logClientActivity } from "@/services/clientActivity.service";
+import { raiseAlert } from "@/services/alert.service";
 import { notifyUsers } from "@/services/notification.service";
 import { stepDef } from "@/config/pipeline";
+import { spocWhereForUserId } from "@/services/scope.service";
 import { engine } from "./engineClient";
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -114,6 +116,7 @@ export const buildJobPayload = async (runId: string) => {
     select: {
       id: true,
       clientId: true,
+      requestedById: true,
       options: true,
       step: { select: { key: true, config: true } },
     },
@@ -149,6 +152,9 @@ export const buildJobPayload = async (runId: string) => {
   });
 
   const spocInput = def?.spocInput ?? "none";
+  // a run works on the requester's own SPOCs only; "SPOCs from reports" gets
+  // everyone's so the engine knows who already exists (no duplicates)
+  const mine = run.step.key === "report_spocs" ? {} : await spocWhereForUserId(run.requestedById);
   const spocs =
     spocInput === "none"
       ? []
@@ -158,6 +164,7 @@ export const buildJobPayload = async (runId: string) => {
             isActive: true,
             ...(spocIds && { id: { in: spocIds } }),
             ...(spocInput === "approved" && { approvalStatus: "APPROVED" }),
+            ...mine,
           },
           select: {
             id: true,
@@ -187,7 +194,7 @@ export const buildJobPayload = async (runId: string) => {
   );
 
   const loc = client.locations[0];
-  const { spocIds: _ids, businessUnitId: _bu, serviceLineId: _sl, ...stepOptions } = opts;
+  const { spocIds: _ids, businessUnitId: _bu, serviceLineId: _sl, rerun: _r, ...stepOptions } = opts;
 
   return {
     runId: run.id,
@@ -257,6 +264,7 @@ export const dispatchRun = async (runId: string) => {
     payload = await buildJobPayload(runId);
   } catch (e) {
     await moveRun(runId, "DISPATCH_FAILED", {
+      note: "Could not start",
       errorCode: "PAYLOAD",
       errorMessage: "Could not prepare the job from CRM data",
       howToContinue: "Check the client still exists, then run the step again.",
@@ -270,15 +278,28 @@ export const dispatchRun = async (runId: string) => {
     : { ok: false, status: null, data: null, error: "Service is switched off" };
 
   if (reply.ok && reply.data?.jobId !== undefined) {
-    await prisma.stepRun.update({
-      where: { id: runId },
-      data: {
-        externalJobId: String(reply.data.jobId),
-        dispatchTries: tries,
-        nextCheckAt: after(CHECK_AFTER_MS),
-        note: "Waiting for the pipeline",
-      },
-    });
+    try {
+      await prisma.stepRun.update({
+        where: { id: runId },
+        data: {
+          externalJobId: String(reply.data.jobId),
+          dispatchTries: tries,
+          nextCheckAt: after(CHECK_AFTER_MS),
+          note: "Waiting for the pipeline",
+        },
+      });
+    } catch (e) {
+      // another run already holds this job id: retrying would loop forever
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+      await engine.stop(svc, String(reply.data.jobId));
+      await moveRun(runId, "DISPATCH_FAILED", {
+        note: "Could not start",
+        errorCode: "DUPLICATE_JOB",
+        errorMessage: `The pipeline gave job id ${reply.data.jobId}, which another run already has`,
+        howToContinue: "The pipeline was probably reset. Run the step again.",
+      }, `Duplicate job id ${reply.data.jobId}`);
+      return;
+    }
     await recordEvent(prisma, runId, `Accepted by the pipeline as job ${reply.data.jobId}`, {
       payload: { step: payload.step, spocs: payload.spocs.length, options: payload.options },
     });
@@ -290,6 +311,7 @@ export const dispatchRun = async (runId: string) => {
   if (refused || tries >= svc.maxDispatchTries) {
     await prisma.stepRun.update({ where: { id: runId }, data: { dispatchTries: tries } });
     await moveRun(runId, "DISPATCH_FAILED", {
+      note: "Could not start",
       errorCode: refused ? "REFUSED" : "UNREACHABLE",
       errorMessage: refused
         ? `The pipeline refused the job: ${reply.error}`
@@ -327,12 +349,14 @@ const onRunEnded = async (runId: string) => {
       clientId: true,
       requestedById: true,
       parentRunId: true,
+      errorCode: true,
       errorMessage: true,
-      step: { select: { label: true } },
+      step: { select: { key: true, label: true } },
       client: { select: { name: true } },
     },
   });
   if (!run) return;
+  const link = `/clients/${run.clientId}?tab=pipeline&run=${run.id}`;
 
   try {
     // free the double-click guard so the step can be run again
@@ -359,10 +383,26 @@ const onRunEnded = async (runId: string) => {
     if (!run.parentRunId) {
       await notifyUsers(prisma, [run.requestedById], null, {
         type: ok || run.status === "STOPPED" ? "STEP_RUN_FINISHED" : "STEP_RUN_FAILED",
+        severity: ok ? "SUCCESS" : run.status === "STOPPED" ? "INFO" : "ERROR",
         title: `${run.step.label} ${verb}`,
         body: ok ? run.client.name : `${run.client.name}: ${run.errorMessage ?? ""}`.trim(),
+        link,
         referenceId: run.id,
         referenceType: "STEP_RUN",
+      });
+    }
+
+    // failures are a system problem too: one alert per step + reason, counted
+    if (!ok && run.status !== "STOPPED") {
+      const code = run.errorCode ?? run.status;
+      await raiseAlert({
+        key: `run-failed:${run.step.key}:${code}`,
+        severity: ["UNREACHABLE", "DUPLICATE_JOB", "JOB_LOST", "PAYLOAD"].includes(code) ? "ERROR" : "WARNING",
+        source: "pipeline",
+        title: `${run.step.label} runs are failing (${code})`,
+        body: `Latest: ${run.client.name} — ${run.errorMessage ?? run.status}`,
+        link,
+        meta: { runId: run.id, clientId: run.clientId },
       });
     }
   } catch (e) {

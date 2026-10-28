@@ -14,6 +14,8 @@ import { RUN_ALL_DEFAULT, stepDef } from "@/config/pipeline";
 import type { AuthUser } from "@/types/express";
 import { engine } from "./engineClient";
 import { ACTIVE, dispatchRun, isTerminal, moveRun, onChildEnded, recordEvent } from "./run.service";
+import { spocWhereForUserId } from "@/services/scope.service";
+import { assertSlots, canForceRerun, rerunBlock, slotBlock, type RuleUser } from "./runRules.service";
 
 type StepRow = Prisma.PipelineStepGetPayload<{
   include: { service: { select: { isActive: true } } };
@@ -26,7 +28,11 @@ export type StartRunInput = {
   options?: Record<string, unknown> | undefined;
   businessUnitId?: string | undefined;
   serviceLineId?: string | undefined;
+  rerun?: boolean | undefined; // run a step again although it was done recently
 };
+
+// engine stages that redo finished work only when told to
+const ENGINE_FORCE = new Set(["figures", "apollo", "validate", "emails"]);
 
 // stable JSON — key order must not change the fingerprint
 const stable = (v: unknown): string =>
@@ -66,14 +72,35 @@ const assertWithinLimit = async (user: AuthUser, step: StepRow, clientId: string
   }
 };
 
-// new SPOCs need a BU + SL; a user with exactly one of each needs to pick nothing
-const resolveBuSl = async (userId: string, buId?: string, slId?: string) => {
+// New SPOCs need a BU + SL. The BU is the client's; the SL must be one of the
+// client's service lines and is picked for the user when there is only one choice.
+// Clients without BU / SLs fall back to the user's own (exactly one of each).
+const resolveBuSl = async (
+  userId: string,
+  client: { businessUnitId: string | null; serviceLines: { serviceLineId: string }[] },
+  buId?: string,
+  slId?: string,
+) => {
+  const clientSls = client.serviceLines.map((s) => s.serviceLineId);
+  if (buId && client.businessUnitId && buId !== client.businessUnitId) {
+    throw ApiError(400, "New SPOCs go under the client's own business unit", "BU_NOT_CLIENTS");
+  }
+  if (slId && clientSls.length && !clientSls.includes(slId)) {
+    throw ApiError(400, "Pick one of this client's service lines", "SL_NOT_CLIENTS");
+  }
+
   const [bus, sls] = await Promise.all([
-    buId ? null : prisma.userBusinessUnit.findMany({ where: { userId }, select: { businessUnitId: true } }),
-    slId ? null : prisma.userServiceLine.findMany({ where: { userId }, select: { serviceLineId: true } }),
+    buId || client.businessUnitId
+      ? null
+      : prisma.userBusinessUnit.findMany({ where: { userId }, select: { businessUnitId: true } }),
+    slId || clientSls.length === 1
+      ? null
+      : prisma.userServiceLine.findMany({ where: { userId }, select: { serviceLineId: true } }),
   ]);
-  const businessUnitId = buId ?? (bus?.length === 1 ? bus[0]!.businessUnitId : undefined);
-  const serviceLineId = slId ?? (sls?.length === 1 ? sls[0]!.serviceLineId : undefined);
+  const mySls = (sls ?? []).map((s) => s.serviceLineId).filter((id) => !clientSls.length || clientSls.includes(id));
+
+  const businessUnitId = buId ?? client.businessUnitId ?? (bus?.length === 1 ? bus[0]!.businessUnitId : undefined);
+  const serviceLineId = slId ?? (clientSls.length === 1 ? clientSls[0] : mySls.length === 1 ? mySls[0] : undefined);
   if (!businessUnitId || !serviceLineId) {
     throw ApiError(400, "Pick the business unit and service line for new SPOCs", "BU_SL_REQUIRED");
   }
@@ -83,6 +110,43 @@ const resolveBuSl = async (userId: string, buId?: string, slId?: string) => {
   ]);
   if (!bu || !sl) throw ApiError(400, "Business unit or service line not found", "INVALID_BU_SL");
   return { businessUnitId, serviceLineId };
+};
+
+// What a step needs from the CRM before it can do anything for this client.
+// null = ready; otherwise the reason + what to do. Used to refuse a single run
+// and to skip a step inside "Run all" without sending it to the engine.
+const missingInput = async (
+  stepKey: string,
+  clientId: string,
+  options: Record<string, unknown>,
+  userId: string,
+): Promise<{ message: string; howToContinue: string } | null> => {
+  if (stepKey === "report_spocs" || stepKey === "figures") {
+    const docs = await prisma.clientDocument.count({ where: { clientId } });
+    if (!docs) {
+      return {
+        message: "No reports for this client yet",
+        howToContinue: "Run \u201cFind CSR reports\u201d first. If it finds none, check the client's website.",
+      };
+    }
+  }
+  const needsSpocs = stepKey === "enrich" || stepKey === "validate" || (stepKey === "apollo" && options.mode !== "find");
+  if (needsSpocs) {
+    // the run only works on the requester's own SPOCs
+    const spocs = await prisma.clientSpoc.count({
+      where: { clientId, isActive: true, ...(await spocWhereForUserId(userId)) },
+    });
+    if (!spocs) {
+      return {
+        message: "You have no SPOCs at this client yet",
+        howToContinue:
+          stepKey === "apollo"
+            ? "Turn on \u201cFind new decision-makers\u201d, run \u201cSPOCs from reports\u201d, or add a SPOC by hand."
+            : "Find them with \u201cSPOCs from reports\u201d or Apollo, or add a SPOC by hand.",
+      };
+    }
+  }
+  return null;
 };
 
 const RUN_OUT = {
@@ -143,7 +207,7 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
 
   const client = await prisma.client.findFirst({
     where: { id: input.clientId, deletedAt: null },
-    select: { id: true },
+    select: { id: true, businessUnitId: true, serviceLines: { select: { serviceLineId: true } } },
   });
   if (!client) throw notFound("Client");
 
@@ -151,32 +215,54 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
   if (spocIds) {
     if (def.spocInput === "none") throw ApiError(400, `"${step.label}" does not take SPOCs`, "NO_SPOC_INPUT");
     const found = await prisma.clientSpoc.findMany({
-      where: { id: { in: spocIds }, clientId: client.id, isActive: true },
+      where: { id: { in: spocIds }, clientId: client.id, isActive: true, ...(await spocWhereForUserId(user.id)) },
       select: { approvalStatus: true },
     });
     if (found.length !== spocIds.length) {
-      throw ApiError(400, "Some SPOCs are not active SPOCs of this client", "INVALID_SPOCS");
+      throw ApiError(400, "Some SPOCs are not active SPOCs of yours at this client", "INVALID_SPOCS");
     }
     if (def.spocInput === "approved" && found.some((s) => s.approvalStatus !== "APPROVED")) {
       throw ApiError(400, "Only approved SPOCs can get outreach emails", "SPOCS_NOT_APPROVED");
     }
   } else if (def.spocInput === "approved") {
     const approved = await prisma.clientSpoc.count({
-      where: { clientId: client.id, isActive: true, approvalStatus: "APPROVED" },
+      where: { clientId: client.id, isActive: true, approvalStatus: "APPROVED", ...(await spocWhereForUserId(user.id)) },
     });
-    if (!approved) throw ApiError(400, "This client has no approved SPOCs yet", "NO_APPROVED_SPOCS");
+    if (!approved) throw ApiError(400, "You have no approved SPOCs at this client yet", "NO_APPROVED_SPOCS");
   }
+
+  if (def.engineStage !== null) {
+    const missing = await missingInput(step.key, client.id, input.options ?? {}, user.id);
+    if (missing) throw ApiError(400, `${missing.message}. ${missing.howToContinue}`, "NO_INPUT");
+  }
+
+  const forced = !!input.rerun;
+  if (forced && !(await canForceRerun(user))) {
+    throw ApiError(403, "Only an admin can run a step again before its re-run date", "FORBIDDEN");
+  }
+  if (def.engineStage !== null && !forced) {
+    const done = await rerunBlock(step, client.id, user.id);
+    if (done) {
+      const can = await canForceRerun(user);
+      throw ApiError(409, `${done.message}.${can ? "" : " Ask an admin if it must run again now."}`, "ALREADY_DONE");
+    }
+  }
+  await assertSlots(user, step);
 
   // run_all: every step of the chain must be runnable by this user now
   const chainKeys = def.engineStage === null ? chainSteps(input.options) : [];
   for (const key of chainKeys) await assertWithinLimit(user, await findStep(key), client.id);
   if (def.engineStage !== null) await assertWithinLimit(user, step, client.id);
 
-  const needsBuSl = def.createsSpocs && (def.engineStage !== null || chainKeys.some((k) => stepDef(k)?.createsSpocs));
-  const buSl = needsBuSl ? await resolveBuSl(user.id, input.businessUnitId, input.serviceLineId) : {};
+  const needsBuSl = def.engineStage !== null ? def.createsSpocs : chainKeys.some((k) => stepDef(k)?.createsSpocs);
+  const buSl = needsBuSl
+    ? await resolveBuSl(user.id, client, input.businessUnitId, input.serviceLineId)
+    : {};
 
   const options = {
     ...(input.options ?? {}),
+    ...(forced && def.engineStage !== null && ENGINE_FORCE.has(step.key) && { force: true }),
+    ...(forced && { rerun: true }),
     ...(chainKeys.length && { steps: chainKeys }),
     ...(spocIds && { spocIds }),
     ...buSl,
@@ -225,6 +311,50 @@ const chainSteps = (options?: Record<string, unknown>) => {
 
 // ── Run all steps ────────────────────────────────────────────────────────────
 
+// "2 done · 1 found nothing · 3 skipped (no reports)" — what the chain actually did
+const chainNote = (children: { status: StepRunStatus; note: string | null }[]) => {
+  const skipped = children.filter((c) => c.note?.startsWith("Skipped"));
+  const count = (st: StepRunStatus) => children.filter((c) => c.status === st && !skipped.includes(c)).length;
+  const why = [...new Set(skipped.map((c) => c.note!.replace(/^Skipped: (.)/, (_m, a: string) => a.toLowerCase())))];
+  return [
+    count("DONE") && `${count("DONE")} done`,
+    count("EMPTY") && `${count("EMPTY")} found nothing`,
+    count("FAILED") + count("TIMED_OUT") + count("DISPATCH_FAILED") &&
+      `${count("FAILED") + count("TIMED_OUT") + count("DISPATCH_FAILED")} failed`,
+    skipped.length && `${skipped.length} skipped (${why.join("; ")})`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+    .slice(0, 300);
+};
+
+const chainSkip = async (
+  step: StepRow,
+  parent: { clientId: string; requestedById: string; options: unknown },
+  options: Record<string, unknown>,
+) => {
+  const missing = await missingInput(step.key, parent.clientId, options, parent.requestedById);
+  if (missing) return missing;
+
+  const user: RuleUser | null = await prisma.user.findUnique({
+    where: { id: parent.requestedById },
+    select: { id: true, roleId: true, isSuperAdmin: true },
+  });
+  if (!user) return { message: "The person who started this run no longer exists", howToContinue: "Start it again." };
+  if (!(parent.options as Record<string, unknown> | null)?.rerun) {
+    const done = await rerunBlock(step, parent.clientId, user.id);
+    if (done) {
+      return {
+        message: `Already done by ${done.byMe ? "you" : done.by}`,
+        howToContinue: `${done.message}.`,
+      };
+    }
+  }
+  const slots = await slotBlock(user, step, false);
+  if (slots) return { message: "No run slots left", howToContinue: `${slots}.` };
+  return null;
+};
+
 export const advanceChain = async (parentId: string) => {
   const parent = await prisma.stepRun.findUnique({
     where: { id: parentId },
@@ -234,7 +364,7 @@ export const advanceChain = async (parentId: string) => {
       clientId: true,
       requestedById: true,
       options: true,
-      childRuns: { select: { status: true, step: { select: { key: true, label: true } } }, orderBy: { createdAt: "asc" } },
+      childRuns: { select: { status: true, note: true, step: { select: { key: true, label: true } } }, orderBy: { createdAt: "asc" } },
     },
   });
   if (!parent || isTerminal(parent.status)) return;
@@ -249,7 +379,7 @@ export const advanceChain = async (parentId: string) => {
     const final: StepRunStatus = statuses.includes("DONE") ? "DONE" : statuses.every((s) => s === "EMPTY") ? "EMPTY" : "FAILED";
     await moveRun(parent.id, final, {
       progress: 100,
-      note: `${statuses.filter((s) => s === "DONE" || s === "EMPTY").length} of ${steps.length} steps finished`,
+      note: chainNote(parent.childRuns),
       resultSummary: { steps: parent.childRuns.map((c) => ({ key: c.step.key, label: c.step.label, status: c.status })) },
       ...(final === "FAILED" && {
         errorCode: "ALL_STEPS_FAILED",
@@ -283,7 +413,11 @@ export const advanceChain = async (parentId: string) => {
       spocId: null,
       requestedById: parent.requestedById,
       idempotencyKey: `chain:${parent.id}:${i}`,
-      options: { ...shared, ...(stepOptions?.[key] ?? {}) },
+      options: {
+        ...shared,
+        ...(stepOptions?.[key] ?? {}),
+        ...(shared.rerun && ENGINE_FORCE.has(key) && { force: true }),
+      },
       parentRunId: parent.id,
     });
   } catch (e) {
@@ -296,6 +430,18 @@ export const advanceChain = async (parentId: string) => {
     where: { id: parent.id },
     data: { progress: Math.round((i / steps.length) * 100), note: `Step ${i + 1} of ${steps.length}: ${step.label}` },
   });
+  // nothing to work on (an earlier step found nothing), done recently, or no
+  // run slots left → skipped, not sent
+  const missing = await chainSkip(step, parent, { ...shared, ...(stepOptions?.[key] ?? {}) });
+  if (missing) {
+    await recordEvent(prisma, parent.id, `Skipped step ${i + 1}: ${step.label} — ${missing.message}`);
+    await moveRun(child.id, "EMPTY", {
+      progress: 100,
+      note: `Skipped: ${missing.message}`,
+      howToContinue: missing.howToContinue,
+    }, `Skipped: ${missing.message}`);
+    return;
+  }
   await recordEvent(prisma, parent.id, `Started step ${i + 1}: ${step.label}`, { payload: { childRunId: child.id } });
   void dispatchRun(child.id);
 };

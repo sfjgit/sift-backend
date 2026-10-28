@@ -65,6 +65,7 @@ async function main() {
         target: "CLIENT",
         uiOrder: s.uiOrder,
         userClientLimit: s.defaultLimit,
+        rerunAfterDays: s.defaultRerunDays,
       },
     });
   }

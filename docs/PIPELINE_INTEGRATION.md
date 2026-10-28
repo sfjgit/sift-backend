@@ -132,14 +132,58 @@ the step may write (§2) are read; others are reported as skipped.
 
 | Kind | Rule |
 |---|---|
-| spocs | Match by `id` → email (global, lowercased) → `(client, nameKey)`. Blank fields are filled; a different existing value is **never overwritten** — it is listed in `viewData.conflicts`. Validation fields are latest-wins. An email owned by another client's SPOC → skipped. New SPOCs: handler = requester, BU/SL from the run, `approvalStatus = PENDING`. |
+| spocs | Match by `id` → email (global, lowercased) → `(client, nameKey)`. Blank fields are filled; a different existing value is **never overwritten** — it is listed in `viewData.conflicts`. Validation fields are latest-wins. An email owned by another client's SPOC → skipped. New SPOCs: handler = requester, `approvalStatus = PENDING`, BU = the client's BU, SL = the one picked on the run (must be one of the client's service lines; automatic when the client has one). Clients without BU / SLs fall back to the requester's single BU / SL. |
 | financials | Upsert per `(client, fy)`; `isLocked` rows are never touched; `flagged` figures go to `viewData.flaggedFigures` only. |
 | programs | Upsert per `(client, fy, name)`. |
 | documents | Upsert per `(client, type, fy)`; unknown type → skipped. |
 | outreach | Always a new pack (history kept); SPOC must belong to the run's client. |
 
+`fy` is always stored as `2025-2026` (the CASPA format): `2025-26` and `FY 2025-26`
+are converted on arrival; anything else is kept as sent.
+
 Every save writes `ClientActivity` rows, `StepRun.resultSummary`
 (`{ spocs: { created, updated, skipped[] }, … }`) and notifies the requester.
+
+### Ownership — who sees what
+
+- **Clients** are visible (`clients.read` scope) when the user is **assigned**
+  (`ClientAssignment`, set by super admin / `clients.assign`), created it, or
+  handles one of its SPOCs. `GET/PUT /clients/:id/assignments`,
+  `POST /clients/assign` (add / remove / replace for many clients).
+- **SPOCs** belong to their handler (`spocs.read` scope). A run only sends the
+  **requester's visible SPOCs** to the engine (enrich, apollo, validate,
+  emails); `report_spocs` gets all of the client's SPOCs so the engine can tell
+  who already exists. On save, a matched SPOC the requester can't see is
+  **skipped** ("Already a SPOC of <name>", `handledByOther: true`) — never
+  changed by someone else's run. Outreach packs and SPOC activity follow the
+  same rule; list / detail SPOC counts are the visible ones.
+
+### Before a run starts (`runRules.service.ts`)
+
+1. **Input** — reports / figures need documents; enrich / validate / apollo
+   (pipeline mode) need the requester's own SPOCs; emails need their approved SPOCs.
+2. **Already done** — `PipelineStep.rerunAfterDays` (default 90 for reports,
+   report_spocs, figures; 30 for enrich, apollo, emails; 14 for validate). A
+   DONE run within that window blocks a new one unless the input changed since:
+   new documents (report_spocs, figures), new visible SPOCs (enrich, apollo,
+   validate; validate also unvalidated SPOCs), newly approved or not-yet-emailed
+   SPOCs (emails). Client-level steps (reports, report_spocs, figures) look at
+   **anyone's** run; SPOC steps at the requester's own. Refused with
+   `409 ALREADY_DONE`; `rerun: true` (super admin / `step_runs.rerun`) forces it
+   and sends `force: true` to engine stages that skip finished work.
+3. **Run slots** — `RunQuota` rules: `maxRuns` per `DAY | WEEK | MONTH`
+   (Asia/Kolkata; week starts Monday), for one step or all steps together
+   (`stepId` null — counts top-level runs only), for everyone, a role or a
+   user; per step + period the most specific rule wins. QUEUED / RUNNING /
+   DONE runs count; failed, EMPTY and skipped do not. Super admin and
+   `step_runs.unlimited` have none. Refused with `429 RUN_SLOTS_USED`.
+   Admin: `/run-quotas` (`run_slots.manage`); caller: `GET /me/run-slots`.
+4. The older `userClientLimit` (distinct clients per user per step, all time) still applies.
+
+Inside "Run all steps" a step failing 1–3 becomes an EMPTY child "Skipped: …"
+instead of failing the chain. `GET /step-runs/overview` returns, per step,
+`done` (who / when), `rerunBlocked` and `slots`, plus `canRerun` and the
+requester's own SPOC counts.
 
 ## 7. Reliability
 
