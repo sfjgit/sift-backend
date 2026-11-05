@@ -209,33 +209,34 @@ New accounts get a welcome email with a set-password link valid for **24 hours**
   },
 ];
 
+// every tenant gets the starter help; matched by question per tenant
 const main = async () => {
-  let created = 0;
-  let updated = 0;
+  for (const t of await prisma.tenant.findMany({ select: { id: true, slug: true } })) {
+    let created = 0;
+    let updated = 0;
+    // order follows the list position inside each category
+    const position = new Map<string, number>();
 
-  // order follows the list position inside each category
-  const position = new Map<string, number>();
+    for (const f of FAQS) {
+      const order = position.get(f.category) ?? 0;
+      position.set(f.category, order + 1);
 
-  for (const f of FAQS) {
-    const order = position.get(f.category) ?? 0;
-    position.set(f.category, order + 1);
+      const data = { ...f, order, isPublished: true };
+      const existing = await prisma.faq.findFirst({
+        where: { tenantId: t.id, question: f.question },
+        select: { id: true },
+      });
 
-    const data = { ...f, order, isPublished: true };
-    const existing = await prisma.faq.findFirst({
-      where: { question: f.question },
-      select: { id: true },
-    });
-
-    if (existing) {
-      await prisma.faq.update({ where: { id: existing.id }, data });
-      updated++;
-    } else {
-      await prisma.faq.create({ data });
-      created++;
+      if (existing) {
+        await prisma.faq.update({ where: { id: existing.id }, data });
+        updated++;
+      } else {
+        await prisma.faq.create({ data: { ...data, tenantId: t.id } });
+        created++;
+      }
     }
+    console.log(`✅ ${t.slug}: FAQs seeded — ${created} created, ${updated} updated`);
   }
-
-  console.log(`✅ FAQs seeded — ${created} created, ${updated} updated`);
 };
 
 main()

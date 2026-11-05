@@ -154,6 +154,7 @@ export const CLIENT_DIM_DEFS: Record<ClientDim, DimDef> = {
   status: { field: "status", resolve: enumLabel, sql: Prisma.sql`c."status"::text` },
   industry: { field: "industryId", resolve: lookups, sql: Prisma.sql`c."industryId"` },
   category: { field: "categoryId", resolve: lookups, sql: Prisma.sql`c."categoryId"` },
+  employeeSize: { field: "employeeSizeId", resolve: lookups, sql: Prisma.sql`c."employeeSizeId"` },
   createdBy: { field: "createdById", resolve: users, sql: Prisma.sql`c."createdById"` },
   state: { field: null, locationKey: "state", resolve: text, sql: primaryLocation("state") },
   city: { field: null, locationKey: "city", resolve: text, sql: primaryLocation("city") },

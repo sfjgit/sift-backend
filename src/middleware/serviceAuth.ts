@@ -7,6 +7,7 @@
 import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import prisma from "@/utils/prisma/client";
+import { runInTenant } from "@/utils/prisma/tenant";
 
 export const hashServiceKey = (key: string) =>
   crypto.createHash("sha256").update(key, "utf8").digest("hex");
@@ -47,3 +48,17 @@ export const requireServiceScope =
     }
     next();
   };
+
+// /svc/step-runs/:id/* — the engine works for one tenant's run: everything the
+// handler does (saving SPOCs, figures, notifications) runs as that tenant
+export const runTenantOfStepRun = async (req: Request, res: Response, next: NextFunction) => {
+  const run = await prisma.stepRun.findFirst({
+    where: { id: String(req.params.id ?? ""), step: { serviceId: req.service!.id } },
+    select: { tenantId: true },
+  });
+  if (!run) {
+    res.status(404).json({ success: false, code: "NOT_FOUND", message: "Step run not found" });
+    return;
+  }
+  runInTenant(run.tenantId, next);
+};

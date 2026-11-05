@@ -31,8 +31,12 @@ const SESSION_USER_SELECT = {
   isSuperAdmin: true,
   roleId: true,
   role: { select: { id: true, name: true } },
+  tenant: { select: { id: true, slug: true, name: true, status: true, plan: true } },
   department: { select: { id: true, name: true } },
   designation: { select: { id: true, name: true } },
+  // decide the user's standard client columns (CSR, B2B…) in the CRM
+  businessUnits: { select: { businessUnit: { select: { id: true, name: true, code: true } } } },
+  serviceLines: { select: { serviceLine: { select: { id: true, name: true, code: true } } } },
 } as const satisfies Prisma.UserSelect;
 
 const sessionPayload = async (userId: string) => {
@@ -63,9 +67,10 @@ const issueTokens = async (res: Response, userId: string) => {
 export const login = async (req: Request, res: Response) => {
   const { email, password } = req.validatedBody;
 
+  // email is unique across tenants — the user's tenant follows from it
   const user = await prisma.user.findFirst({
     where: { email, isActive: true },
-    select: { id: true, passwordHash: true },
+    select: { id: true, passwordHash: true, tenant: { select: { status: true } } },
   });
 
   if (!user) throw ApiError(401, "Invalid email or password", "INVALID_CREDENTIALS");
@@ -74,6 +79,9 @@ export const login = async (req: Request, res: Response) => {
   if (!isPasswordValid) {
     await logAuthEvent(user.id, "FAILED_LOGIN", req);
     throw ApiError(401, "Invalid email or password", "INVALID_CREDENTIALS");
+  }
+  if (user.tenant.status !== "ACTIVE") {
+    throw ApiError(403, "Your company's CRM access is suspended. Contact your administrator.", "TENANT_SUSPENDED");
   }
 
   await issueTokens(res, user.id);
@@ -99,11 +107,18 @@ export const refresh = async (req: Request, res: Response) => {
 
   const stored = await prisma.refreshToken.findUnique({
     where: { token: refreshToken },
-    select: { userId: true, expiresAt: true, user: { select: { isActive: true } } },
+    select: {
+      userId: true,
+      expiresAt: true,
+      user: { select: { isActive: true, tenant: { select: { status: true } } } },
+    },
   });
 
   if (!stored || stored.expiresAt < new Date() || !stored.user.isActive) {
     throw ApiError(401, "Invalid or expired refresh token", "INVALID_TOKEN");
+  }
+  if (stored.user.tenant.status !== "ACTIVE") {
+    throw ApiError(403, "Your company's CRM access is suspended. Contact your administrator.", "TENANT_SUSPENDED");
   }
 
   // rotate — delete old, issue new pair

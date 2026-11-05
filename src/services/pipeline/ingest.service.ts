@@ -13,11 +13,16 @@ import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers, usersWithPermission } from "@/services/notification.service";
 import { raiseAlert } from "@/services/alert.service";
 import { spocWhereForUserId } from "@/services/scope.service";
+import { syncCsrSnapshot } from "@/services/csrSnapshot.service";
+import { csrNameKey, replaceProgramLinks, resolveCsrAgency } from "@/services/csrProgram.service";
+import { OTHER_SECTOR, matchSectorCodes } from "@/config/csr";
+import { tenantIdOrThrow } from "@/utils/prisma/tenant";
 import { resultNote } from "./resultNote";
 import { toNameKey } from "@/utils/names";
 import { ResultKind, stepDef } from "@/config/pipeline";
-import type { ResultsBody, ResultSpoc } from "@/validators/svc.validators";
+import type { ResultsBody, ResultSpoc, ResultWebsite } from "@/validators/svc.validators";
 import { isTerminal, moveRun, recordEvent } from "./run.service";
+import { saveBranchOffices } from "./branchOffices.service";
 
 // claim marker: one delivery saves at a time; a second one waits for the retry
 const SAVING = "Saving results…";
@@ -80,11 +85,11 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
   const nameKey = toNameKey(s.firstName, s.lastName);
   const label = nameOf(s);
 
-  // match: CRM id → email (global) → (client, name)
+  // match: CRM id → email (unique in the tenant) → (client, name)
   let existing =
     (s.id && (await prisma.clientSpoc.findFirst({ where: { id: s.id, clientId: ctx.clientId } }))) || null;
   if (!existing && email) {
-    const byEmail = await prisma.clientSpoc.findUnique({ where: { email } });
+    const byEmail = await prisma.clientSpoc.findFirst({ where: { email } });
     if (byEmail && byEmail.clientId !== ctx.clientId) {
       ctx.skipped.push({ kind: "spocs", name: label, email, reason: "Email belongs to a SPOC of another client" });
       return "skipped";
@@ -199,6 +204,7 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
   await prisma.$transaction(async (tx) => {
     const created = await tx.clientSpoc.create({
       data: {
+        tenantId: tenantIdOrThrow(),
         clientId: ctx.clientId,
         firstName: s.firstName,
         lastName: s.lastName ?? null,
@@ -249,7 +255,7 @@ const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["
       flagged.push(f);
       continue;
     }
-    const cur = await prisma.clientFinancial.findUnique({ where: { clientId_fy: { clientId: ctx.clientId, fy: f.fy } } });
+    const cur = await prisma.clientCsrFinancial.findUnique({ where: { clientId_fy: { clientId: ctx.clientId, fy: f.fy } } });
     if (cur?.isLocked) {
       locked++;
       ctx.skipped.push({ kind: "financials", fy: f.fy, reason: "Figures are locked by a person" });
@@ -264,7 +270,7 @@ const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["
       confidence: f.confidence === undefined || f.confidence === null ? null : Math.min(1, Math.max(0, f.confidence)),
       sourceRunId: ctx.runId,
     };
-    await prisma.clientFinancial.upsert({
+    await prisma.clientCsrFinancial.upsert({
       where: { clientId_fy: { clientId: ctx.clientId, fy: f.fy } },
       create: { clientId: ctx.clientId, fy: f.fy, ...values },
       update: values,
@@ -283,22 +289,64 @@ const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["
   return { saved, locked, flagged: flagged.length };
 };
 
+// A programme a person entered or corrected (isLocked) is never overwritten.
+// Sectors: the engine's codes, else Schedule VII keywords in its free text,
+// else OTHER — the wording is kept in sectorText either way.
 const savePrograms = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["programs"]) => {
   let saved = 0;
+  let locked = 0;
   for (const p of rows ?? []) {
+    const nameKey = csrNameKey(p.name);
+    const cur = await prisma.clientCsrProgram.findUnique({
+      where: { clientId_fy_nameKey: { clientId: ctx.clientId, fy: p.fy, nameKey } },
+      select: { id: true, isLocked: true },
+    });
+    if (cur?.isLocked) {
+      locked++;
+      ctx.skipped.push({ kind: "programs", fy: p.fy, name: p.name, reason: "Programme is locked by a person" });
+      continue;
+    }
+
+    const codes = p.sectors?.length ? p.sectors : matchSectorCodes(p.sector);
+    const sectorIds = [
+      ...new Set(
+        [...codes, ...(codes.length ? [] : [p.sector ?? ""])]
+          .map((c) => lookupId(ctx, "PROGRAM_SECTOR", c))
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (!sectorIds.length && p.sector) {
+      const other = lookupId(ctx, "PROGRAM_SECTOR", OTHER_SECTOR.code);
+      if (other) sectorIds.push(other);
+    }
+
+    const agencyId = await resolveCsrAgency(prisma, { name: p.implementor, registrationNo: p.agencyRegistrationNo });
     const values = {
-      sectorId: lookupId(ctx, "PROGRAM_SECTOR", p.sector),
+      name: p.name,
+      sectorText: p.sector ?? null,
       budgetRs: p.budgetRs ?? null,
-      locations: p.locations ?? null,
+      spentRs: p.spentRs ?? null,
+      unspentTransferredRs: p.unspentTransferredRs ?? null,
+      isOngoing: p.isOngoing ?? null,
+      duration: p.duration ?? null,
+      isLocalArea: p.isLocalArea ?? null,
+      locationNote: p.locations ?? null,
       beneficiaries: p.beneficiaries ?? null,
-      implementor: p.implementor ?? null,
+      mode: p.mode ?? (agencyId ? ("AGENCY" as const) : null),
+      agencyId,
       sourceUrl: p.sourceUrl ?? null,
       sourceRunId: ctx.runId,
     };
-    await prisma.clientProgram.upsert({
-      where: { clientId_fy_name: { clientId: ctx.clientId, fy: p.fy, name: p.name } },
-      create: { clientId: ctx.clientId, fy: p.fy, name: p.name, ...values },
-      update: values,
+    const row = cur
+      ? await prisma.clientCsrProgram.update({ where: { id: cur.id }, data: values, select: { id: true } })
+      : await prisma.clientCsrProgram.create({
+          data: { clientId: ctx.clientId, fy: p.fy, nameKey, ...values },
+          select: { id: true },
+        });
+    await replaceProgramLinks(prisma, row.id, {
+      sectorIds,
+      // structured places only when sent — free text alone keeps what's there
+      ...(p.locationList && { locations: p.locationList }),
     });
     saved++;
   }
@@ -307,11 +355,11 @@ const savePrograms = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["pr
       clientId: ctx.clientId,
       actorId: null,
       type: "PROGRAMS_ADDED",
-      summary: `Pipeline saved ${saved} CSR program(s)`,
+      summary: `Pipeline saved ${saved} CSR programme(s)`,
       meta: { runId: ctx.runId },
     });
   }
-  return { saved };
+  return { saved, locked };
 };
 
 const saveDocuments = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["documents"]) => {
@@ -441,6 +489,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
   const data = body.data ?? {};
   const summary: Record<string, unknown> = {};
   const flaggedFigures: unknown[] = [];
+  let websiteFound: ResultWebsite | undefined;
 
   try {
     for (const kind of Object.keys(data) as ResultKind[]) {
@@ -477,10 +526,21 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     }
     if (allowed.has("financials") && data.financials?.length) {
       summary.financials = await saveFinancials(ctx, data.financials, flaggedFigures);
+      // the client row keeps a copy of the newest CSR spent figure
+      await syncCsrSnapshot(ctx.clientId);
     }
     if (allowed.has("programs") && data.programs?.length) summary.programs = await savePrograms(ctx, data.programs);
     if (allowed.has("documents") && data.documents?.length) summary.documents = await saveDocuments(ctx, data.documents);
     if (allowed.has("outreach") && data.outreach?.length) summary.outreach = await saveOutreach(ctx, data.outreach);
+    // the website check: what it found stays on the run (the pop-up reads it)
+    if (allowed.has("website") && data.website) {
+      websiteFound = data.website;
+      summary.website = { dead: data.website.dead, candidates: data.website.candidates.length };
+    }
+    // offices from the client's website → its locations (ones it already has are skipped)
+    if (allowed.has("locations") && data.locations?.length) {
+      summary.locations = await saveBranchOffices(ctx, data.locations);
+    }
   } catch (e) {
     // release the claim so the engine's retry (or the reconciler) can try again
     await prisma.stepRun.update({ where: { id: runId }, data: { note: "Saving failed — will retry" } });
@@ -502,6 +562,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     conflicts: ctx.conflicts,
     skipped: ctx.skipped,
     flaggedFigures,
+    ...(websiteFound && { website: websiteFound }),
     ...(body.viewData && { engine: body.viewData }),
   };
 

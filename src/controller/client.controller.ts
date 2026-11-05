@@ -1,6 +1,7 @@
 // File: client.controller.ts
 // Path: src/controller/client.controller.ts
 
+import crypto from "crypto";
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
@@ -10,28 +11,50 @@ import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers } from "@/services/notification.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
-import { getSignedUrl } from "@/lib/s3";
+import { deleteFromS3, getSignedUrl, uploadToS3 } from "@/lib/s3";
 import { normaliseLocation } from "@/services/geo.service";
+import { logWebsiteChange, websiteStates } from "@/services/website.service";
+import { syncCsrSnapshot } from "@/services/csrSnapshot.service";
+import { CSR_PROGRAM_SELECT } from "@/services/csrProgram.service";
 import type {
   BulkClientStatusInput,
   CreateClientInput,
   CreateLocationInput,
   UpdateLocationInput,
   ListClientsQuery,
+  SaveCorporateFinancialInput,
+  SaveCsrFinancialInput,
   UpdateClientInput,
+  UploadDocumentInput,
 } from "@/validators/client.validators";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const LOOKUP = { id: true, code: true, label: true } as const;
 const ORG = { id: true, name: true, code: true } as const;
 
+// branch offices = every active office except the head office (the primary one,
+// or one typed HQ) — on the list, the profile and the "has branches" filter
+const BRANCHES = {
+  where: {
+    isActive: true,
+    isPrimary: false,
+    OR: [{ typeId: null }, { type: { code: { not: "HQ" } } }],
+  },
+} satisfies { where: Prisma.ClientLocationWhereInput };
+
 const CLIENT_LIST_SELECT = {
   id: true,
+  entityType: true,
   name: true,
   shortName: true,
   cin: true,
   website: true,
+  linkedinUrl: true,
   status: true,
+  employeeCount: true,
+  employeeSize: { select: LOOKUP },
+  csrFy: true,
+  csrSpentRs: true,
   createdAt: true,
   updatedAt: true,
   industry: { select: LOOKUP },
@@ -48,10 +71,18 @@ const CLIENT_LIST_SELECT = {
   // primary address for the list row
   locations: {
     where: { isPrimary: true, isActive: true },
-    select: { id: true, city: true, state: true, country: true },
+    select: {
+      id: true,
+      addressLine: true,
+      city: true,
+      district: true,
+      state: true,
+      country: true,
+      pincode: true,
+    },
     take: 1,
   },
-  _count: { select: { spocs: { where: { isActive: true } } } },
+  _count: { select: { spocs: { where: { isActive: true } }, locations: BRANCHES } },
 } as const satisfies Prisma.ClientSelect;
 
 // list rows also carry what the CRM holds and the last pipeline run
@@ -59,9 +90,10 @@ const COVERAGE_SELECT = {
   _count: {
     select: {
       spocs: { where: { isActive: true } },
+      locations: BRANCHES,
       documents: true,
-      financials: true,
-      programs: true,
+      csrFinancials: true,
+      csrPrograms: true,
       outreachPacks: true,
     },
   },
@@ -73,12 +105,37 @@ const COVERAGE_SELECT = {
   },
 } as const satisfies Prisma.ClientSelect;
 
+// extra list columns (each one a column the user can switch on); figures and
+// files only with their read permission, like the client page
+const LIST_EXTRA_SELECT = {
+  approvedAt: true,
+  approvedBy: { select: PERSON },
+  technologies: { select: { details: true, category: { select: LOOKUP } } },
+} as const satisfies Prisma.ClientSelect;
+
+const LIST_FIGURES_SELECT = {
+  csrFinancials: {
+    orderBy: { fy: "desc" },
+    take: 1,
+    select: { fy: true, obligationRs: true, budgetRs: true, spentRs: true, unspentRs: true },
+  },
+  corporateFinancials: {
+    orderBy: { fy: "desc" },
+    take: 1,
+    select: { fy: true, revenueRs: true, netProfitRs: true, netWorthRs: true, paidUpCapitalRs: true },
+  },
+} as const satisfies Prisma.ClientSelect;
+
+const LIST_DOCUMENTS_SELECT = {
+  documents: { select: { id: true, fy: true, type: { select: LOOKUP } }, orderBy: { fy: "desc" } },
+} as const satisfies Prisma.ClientSelect;
+
 const MISSING_WHERE: Record<string, Prisma.ClientWhereInput> = {
   website: { OR: [{ website: null }, { website: "" }] },
   reports: { documents: { none: {} } },
   spocs: { spocs: { none: { isActive: true } } },
   approved: { spocs: { none: { isActive: true, approvalStatus: "APPROVED" } } },
-  figures: { financials: { none: {} } },
+  figures: { csrFinancials: { none: {} } },
   outreach: { outreachPacks: { none: {} } },
 };
 
@@ -118,7 +175,6 @@ const TECHNOLOGY_SELECT = {
 
 const CLIENT_DETAIL_SELECT = {
   ...CLIENT_LIST_SELECT,
-  linkedinUrl: true,
   approvedAt: true,
   approvedBy: { select: PERSON },
   locations: {
@@ -150,20 +206,7 @@ const DOCUMENTS_SELECT = {
 } as const satisfies Prisma.ClientSelect;
 
 const PROGRAMS_SELECT = {
-  programs: {
-    select: {
-      id: true,
-      fy: true,
-      name: true,
-      budgetRs: true,
-      locations: true,
-      beneficiaries: true,
-      implementor: true,
-      sourceUrl: true,
-      sector: { select: LOOKUP },
-    },
-    orderBy: { fy: "desc" },
-  },
+  csrPrograms: { select: CSR_PROGRAM_SELECT, orderBy: [{ fy: "desc" }, { name: "asc" }] },
 } as const satisfies Prisma.ClientSelect;
 
 const FINANCIAL_SELECT = {
@@ -177,10 +220,23 @@ const FINANCIAL_SELECT = {
   confidence: true,
   isLocked: true,
   updatedAt: true,
-} as const satisfies Prisma.ClientFinancialSelect;
+} as const satisfies Prisma.ClientCsrFinancialSelect;
+
+const CORPORATE_SELECT = {
+  id: true,
+  fy: true,
+  revenueRs: true,
+  netProfitRs: true,
+  paidUpCapitalRs: true,
+  authorisedCapitalRs: true,
+  netWorthRs: true,
+  source: true,
+  isLocked: true,
+  updatedAt: true,
+} as const satisfies Prisma.ClientCorporateFinancialSelect;
 
 // client by id within the caller's scope for this action — out of scope = 404
-const findClientInScope = async (req: Request, id: string) => {
+export const findClientInScope = async (req: Request, id: string) => {
   const client = await prisma.client.findFirst({
     where: { id, deletedAt: null, ...(await clientScopeWhere(req.user, req.scope!)) },
     select: { id: true, name: true, status: true, approvedById: true },
@@ -203,9 +259,32 @@ const assertOrg = async (businessUnitId?: string | null, serviceLineIds?: string
   }
 };
 
+// a head count without a band picks it: lookup EMPLOYEE_SIZE, meta { min, max } inclusive
+const employeeBandFor = async (count: number) => {
+  const bands = await prisma.lookup.findMany({
+    where: { type: "EMPLOYEE_SIZE", isActive: true },
+    select: { id: true, meta: true },
+  });
+  const hit = bands.find((b) => {
+    const m = (b.meta ?? {}) as { min?: unknown; max?: unknown };
+    const max = m.max === null || m.max === undefined ? Infinity : Number(m.max);
+    return count >= Number(m.min) && count <= max;
+  });
+  return hit?.id ?? null;
+};
+
+const withEmployeeBand = async <T extends { employeeCount?: number | null | undefined; employeeSizeId?: string | null | undefined }>(
+  b: T,
+): Promise<T> =>
+  typeof b.employeeCount === "number" && !b.employeeSizeId
+    ? { ...b, employeeSizeId: await employeeBandFor(b.employeeCount) }
+    : b;
+
 const serviceLinesData = (ids: string[]) => ({
   create: [...new Set(ids)].map((serviceLineId) => ({ serviceLineId })),
 });
+
+const CRORE = 10_000_000;
 
 // India-time day bounds for date filters: from = start of that day, to = end of it
 const dayStart = (d: string) => new Date(`${d}T00:00:00+05:30`);
@@ -221,6 +300,19 @@ const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereI
   const any = <T,>(v: T[] | undefined) => (v?.length ? v : undefined);
 
   if (q.status) and.push({ status: q.status });
+  if (any(q.entityType)) and.push({ entityType: { in: q.entityType! } });
+  if (any(q.employeeSizeId)) and.push({ employeeSizeId: { in: q.employeeSizeId! } });
+  if (q.csrSpentMinCr !== undefined || q.csrSpentMaxCr !== undefined) {
+    and.push({
+      csrSpentRs: {
+        ...(q.csrSpentMinCr !== undefined && { gte: q.csrSpentMinCr * CRORE }),
+        ...(q.csrSpentMaxCr !== undefined && { lte: q.csrSpentMaxCr * CRORE }),
+      },
+    });
+  }
+  if (q.hasBranches !== undefined) {
+    and.push({ locations: q.hasBranches ? { some: BRANCHES.where } : { none: BRANCHES.where } });
+  }
   if (any(q.industryId)) and.push({ industryId: { in: q.industryId! } });
   if (any(q.categoryId)) and.push({ categoryId: { in: q.categoryId! } });
   if (any(q.businessUnitId)) and.push({ businessUnitId: { in: q.businessUnitId! } });
@@ -265,6 +357,31 @@ const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereI
   ];
   if (loc.length) and.push({ locations: { some: { isActive: true, AND: loc } } });
 
+  // CSR programmes: "spends on education in Karnataka through Akshaya Patra"
+  const prog: Prisma.ClientCsrProgramWhereInput[] = [];
+  if (any(q.programSectorId)) prog.push({ sectors: { some: { sectorId: { in: q.programSectorId! } } } });
+  if (any(q.programState) || q.programDistrict)
+    prog.push({
+      locations: {
+        some: {
+          ...(any(q.programState) && {
+            OR: q.programState!.map((v) => ({ state: { equals: v, mode: "insensitive" as const } })),
+          }),
+          ...(q.programDistrict && { district: { equals: q.programDistrict, mode: "insensitive" } }),
+        },
+      },
+    });
+  if (q.programAgency)
+    prog.push({
+      agency: {
+        OR: [
+          { name: { contains: q.programAgency, mode: "insensitive" } },
+          { registrationNo: { equals: q.programAgency.toUpperCase() } },
+        ],
+      },
+    });
+  if (prog.length) and.push({ csrPrograms: { some: { AND: prog } } });
+
   if (q.search) {
     and.push({
       OR: [
@@ -280,6 +397,20 @@ const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereI
 // ── GET /clients
 export const listClients = async (req: Request, res: Response) => {
   const q = req.validatedQuery as ListClientsQuery;
+  const canFigures = !!req.permissions!["client_financials.read"];
+  // no figures permission: CSR spend can't be used to filter or sort either
+  if (!canFigures) {
+    delete q.csrSpentMinCr;
+    delete q.csrSpentMaxCr;
+    if (q.sortBy === "csrSpentRs") q.sortBy = "createdAt";
+  }
+  // programme filters need programme access
+  if (!req.permissions!["client_programs.read"]) {
+    delete q.programSectorId;
+    delete q.programState;
+    delete q.programDistrict;
+    delete q.programAgency;
+  }
 
   const where: Prisma.ClientWhereInput = {
     deletedAt: null,
@@ -290,8 +421,18 @@ export const listClients = async (req: Request, res: Response) => {
     prisma.client.count({ where }),
     prisma.client.findMany({
       where,
-      select: { ...CLIENT_LIST_SELECT, ...COVERAGE_SELECT },
-      orderBy: { [q.sortBy]: q.sortDir },
+      select: {
+        ...CLIENT_LIST_SELECT,
+        ...COVERAGE_SELECT,
+        ...LIST_EXTRA_SELECT,
+        ...(canFigures && LIST_FIGURES_SELECT),
+        ...(req.permissions!["client_documents.read"] && LIST_DOCUMENTS_SELECT),
+      },
+      // figures sort with blanks last, whichever direction
+      orderBy:
+        q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount"
+          ? [{ [q.sortBy]: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
+          : { [q.sortBy]: q.sortDir },
       ...toSkipTake(q),
     }),
   ]);
@@ -328,6 +469,7 @@ export const listClients = async (req: Request, res: Response) => {
     }),
   ]);
   const visibleBy = new Map(visible.map((v) => [v.clientId, v._count]));
+  const websiteBy = await websiteStates(ids);
   const stepsBy = new Map<string, Record<string, Omit<(typeof stepRows)[number], "clientId" | "step">>>();
   for (const { clientId, step, ...r } of stepRows) {
     const m = stepsBy.get(clientId) ?? {};
@@ -339,18 +481,22 @@ export const listClients = async (req: Request, res: Response) => {
 
   const clients = rows.map(({ stepRuns, _count, ...c }) => ({
     ...c,
+    // the CSR snapshot is a figure too
+    ...(!canFigures && { csrSpentRs: null, csrFy: null }),
     // SPOCs column = the ones this user sees; coverage = what the CRM holds in total
-    _count: { spocs: visibleBy.get(c.id) ?? 0 },
+    _count: { spocs: visibleBy.get(c.id) ?? 0, branches: _count.locations },
     coverage: {
       reports: _count.documents,
       spocs: _count.spocs,
       approvedSpocs: approvedBy.get(c.id) ?? 0,
-      figureYears: _count.financials,
-      programs: _count.programs,
+      figureYears: _count.csrFinancials,
+      programs: _count.csrPrograms,
       outreachPacks: _count.outreachPacks,
       outreachSent: sentBy.get(c.id) ?? 0,
       lastRun: stepRuns[0] ?? null,
       steps: stepsBy.get(c.id) ?? {},
+      // a website request waiting for an admin, or who changed the website lately
+      website: websiteBy.get(c.id) ?? null,
     },
   }));
 
@@ -369,7 +515,8 @@ export const getClientById = async (req: Request, res: Response) => {
       ...(map["client_documents.read"] && DOCUMENTS_SELECT),
       ...(map["client_programs.read"] && PROGRAMS_SELECT),
       ...(map["client_financials.read"] && {
-        financials: { select: FINANCIAL_SELECT, orderBy: { fy: "desc" } },
+        csrFinancials: { select: FINANCIAL_SELECT, orderBy: { fy: "desc" } },
+        corporateFinancials: { select: CORPORATE_SELECT, orderBy: { fy: "desc" } },
       }),
     },
   });
@@ -379,16 +526,20 @@ export const getClientById = async (req: Request, res: Response) => {
   const spocs = await prisma.clientSpoc.count({
     where: { clientId: id, isActive: true, ...(await spocWhereForUserId(req.user.id)) },
   });
-  res.json({ success: true, data: { ...client, _count: { spocs }, spocsTotal: client._count.spocs } });
+  res.json({
+    success: true,
+    data: { ...client, _count: { spocs, branches: client._count.locations }, spocsTotal: client._count.spocs },
+  });
 };
 
 // ── POST /clients — starts PENDING until approved
 export const createClient = async (req: Request, res: Response) => {
-  const body = req.validatedBody as CreateClientInput;
+  const body = await withEmployeeBand(req.validatedBody as CreateClientInput);
 
   await assertLookups({
     industryId: [body.industryId, "INDUSTRY"],
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
+    employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
   await assertOrg(body.businessUnitId, body.serviceLineIds);
   const { serviceLineIds, ...fields } = body;
@@ -397,6 +548,7 @@ export const createClient = async (req: Request, res: Response) => {
     const c = await tx.client.create({
       data: {
         ...definedOnly(fields),
+        tenantId: req.user.tenantId,
         createdById: req.user.id,
         ...(serviceLineIds?.length && { serviceLines: serviceLinesData(serviceLineIds) }),
       },
@@ -419,18 +571,25 @@ export const createClient = async (req: Request, res: Response) => {
 // ── PATCH /clients/:id
 export const updateClient = async (req: Request, res: Response) => {
   const { id } = req.validatedParams;
-  const body = req.validatedBody as UpdateClientInput;
+  const body = await withEmployeeBand(req.validatedBody as UpdateClientInput);
 
   await findClientInScope(req, id);
   await assertLookups({
     industryId: [body.industryId, "INDUSTRY"],
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
+    employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
   await assertOrg(body.businessUnitId, body.serviceLineIds);
 
   const { serviceLineIds, ...fields } = body;
+  const before = await prisma.client.findUnique({ where: { id }, select: { website: true } });
+  const websiteChanged = body.website !== undefined && (body.website ?? "") !== (before?.website ?? "");
+  // a typed website can't be trusted: only an admin changes it (others use the website check)
+  if (websiteChanged && !req.user.isSuperAdmin) {
+    throw ApiError(403, "Only an admin can change the website. If it does not open, run a step — the website check finds the current one.", "ADMIN_ONLY");
+  }
   const data = definedOnly(fields);
-  const changed = [...Object.keys(data), ...(serviceLineIds ? ["serviceLineIds"] : [])];
+  const changed = [...Object.keys(definedOnly(fields)), ...(serviceLineIds ? ["serviceLineIds"] : [])];
 
   const updated = await prisma.$transaction(async (tx) => {
     const c = await tx.client.update({
@@ -449,6 +608,9 @@ export const updateClient = async (req: Request, res: Response) => {
       summary: `Updated ${changed.join(", ")}`,
       meta: { changes: { ...data, ...(serviceLineIds && { serviceLineIds }) } },
     });
+    if (websiteChanged) {
+      await logWebsiteChange(tx, { clientId: id, actorId: req.user.id, old: before?.website ?? null, new: body.website ?? null, via: "edit" });
+    }
 
     return c;
   });
@@ -501,6 +663,7 @@ export const deleteClient = async (req: Request, res: Response) => {
     prisma.client.update({ where: { id }, data: { deletedAt: new Date() } }),
     prisma.auditLog.create({
       data: {
+        tenantId: req.user.tenantId,
         actorId: req.user.id,
         action: "DELETE",
         module: "clients",
@@ -851,4 +1014,165 @@ export const getClientDocumentUrl = async (req: Request, res: Response) => {
   if (!url) throw unavailable();
 
   res.json({ success: true, data: { url, expiresIn: DOCUMENT_URL_TTL } });
+};
+
+// ── financials — a person's figures are locked: the pipeline never overwrites them
+
+// ── PUT /clients/:id/financials — CSR figures for one FY (upsert by FY)
+export const saveCsrFinancial = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const { fy, evidence, ...figures } = req.validatedBody as SaveCsrFinancialInput;
+  await findClientInScope(req, id);
+
+  const values = definedOnly({ ...figures, evidence });
+  const row = await prisma.$transaction(async (tx) => {
+    const f = await tx.clientCsrFinancial.upsert({
+      where: { clientId_fy: { clientId: id, fy } },
+      create: { clientId: id, fy, ...values, isLocked: true },
+      update: { ...values, isLocked: true },
+      select: FINANCIAL_SELECT,
+    });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "FINANCIALS_UPDATED",
+      summary: `CSR figures for FY ${fy} saved`,
+      meta: { fy, ...figures },
+    });
+    return f;
+  });
+  // the list's "CSR spent" follows the newest figures
+  await syncCsrSnapshot(id);
+
+  res.json({ success: true, message: `FY ${fy} saved`, data: row });
+};
+
+// ── DELETE /clients/:id/financials/:financialId
+export const removeCsrFinancial = async (req: Request, res: Response) => {
+  const { id, financialId } = req.validatedParams;
+  await findClientInScope(req, id);
+
+  const row = await prisma.clientCsrFinancial.findFirst({ where: { id: financialId, clientId: id }, select: { fy: true } });
+  if (!row) throw notFound("CSR figures");
+  await prisma.$transaction(async (tx) => {
+    await tx.clientCsrFinancial.delete({ where: { id: financialId } });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "FINANCIALS_UPDATED",
+      summary: `CSR figures for FY ${row.fy} removed`,
+    });
+  });
+  await syncCsrSnapshot(id);
+  res.json({ success: true, message: `FY ${row.fy} removed` });
+};
+
+// ── PUT /clients/:id/corporate-financials — company figures for one FY
+export const saveCorporateFinancial = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const { fy, source, ...figures } = req.validatedBody as SaveCorporateFinancialInput;
+  await findClientInScope(req, id);
+
+  const values = definedOnly({ ...figures, source, updatedById: req.user.id });
+  const row = await prisma.$transaction(async (tx) => {
+    const f = await tx.clientCorporateFinancial.upsert({
+      where: { clientId_fy: { clientId: id, fy } },
+      create: { clientId: id, fy, ...values, isLocked: true },
+      update: { ...values, isLocked: true },
+      select: CORPORATE_SELECT,
+    });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "FINANCIALS_UPDATED",
+      summary: `Company figures for FY ${fy} saved`,
+      meta: { fy, ...figures },
+    });
+    return f;
+  });
+  res.json({ success: true, message: `FY ${fy} saved`, data: row });
+};
+
+// ── DELETE /clients/:id/corporate-financials/:financialId
+export const removeCorporateFinancial = async (req: Request, res: Response) => {
+  const { id, financialId } = req.validatedParams;
+  await findClientInScope(req, id);
+
+  const { count } = await prisma.clientCorporateFinancial.deleteMany({ where: { id: financialId, clientId: id } });
+  if (!count) throw notFound("Company figures");
+  res.json({ success: true, message: "Figures removed" });
+};
+
+// ── documents — reports and other attachments, stored in S3 per tenant ───────
+
+const DOCUMENT_SELECT = DOCUMENTS_SELECT.documents.select;
+
+// ── POST /clients/:id/documents — multipart: file + typeId + fy; replaces the
+// file already held for that type + FY
+export const uploadClientDocument = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const { typeId, fy } = req.validatedBody as UploadDocumentInput;
+  const file = req.file;
+  if (!file) throw ApiError(400, "Choose a file to upload", "NO_FILE");
+  if (!process.env.AWS_BUCKET) throw ApiError(503, "Document storage is not configured", "STORAGE_UNAVAILABLE");
+
+  await findClientInScope(req, id);
+  await assertLookups({ typeId: [typeId, "DOCUMENT_TYPE"] });
+
+  const fileKey = await uploadToS3({
+    folder: `tenants/${req.user.tenantId}/clients/${id}`,
+    fileName: file.originalname,
+    buffer: file.buffer,
+    mimeType: file.mimetype,
+  });
+  const sha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
+  const previous = await prisma.clientDocument.findUnique({
+    where: { clientId_typeId_fy: { clientId: id, typeId, fy } },
+    select: { fileKey: true },
+  });
+
+  const doc = await prisma.$transaction(async (tx) => {
+    const values = { fileKey, fileName: file.originalname, sha256, sourceUrl: null, sourceRunId: null };
+    const d = await tx.clientDocument.upsert({
+      where: { clientId_typeId_fy: { clientId: id, typeId, fy } },
+      create: { clientId: id, typeId, fy, ...values },
+      update: values,
+      select: DOCUMENT_SELECT,
+    });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "DOCUMENT_ADDED",
+      summary: `${d.type.label} (FY ${fy}) uploaded: ${file.originalname}`,
+    });
+    return d;
+  });
+
+  // the replaced file is no longer referenced — best effort
+  if (previous && previous.fileKey !== fileKey) void deleteFromS3(previous.fileKey).catch(() => undefined);
+  res.status(201).json({ success: true, message: "Document uploaded", data: doc });
+};
+
+// ── DELETE /clients/:id/documents/:documentId
+export const removeClientDocument = async (req: Request, res: Response) => {
+  const { id, documentId } = req.validatedParams;
+  await findClientInScope(req, id);
+
+  const doc = await prisma.clientDocument.findFirst({
+    where: { id: documentId, clientId: id },
+    select: { fileKey: true, fy: true, type: { select: { label: true } } },
+  });
+  if (!doc) throw notFound("Document");
+
+  await prisma.$transaction(async (tx) => {
+    await tx.clientDocument.delete({ where: { id: documentId } });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "CLIENT_UPDATED",
+      summary: `${doc.type.label} (FY ${doc.fy}) removed`,
+    });
+  });
+  void deleteFromS3(doc.fileKey).catch(() => undefined);
+  res.json({ success: true, message: "Document removed" });
 };

@@ -12,6 +12,7 @@ export interface AuthUser {
   roleId: string;
   isSuperAdmin: boolean;
   departmentId: string | null;
+  tenantId: string;
 }
 
 export interface AuthService {

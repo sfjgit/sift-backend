@@ -2,7 +2,14 @@
 // Path: src/validators/client.validators.ts
 
 import { z } from "zod";
-import { ClientStatus, EmailStatus, OutreachStatus, SpocApprovalStatus, ValidationBand } from "@prisma/client";
+import {
+  ClientEntityType,
+  ClientStatus,
+  EmailStatus,
+  OutreachStatus,
+  SpocApprovalStatus,
+  ValidationBand,
+} from "@prisma/client";
 import { csv, csvIds, optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
 const optionalUrl = z
@@ -18,6 +25,7 @@ const optionalYears = z.number().min(0).max(99.9).nullable().optional();
 // ── clients ──────────────────────────────────────────────────────────────────
 
 export const createClientBody = z.object({
+  entityType: z.nativeEnum(ClientEntityType).optional(),
   name: z.string().trim().min(1, "Name is required").max(200),
   shortName: optionalText(100),
   cin: optionalText(21).transform((v) => v?.toUpperCase() ?? v),
@@ -25,6 +33,9 @@ export const createClientBody = z.object({
   linkedinUrl: optionalUrl,
   industryId: optionalId,
   categoryId: optionalId,
+  // exact head count if known; the band (lookup EMPLOYEE_SIZE) follows from it when not sent
+  employeeCount: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  employeeSizeId: optionalId,
   businessUnitId: optionalId,
   // replaces the whole set when sent
   serviceLineIds: z.array(z.string().uuid()).max(20).optional(),
@@ -45,8 +56,18 @@ export const STEP_KEYS = ["reports", "report_spocs", "figures", "enrich", "apoll
 export const listClientsQuery = z.object({
   search: z.string().trim().max(200).optional(),
   status: z.nativeEnum(ClientStatus).optional(),
+  entityType: csv(z.nativeEnum(ClientEntityType)),
   industryId: ids,
   categoryId: ids,
+  employeeSizeId: ids,
+  // latest CSR spend (client snapshot), ₹ crore
+  csrSpentMinCr: z.coerce.number().min(0).optional(),
+  csrSpentMaxCr: z.coerce.number().min(0).optional(),
+  // has an active location of type BRANCH
+  hasBranches: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
   // the client's own BU / service lines
   businessUnitId: ids,
   serviceLineId: ids,
@@ -74,9 +95,15 @@ export const listClientsQuery = z.object({
   state: csv(z.string().trim().min(1).max(100)),
   district: z.string().trim().max(100).optional(),
   city: csv(z.string().trim().min(1).max(100)),
+  // matched through one CSR programme (all picked conditions on the same one)
+  programSectorId: ids,
+  programState: csv(z.string().trim().min(1).max(100)),
+  programDistrict: z.string().trim().max(100).optional(),
+  programAgency: z.string().trim().max(200).optional(),
   ...paginationQuery,
   // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
-  sortBy: z.enum(["name", "createdAt", "updatedAt", "status"]).catch("createdAt"),
+  // default: last updated first — a run starting / ending counts as an update
+  sortBy: z.enum(["name", "createdAt", "updatedAt", "status", "csrSpentRs", "employeeCount"]).catch("updatedAt"),
   sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
@@ -95,7 +122,21 @@ export const noteParams = z.object({
 
 const optionalCoord = (max: number) => z.number().min(-max).max(max).nullable().optional();
 
-export const createLocationBody = z.object({
+// a point needs both halves: give latitude and longitude together (or clear both)
+const coordsPaired = (
+  v: { latitude?: number | null | undefined; longitude?: number | null | undefined },
+  ctx: z.RefinementCtx,
+) => {
+  if (v.latitude === undefined && v.longitude === undefined) return;
+  if ((v.latitude ?? null) === null !== ((v.longitude ?? null) === null))
+    ctx.addIssue({
+      code: "custom",
+      path: [v.latitude == null ? "latitude" : "longitude"],
+      message: "Give latitude and longitude together",
+    });
+};
+
+const locationFields = z.object({
   typeId: optionalId,
   name: optionalText(200),
   addressLine: optionalText(500),
@@ -110,7 +151,8 @@ export const createLocationBody = z.object({
   dmEvidence: optionalText(2000),
 });
 
-export const updateLocationBody = createLocationBody.partial();
+export const createLocationBody = locationFields.superRefine(coordsPaired);
+export const updateLocationBody = locationFields.partial().superRefine(coordsPaired);
 
 export const locationParams = z.object({
   id: z.string().uuid(),
@@ -256,3 +298,105 @@ export const bulkAssignBody = z.object({
 
 export type SetAssignmentsInput = z.infer<typeof setAssignmentsBody>;
 export type BulkAssignInput = z.infer<typeof bulkAssignBody>;
+
+// ── financials — one row per client per FY, ₹ (not crore) ────────────────────
+
+export const fyText = z.string().trim().regex(/^\d{4}-\d{4}$/, "Use the form 2025-2026");
+const rupees = z.number().min(0).max(1e16).nullable().optional();
+
+export const saveCsrFinancialBody = z.object({
+  fy: fyText,
+  obligationRs: rupees,
+  budgetRs: rupees,
+  spentRs: rupees,
+  unspentRs: rupees,
+  evidence: optionalText(2000),
+});
+
+export const saveCorporateFinancialBody = z.object({
+  fy: fyText,
+  revenueRs: rupees,
+  netProfitRs: z.number().min(-1e16).max(1e16).nullable().optional(), // a loss is negative
+  paidUpCapitalRs: rupees,
+  authorisedCapitalRs: rupees,
+  netWorthRs: z.number().min(-1e16).max(1e16).nullable().optional(),
+  source: optionalText(500),
+});
+
+export const financialParams = z.object({
+  id: z.string().uuid(),
+  financialId: z.string().uuid(),
+});
+
+export type SaveCsrFinancialInput = z.infer<typeof saveCsrFinancialBody>;
+
+// ── CSR programmes — the project table of the annual CSR report ─────────────
+
+const programLocation = z
+  .object({
+    state: z.string().trim().min(1, "State is required").max(100),
+    district: optionalText(100),
+    city: optionalText(100),
+    latitude: optionalCoord(90),
+    longitude: optionalCoord(180),
+  })
+  .superRefine(coordsPaired);
+
+const csrProgramFields = z.object({
+  fy: fyText,
+  name: z.string().trim().min(1, "Programme name is required").max(500),
+  sectorIds: z.array(z.string().uuid()).max(13),
+  isOngoing: z.boolean().nullable().optional(),
+  duration: optionalText(100),
+  isLocalArea: z.boolean().nullable().optional(),
+  locations: z.array(programLocation).max(100),
+  locationNote: optionalText(2000),
+  budgetRs: rupees,
+  spentRs: rupees,
+  unspentTransferredRs: rupees,
+  mode: z.enum(["DIRECT", "AGENCY"]).nullable().optional(),
+  // an existing agency, or a name (+ CSR-1 number) to find or add one
+  agencyId: optionalId,
+  agencyName: optionalText(300),
+  agencyRegistrationNo: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^CSR\d{8}$/, "Use the CSR-1 number, e.g. CSR00012345")
+    .nullable()
+    .optional(),
+  beneficiaries: optionalText(1000),
+  sourceUrl: optionalUrl,
+});
+
+export const createCsrProgramBody = csrProgramFields.extend({
+  sectorIds: csrProgramFields.shape.sectorIds.default([]),
+  locations: csrProgramFields.shape.locations.default([]),
+});
+export const updateCsrProgramBody = csrProgramFields.partial().extend({
+  // false hands the programme back to the pipeline
+  isLocked: z.boolean().optional(),
+});
+
+export const csrProgramParams = z.object({
+  id: z.string().uuid(),
+  programId: z.string().uuid(),
+});
+
+export const csrAgencyQuery = z.object({
+  search: z.string().trim().max(100).optional(),
+});
+
+export type CreateCsrProgramInput = z.infer<typeof createCsrProgramBody>;
+export type UpdateCsrProgramInput = z.infer<typeof updateCsrProgramBody>;
+export type SaveCorporateFinancialInput = z.infer<typeof saveCorporateFinancialBody>;
+
+// ── documents (annual reports, attachments) — multipart: file + these fields ─
+
+export const uploadDocumentBody = z.object({
+  typeId: z.string().uuid("Document type is required"),
+  fy: fyText,
+});
+
+export type UploadDocumentInput = z.infer<typeof uploadDocumentBody>;
+

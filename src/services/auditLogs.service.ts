@@ -2,6 +2,7 @@
 // Path: src/utils/audit/auditLog.ts
 
 import prisma from "@/utils/prisma/client";
+import { currentTenantId } from "@/utils/prisma/tenant";
 import { Request } from "express";
 
 interface AuditLogParams {
@@ -33,8 +34,13 @@ export const createAuditLog = async ({
   req,
 }: AuditLogParams) => {
   try {
+    // signed-out flows (password reset) have no tenant yet — it is the actor's
+    const tenantId =
+      currentTenantId() ??
+      (await prisma.user.findUniqueOrThrow({ where: { id: actorId }, select: { tenantId: true } })).tenantId;
     await prisma.auditLog.create({
       data: {
+        tenantId,
         actorId,
         action,
         module,

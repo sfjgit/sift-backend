@@ -12,6 +12,7 @@
 
 import prisma from "@/utils/prisma/client";
 import { loggers } from "@/utils/logger";
+import { runInTenant } from "@/utils/prisma/tenant";
 import { svcResultsBody } from "@/validators/svc.validators";
 import { raiseAlert, resolveAlert } from "@/services/alert.service";
 import { engine } from "./engineClient";
@@ -26,6 +27,7 @@ const ENGINE_STATUS = new Set(["QUEUED", "RUNNING", "DONE", "EMPTY", "FAILED", "
 
 const checkRun = async (run: {
   id: string;
+  tenantId: string;
   status: string;
   externalJobId: string | null;
   startedAt: Date | null;
@@ -158,6 +160,7 @@ export const reconcileOnce = async () => {
       },
       select: {
         id: true,
+        tenantId: true,
         status: true,
         externalJobId: true,
         startedAt: true,
@@ -167,26 +170,33 @@ export const reconcileOnce = async () => {
       orderBy: { nextCheckAt: "asc" },
       take: BATCH,
     });
+    // each run is handled as its own tenant (saves, alerts, notifications)
     for (const run of due) {
-      await checkRun(run).catch(async (e) => {
+      await runInTenant(run.tenantId, () => checkRun(run)).catch(async (e) => {
         loggers.error(`Reconcile run ${run.id} failed`, e);
-        await raiseAlert({
-          key: `reconcile:${run.id}`,
-          severity: "WARNING",
-          source: "pipeline",
-          title: "A pipeline run could not be checked",
-          body: String((e as Error)?.message ?? e).slice(0, 500),
-          meta: { runId: run.id },
-        });
+        await runInTenant(run.tenantId, () =>
+          raiseAlert({
+            key: `reconcile:${run.id}`,
+            severity: "WARNING",
+            source: "pipeline",
+            title: "A pipeline run could not be checked",
+            body: String((e as Error)?.message ?? e).slice(0, 500),
+            meta: { runId: run.id },
+          }),
+        );
       });
     }
 
     const parents = await prisma.stepRun.findMany({
       where: { status: "RUNNING", step: { key: "run_all" }, childRuns: { none: { status: { in: ACTIVE } } } },
-      select: { id: true },
+      select: { id: true, tenantId: true },
       take: BATCH,
     });
-    for (const p of parents) await advanceChain(p.id).catch((e) => loggers.error(`Advance run all ${p.id} failed`, e));
+    for (const p of parents) {
+      await runInTenant(p.tenantId, () => advanceChain(p.id)).catch((e) =>
+        loggers.error(`Advance run all ${p.id} failed`, e),
+      );
+    }
 
     if (Date.now() - lastHealth > HEALTH_EVERY_MS) {
       lastHealth = Date.now();

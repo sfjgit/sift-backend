@@ -6,6 +6,7 @@
 
 import { Request, Response } from "express";
 import { PermissionScope, Prisma } from "@prisma/client";
+import { tenantIdOrThrow } from "@/utils/prisma/tenant";
 import prisma from "@/utils/prisma/client";
 import {
   clientScopeWhere,
@@ -372,11 +373,14 @@ const nextBucket = (d: Date, interval: Interval) => {
 };
 
 // same rule as clientScopeWhere: created it, or handles any of its SPOCs
-const clientScopeSql = (ids: string[] | null) =>
-  ids
-    ? Prisma.sql`(c."createdById" = ANY(${ids}::text[]) OR EXISTS (
+// raw SQL is not tenant-scoped by the Prisma client — the tenant goes in here
+const clientScopeSql = (ids: string[] | null) => {
+  const tenant = Prisma.sql`c."tenantId" = ${tenantIdOrThrow()}`;
+  return ids
+    ? Prisma.sql`${tenant} AND (c."createdById" = ANY(${ids}::text[]) OR EXISTS (
         SELECT 1 FROM "ClientSpoc" sx WHERE sx."clientId" = c."id" AND sx."handlerId" = ANY(${ids}::text[])))`
-    : Prisma.sql`TRUE`;
+    : tenant;
+};
 
 const trendSource = (entity: TrendQuery["entity"], ids: string[] | null) => {
   switch (entity) {
@@ -392,7 +396,7 @@ const trendSource = (entity: TrendQuery["entity"], ids: string[] | null) => {
           JOIN "Client" c ON c."id" = s."clientId"
           LEFT JOIN "ClientLocation" l ON l."id" = s."locationId"`,
         date: Prisma.sql`s."createdAt"`,
-        cond: Prisma.sql`s."isActive" = true AND c."deletedAt" IS NULL AND ${
+        cond: Prisma.sql`s."tenantId" = ${tenantIdOrThrow()} AND s."isActive" = true AND c."deletedAt" IS NULL AND ${
           ids ? Prisma.sql`s."handlerId" = ANY(${ids}::text[])` : Prisma.sql`TRUE`
         }`,
       };

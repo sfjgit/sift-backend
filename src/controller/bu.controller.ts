@@ -55,7 +55,7 @@ export const createBusinessUnit = async (req: Request, res: Response) => {
   const body = req.validatedBody as CreateBUInput;
 
   const bu = await prisma.businessUnit.create({
-    data: { name: body.name, code: body.code ?? null },
+    data: { tenantId: req.user.tenantId, name: body.name, code: body.code ?? null },
     select: BU_SELECT,
   });
 

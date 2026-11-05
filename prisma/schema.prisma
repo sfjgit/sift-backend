@@ -11,6 +11,12 @@
 //   constants → modules + actions (src/config/permissions.registry.ts)
 //
 // Org masters are flat. BU and SL are independent — they combine only on ClientSpoc.
+//
+// Multi-tenant: one database, every company (tenant) sees only its own rows.
+// Top-level tables carry tenantId; their children (locations, notes, grants…)
+// belong to a tenant through their parent. The Prisma client adds the tenant
+// filter itself (src/utils/prisma/tenant.ts) — raw SQL must add it by hand.
+// Platform tables (Tenant, ExternalService, PipelineStep) are shared.
 
 generator client {
   provider = "prisma-client-js"
@@ -102,6 +108,7 @@ enum ClientActivityType {
   DOCUMENT_ADDED
   FINANCIALS_UPDATED
   PROGRAMS_ADDED
+  PROGRAMS_UPDATED
   OUTREACH_GENERATED
   STEP_RUN_STARTED
   STEP_RUN_FINISHED
@@ -155,6 +162,62 @@ enum NotificationSeverity {
   ERROR
 }
 
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED // nobody in the tenant can sign in; data is kept
+}
+
+// how a CSR programme is run (CSR report annexure: "mode of implementation")
+enum CsrImplementationMode {
+  DIRECT // by the company itself
+  AGENCY // through an implementing agency (NGO, trust, Section 8 company)
+}
+
+// what kind of organisation a client is — decides which profile fields apply
+enum ClientEntityType {
+  COMPANY // has a CIN
+  GOVERNMENT // ministries, departments, PSUs' parent bodies
+  INSTITUTION // colleges, universities, institutes
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TENANT — one company using the CRM (SFJBS is the first). Platform admins
+// (User.isPlatformAdmin) manage tenants from the enterprise console.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String       @id @default(uuid())
+  slug      String       @unique // "sfjbs" — short, URL-safe
+  name      String
+  legalName String?
+  status    TenantStatus @default(ACTIVE)
+  plan      String       @default("STANDARD")
+  maxUsers  Int? // null = no limit; counts active users
+  settings  Json?
+
+  users         User[]
+  roles         Role[]
+  lookups       Lookup[]
+  businessUnits BusinessUnit[]
+  serviceLines  ServiceLine[]
+  departments   Department[]
+  designations  Designation[]
+  clients       Client[]
+  clientSpocs   ClientSpoc[]
+  stepRuns      StepRun[]
+  runQuotas     RunQuota[]
+  auditLogs     AuditLog[]
+  savedViews    SavedView[]
+  faqs          Faq[]
+  systemAlerts  SystemAlert[]
+  csrAgencies   CsrAgency[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOKUP — one table for every admin-managed pick-list
 // type: INDUSTRY, CLIENT_CATEGORY, LOCATION_TYPE, TECH_CATEGORY, DOCUMENT_TYPE,
@@ -163,6 +226,8 @@ enum NotificationSeverity {
 
 model Lookup {
   id       String  @id @default(uuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
   type     String
   code     String
   label    String
@@ -173,29 +238,32 @@ model Lookup {
 
   clientsByIndustry      Client[]           @relation("ClientIndustry")
   clientsByCategory      Client[]           @relation("ClientCategory")
+  clientsByEmployeeSize  Client[]           @relation("ClientEmployeeSize")
   locationsByType        ClientLocation[]   @relation("LocationType")
   technologiesByCategory ClientTechnology[] @relation("TechCategory")
   spocsBySource          ClientSpoc[]       @relation("SpocSource")
   spocsByEmailSource     ClientSpoc[]       @relation("SpocEmailSource")
   spocsBySalesStatus     ClientSpoc[]       @relation("SpocSalesStatus")
   documentsByType        ClientDocument[]   @relation("DocumentType")
-  programsBySector       ClientProgram[]    @relation("ProgramSector")
+  csrProgramSectors      ClientCsrProgramSector[] @relation("CsrProgramSector")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([type, code])
-  @@index([type, isActive])
+  @@unique([tenantId, type, code])
+  @@index([tenantId, type, isActive])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ORG MASTERS — all flat, no parent/child
+// ORG MASTERS — all flat, no parent/child; names unique per tenant
 // ─────────────────────────────────────────────────────────────────────────────
 
 model BusinessUnit {
   id       String  @id @default(uuid())
-  name     String  @unique
-  code     String? @unique
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  name     String
+  code     String?
   isActive Boolean @default(true)
 
   users       UserBusinessUnit[]
@@ -204,13 +272,17 @@ model BusinessUnit {
 
   createdAt DateTime @default(now())
 
-  @@index([isActive])
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
 }
 
 model ServiceLine {
   id       String  @id @default(uuid())
-  name     String  @unique
-  code     String? @unique
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  name     String
+  code     String?
   isActive Boolean @default(true)
 
   users       UserServiceLine[]
@@ -219,12 +291,16 @@ model ServiceLine {
 
   createdAt DateTime @default(now())
 
-  @@index([isActive])
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
 }
 
 model Department {
   id       String  @id @default(uuid())
-  name     String  @unique
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  name     String
   code     String?
   isActive Boolean @default(true)
 
@@ -232,12 +308,15 @@ model Department {
 
   createdAt DateTime @default(now())
 
-  @@index([isActive])
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive])
 }
 
 model Designation {
   id       String  @id @default(uuid())
-  name     String  @unique
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  name     String
   code     String?
   isActive Boolean @default(true)
 
@@ -245,19 +324,20 @@ model Designation {
 
   createdAt DateTime @default(now())
 
-  @@index([isActive])
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // USER — people hierarchy (reportingTo / teamLead) stays: scopes depend on it
 // ─────────────────────────────────────────────────────────────────────────────
 
-// File: schema.prisma
-// Path: prisma/schema.prisma
-// (User model — only change: legacyCaspaId added)
-
+// email is unique across all tenants: sign-in needs only the email, and the
+// user's tenant follows from it
 model User {
   id           String @id @default(uuid())
+  tenantId     String
+  tenant       Tenant @relation(fields: [tenantId], references: [id])
   email        String @unique
   passwordHash String
 
@@ -268,17 +348,18 @@ model User {
   lastName        String
   middleName      String?
   displayName     String?
-  employeeId      String?   @unique
+  employeeId      String?
   phone           String?
   workingLocation String?
   timezone        String?
   dateOfBirth     DateTime?
   dateOfJoin      DateTime?
 
-  isSuperAdmin Boolean @default(false)
-  isActive     Boolean @default(true)
+  isSuperAdmin    Boolean @default(false) // everything inside their own tenant
+  isPlatformAdmin Boolean @default(false) // enterprise console: manages tenants
+  isActive        Boolean @default(true)
 
-  legacyCaspaId Int? @unique // tbl_userdetails.id
+  legacyCaspaId Int? // tbl_userdetails.id
 
   roleId String
   role   Role   @relation(fields: [roleId], references: [id])
@@ -341,7 +422,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([isActive])
+  @@unique([tenantId, employeeId])
+  @@unique([tenantId, legacyCaspaId])
+  @@index([tenantId, isActive])
   @@index([roleId])
   @@index([departmentId])
   @@index([designationId])
@@ -423,7 +506,9 @@ model ImpersonationLog {
 
 model Role {
   id          String  @id @default(uuid())
-  name        String  @unique
+  tenantId    String
+  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  name        String
   description String?
   isSystem    Boolean @default(false) // system roles can't be edited from UI
 
@@ -433,6 +518,8 @@ model Role {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
 }
 
 model RolePermission {
@@ -452,21 +539,38 @@ model RolePermission {
 // CLIENT — company master, flat (no parent/child). Addresses in ClientLocation.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// One row per organisation, whatever we sell it (CSR, B2B, …). What differs by
+// line of business hangs off the client in its own table (ClientFinancial =
+// CSR figures, ClientCorporateFinancial = company figures), never as a copy.
 model Client {
-  id          String       @id @default(uuid())
+  id          String           @id @default(uuid())
+  tenantId    String
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  entityType  ClientEntityType @default(COMPANY)
   name        String
   shortName   String?
-  cin         String?      @unique
+  cin         String? // unique per tenant
   website     String?
   linkedinUrl String?
-  status      ClientStatus @default(PENDING)
+  status      ClientStatus     @default(PENDING)
 
-  industryId String?
-  industry   Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
-  categoryId String?
-  category   Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
+  // head count as found (exact) + the band sales filters on (lookup
+  // EMPLOYEE_SIZE, meta { min, max }); a count without a band picks the band
+  employeeCount  Int?
+  employeeSizeId String?
+  employeeSize   Lookup? @relation("ClientEmployeeSize", fields: [employeeSizeId], references: [id])
 
-  legacyCaspaId Int? @unique
+  // latest CSR year, copied from ClientFinancial for list filters / sort at
+  // scale — kept in step by csrSnapshot.service, never edited directly
+  csrFy      String?
+  csrSpentRs Decimal? @db.Decimal(16, 2)
+
+  industryId      String?
+  industry        Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
+  categoryId      String?
+  category        Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
+
+  legacyCaspaId Int?
 
   // one BU owns the client; it can be served by several service lines.
   // New SPOCs from pipeline runs take the BU from here.
@@ -482,30 +586,37 @@ model Client {
 
   deletedAt DateTime?
 
-  locations     ClientLocation[]
-  technologies  ClientTechnology[]
-  spocs         ClientSpoc[]
-  notes         ClientNote[]
-  activities    ClientActivity[]
-  documents     ClientDocument[]
-  financials    ClientFinancial[]
-  programs      ClientProgram[]
-  outreachPacks OutreachPack[]
-  stepRuns      StepRun[]
-  assignments   ClientAssignment[]
+  locations           ClientLocation[]
+  technologies        ClientTechnology[]
+  spocs               ClientSpoc[]
+  notes               ClientNote[]
+  activities          ClientActivity[]
+  documents           ClientDocument[]
+  // CSR-only data lives in ClientCsr* tables; company facts (locations,
+  // corporate figures, documents) are shared by every line of business
+  csrFinancials       ClientCsrFinancial[]
+  corporateFinancials ClientCorporateFinancial[]
+  csrPrograms         ClientCsrProgram[]
+  outreachPacks       OutreachPack[]
+  stepRuns            StepRun[]
+  assignments         ClientAssignment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([tenantId, cin])
+  @@unique([tenantId, legacyCaspaId])
   @@index([status])
   @@index([industryId])
   @@index([categoryId])
+  @@index([employeeSizeId])
   @@index([createdById])
   @@index([deletedAt])
   @@index([businessUnitId])
-  // list: default sort + name sort over live rows
-  @@index([deletedAt, createdAt])
-  @@index([deletedAt, name])
+  // list: default sort + name / CSR spend sort over a tenant's live rows
+  @@index([tenantId, deletedAt, createdAt])
+  @@index([tenantId, deletedAt, name])
+  @@index([tenantId, deletedAt, csrSpentRs])
   // "contains" search (ILIKE '%x%') — trigram, needs pg_trgm
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
   @@index([shortName(ops: raw("gin_trgm_ops"))], type: Gin)
@@ -617,7 +728,9 @@ model ClientTechnology {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model ClientSpoc {
-  id String @id @default(uuid())
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
 
   clientId String
   client   Client @relation(fields: [clientId], references: [id])
@@ -628,7 +741,7 @@ model ClientSpoc {
   firstName   String
   lastName    String?
   nameKey     String // normalized full name — dedupe per client
-  email       String? @unique
+  email       String? // unique per tenant
   phone       String?
   designation String? // free text as found
   department  String?
@@ -676,7 +789,7 @@ model ClientSpoc {
   isActive  Boolean @default(true)
   notes     String?
 
-  legacyCaspaId Int? @unique
+  legacyCaspaId Int?
 
   sourceRunId String?
   sourceRun   StepRun? @relation("SpocSourceRun", fields: [sourceRunId], references: [id])
@@ -692,6 +805,9 @@ model ClientSpoc {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([tenantId, email])
+  @@unique([tenantId, legacyCaspaId])
+  @@index([tenantId, createdAt])
   @@index([clientId, isActive])
   @@index([clientId, nameKey])
   @@index([locationId])
@@ -788,8 +904,9 @@ model ClientDocument {
   @@index([clientId])
 }
 
-// one row per client per FY — only accepted figures; flagged ones stay in StepRun.viewData
-model ClientFinancial {
+// CSR figures — one row per client per FY; only accepted figures, flagged ones
+// stay in StepRun.viewData
+model ClientCsrFinancial {
   id       String @id @default(uuid())
   clientId String
   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -813,31 +930,126 @@ model ClientFinancial {
   @@unique([clientId, fy])
 }
 
-model ClientProgram {
+// company figures per FY (any client, not only CSR) — typed columns, one row
+// per year, so history is kept and reports can sum / sort
+model ClientCorporateFinancial {
   id       String @id @default(uuid())
   clientId String
   client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-  fy   String
-  name String
+  fy                  String // "2025-2026"
+  revenueRs           Decimal? @db.Decimal(18, 2)
+  netProfitRs         Decimal? @db.Decimal(18, 2)
+  paidUpCapitalRs     Decimal? @db.Decimal(18, 2)
+  authorisedCapitalRs Decimal? @db.Decimal(18, 2)
+  netWorthRs          Decimal? @db.Decimal(18, 2)
 
-  sectorId String?
-  sector   Lookup? @relation("ProgramSector", fields: [sectorId], references: [id])
+  source   String? // "MCA filing", "annual report", a URL…
+  isLocked Boolean @default(false) // entered / confirmed by a person
 
-  budgetRs      Decimal? @db.Decimal(16, 2)
-  locations     String?
-  beneficiaries String?
-  implementor   String?
-  sourceUrl     String?
-
-  sourceRunId String?
-  sourceRun   StepRun? @relation("ProgramSourceRun", fields: [sourceRunId], references: [id])
+  updatedById String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([clientId, fy, name])
+  @@unique([clientId, fy])
+}
+
+// one CSR programme / project per client per FY — the columns of the project
+// table in the company's annual CSR report (CSR Rules annexure)
+model ClientCsrProgram {
+  id       String @id @default(uuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  fy      String
+  name    String
+  // lower-case, punctuation-free name: the same programme across years, and no
+  // near-duplicate rows within a year ("Project Shiksha" = "project shiksha.")
+  nameKey String
+
+  // Schedule VII activities (lookup PROGRAM_SECTOR); sectorText keeps the source's
+  // wording so nothing is lost when it matches no list entry
+  sectors    ClientCsrProgramSector[]
+  sectorText String?
+
+  isOngoing   Boolean? // ongoing (multi-year) project vs one-year
+  duration    String? // as reported: "3 years", "2023-2026"
+  isLocalArea Boolean? // local area of the company's operations (Sec. 135(5))
+
+  locations    ClientCsrProgramLocation[]
+  locationNote String? // where, as written in the source
+
+  budgetRs             Decimal? @db.Decimal(16, 2) // amount allocated
+  spentRs              Decimal? @db.Decimal(16, 2) // spent in the FY
+  unspentTransferredRs Decimal? @db.Decimal(16, 2) // moved to the Unspent CSR Account
+
+  mode     CsrImplementationMode?
+  agencyId String?
+  agency   CsrAgency?             @relation(fields: [agencyId], references: [id])
+
+  beneficiaries String?
+  sourceUrl     String?
+
+  sourceRunId String?
+  sourceRun   StepRun? @relation("ProgramSourceRun", fields: [sourceRunId], references: [id])
+  isLocked    Boolean  @default(false) // entered / corrected by a person — the pipeline never overwrites
+  updatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clientId, fy, nameKey])
+  @@index([clientId, nameKey])
+  @@index([agencyId])
+}
+
+model ClientCsrProgramSector {
+  programId String
+  program   ClientCsrProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  sectorId  String
+  sector    Lookup           @relation("CsrProgramSector", fields: [sectorId], references: [id])
+
+  @@id([programId, sectorId])
   @@index([sectorId])
+}
+
+// where a programme runs — state / district are filterable ("spends in Karnataka")
+model ClientCsrProgramLocation {
+  id        String           @id @default(uuid())
+  programId String
+  program   ClientCsrProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  state     String
+  district  String?
+  city      String?
+  // both or neither, within range (CHECK constraints in the migration)
+  latitude  Decimal? @db.Decimal(9, 6)
+  longitude Decimal? @db.Decimal(9, 6)
+
+  @@index([programId])
+  @@index([state, district])
+}
+
+// implementing agencies (NGOs, trusts, Section 8 companies) — one list per
+// tenant, shared by every client's programmes
+model CsrAgency {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name           String
+  nameKey        String // same normalisation as programme names
+  registrationNo String? // MCA CSR-1 number, e.g. CSR00012345
+  website        String?
+
+  programs ClientCsrProgram[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, nameKey])
+  @@unique([tenantId, registrationNo])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -953,9 +1165,11 @@ model PipelineStep {
 }
 
 model StepRun {
-  id     String       @id @default(uuid())
-  stepId String
-  step   PipelineStep @relation(fields: [stepId], references: [id])
+  id       String       @id @default(uuid())
+  tenantId String
+  tenant   Tenant       @relation(fields: [tenantId], references: [id])
+  stepId   String
+  step     PipelineStep @relation(fields: [stepId], references: [id])
 
   idempotencyKey String  @unique // hash(step + client + spoc + options) — blocks double clicks
   externalJobId  String? @unique
@@ -1000,13 +1214,14 @@ model StepRun {
   locations     ClientLocation[]   @relation("LocationSourceRun")
   technologies  ClientTechnology[] @relation("TechnologySourceRun")
   documents     ClientDocument[]   @relation("DocumentSourceRun")
-  financials    ClientFinancial[]  @relation("FinancialSourceRun")
-  programs      ClientProgram[]    @relation("ProgramSourceRun")
+  csrFinancials ClientCsrFinancial[] @relation("FinancialSourceRun")
+  csrPrograms   ClientCsrProgram[]   @relation("ProgramSourceRun")
   outreachPacks OutreachPack[]     @relation("OutreachSourceRun")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([tenantId, createdAt])
   @@index([status, nextCheckAt])
   @@index([stepId, requestedById, status]) // limit check
   @@index([clientId, createdAt])
@@ -1020,13 +1235,15 @@ model StepRun {
 // together. Subject: userId, else roleId, else everyone — for the same step +
 // period the most specific rule wins. Super admin has no slots.
 model RunQuota {
-  id     String        @id @default(uuid())
-  stepId String?
-  step   PipelineStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  roleId String?
-  role   Role?         @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  userId String?
-  user   User?         @relation("RunQuotaUser", fields: [userId], references: [id], onDelete: Cascade)
+  id       String        @id @default(uuid())
+  tenantId String
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  stepId   String?
+  step     PipelineStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  roleId   String?
+  role     Role?         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  userId   String?
+  user     User?         @relation("RunQuotaUser", fields: [userId], references: [id], onDelete: Cascade)
 
   period   QuotaPeriod
   maxRuns  Int
@@ -1038,7 +1255,7 @@ model RunQuota {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([isActive])
+  @@index([tenantId, isActive])
 }
 
 // append-only: dispatch attempts, callbacks, status changes, errors
@@ -1087,8 +1304,11 @@ model Notification {
 // Problems the system raises (engine down, runs failing, server errors).
 // One open row per key: a repeat bumps count/lastSeenAt instead of a new row,
 // so admins get one notification, not one per retry.
+// tenantId null = platform-wide (the shared pipeline engine) — every tenant sees it.
 model SystemAlert {
   id       String               @id @default(uuid())
+  tenantId String?
+  tenant   Tenant?              @relation(fields: [tenantId], references: [id])
   key      String // "engine-down:CSR_PIPELINE", "run-failed:figures:UNREACHABLE"
   severity NotificationSeverity
   source   String // pipeline | engine | api
@@ -1107,12 +1327,15 @@ model SystemAlert {
 
   @@index([key, resolvedAt])
   @@index([resolvedAt, lastSeenAt])
+  @@index([tenantId])
 }
 
 model AuditLog {
-  id      String @id @default(uuid())
-  actorId String
-  actor   User   @relation("AuditLogActor", fields: [actorId], references: [id])
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  actorId  String
+  actor    User   @relation("AuditLogActor", fields: [actorId], references: [id])
 
   action    String
   module    String
@@ -1126,7 +1349,7 @@ model AuditLog {
 
   @@index([module, recordId])
   @@index([actorId])
-  @@index([createdAt])
+  @@index([tenantId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1136,6 +1359,8 @@ model AuditLog {
 // table / report presets; config is opaque to the backend
 model SavedView {
   id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
   userId    String
   user      User     @relation("UserSavedViews", fields: [userId], references: [id], onDelete: Cascade)
   module    String // "clients" | "spocs" | "users" | "reports" | "step_runs" ...
@@ -1147,11 +1372,14 @@ model SavedView {
   updatedAt DateTime @updatedAt
 
   @@index([userId, module])
-  @@index([module, isShared])
+  @@index([tenantId, module, isShared])
 }
 
+// help is per tenant — a new tenant starts with a copy of the platform's FAQs
 model Faq {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
   question        String
   answer          String // markdown-lite: paragraphs, "- " bullets, **bold**, `code`
   category        String // "Getting started", "Clients", "SPOCs", "Reports", "Admin", ...
@@ -1165,6 +1393,6 @@ model Faq {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  @@index([category, order])
+  @@index([tenantId, category, order])
   @@index([module])
 }

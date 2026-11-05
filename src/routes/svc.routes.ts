@@ -4,7 +4,7 @@
 // External services only (X-Service-Key). See docs/PIPELINE_INTEGRATION.md.
 
 import { Router } from "express";
-import { authenticateService, requireServiceScope } from "@/middleware/serviceAuth";
+import { authenticateService, requireServiceScope, runTenantOfStepRun } from "@/middleware/serviceAuth";
 import { validate, idParams } from "@/validators/validator";
 import { svcEventBody, svcResultsBody } from "@/validators/svc.validators";
 import { getRunInput, postRunEvent, postRunResults } from "@/controller/svc.controller";
@@ -17,6 +17,7 @@ router.use(authenticateService);
 router.get("/health", (req, res) => {
   res.json({ success: true, data: { service: req.service!.code, time: new Date().toISOString() } });
 });
+router.use("/step-runs/:id", runTenantOfStepRun);
 router.get("/step-runs/:id", requireServiceScope("clients:read"), validate.params(idParams), getRunInput);
 router.post(
   "/step-runs/:id/events",

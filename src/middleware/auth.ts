@@ -1,9 +1,10 @@
 // File: auth.ts
 // Path: src/middleware/auth.ts
 
-import { verifyAccessToken } from "@/utils/jwt";
+import { verifyAccessToken, type JWTPayLoad } from "@/utils/jwt";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
+import { runInTenant } from "@/utils/prisma/tenant";
 import { config } from "dotenv";
 import { Request, Response, NextFunction } from "express";
 import {
@@ -22,11 +23,14 @@ export const AUTH_USER_SELECT = {
   roleId: true,
   isSuperAdmin: true,
   departmentId: true,
+  tenantId: true,
   isActive: true,
+  tenant: { select: { status: true } },
 } as const satisfies Prisma.UserSelect;
 
 // ─── Authenticate User ────────────────────────────────────────────────────────
-// JWT contains only { id } — everything else fetched fresh from DB every request
+// JWT contains only { id } — everything else fetched fresh from DB every request.
+// The user lookup runs before any tenant is known (ids are unique everywhere).
 export const authenticateUser = async (
   req: Request,
   res: Response,
@@ -46,7 +50,7 @@ export const authenticateUser = async (
   }
 
   // JWT failures are 401s, never 500s
-  let decoded: { id: string } | null = null;
+  let decoded: JWTPayLoad | null = null;
   try {
     decoded = verifyAccessToken(accessToken);
   } catch (err) {
@@ -70,7 +74,8 @@ export const authenticateUser = async (
     throw err;
   }
 
-  if (!decoded?.id) {
+  // an enterprise-console token is not a CRM session
+  if (!decoded?.id || decoded.scope === "platform") {
     res.status(401).json({
       success: false,
       message: "Invalid access token payload",
@@ -102,9 +107,20 @@ export const authenticateUser = async (
     return;
   }
 
-  const { isActive, ...authUser } = user;
+  // a suspended company is locked out as a whole
+  if (user.tenant.status !== "ACTIVE") {
+    res.status(403).json({
+      success: false,
+      message: "Your company's CRM access is suspended. Contact your administrator.",
+      code: "TENANT_SUSPENDED",
+    });
+    return;
+  }
+
+  const { isActive, tenant, ...authUser } = user;
   req.user = authUser;
-  next();
+  // everything after this runs as the user's tenant (every Prisma query is scoped)
+  runInTenant(user.tenantId, next);
 };
 
 // ─── Set Token Cookies ────────────────────────────────────────────────────────

@@ -56,6 +56,7 @@ export const createRunQuota = async (req: Request, res: Response) => {
 
   const row = await prisma.runQuota.create({
     data: {
+      tenantId: req.user.tenantId,
       stepId: b.stepId ?? null,
       roleId: b.roleId ?? null,
       userId: b.userId ?? null,

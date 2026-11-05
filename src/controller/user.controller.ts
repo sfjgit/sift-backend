@@ -5,6 +5,7 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
+import { assertOwnRefs, assertSeatAvailable } from "@/services/tenant.service";
 import prisma from "@/utils/prisma/client";
 import { getReportingLineIds, userScopeWhere } from "@/services/scope.service";
 import { logAuthEvent } from "@/services/authLog.service";
@@ -63,6 +64,26 @@ const USER_DETAIL_SELECT = {
 } as const satisfies Prisma.UserSelect;
 
 // non-super-admins can't create, edit or reset a super admin
+// role, org and people ids must be this tenant's
+type UserRefs = {
+  roleId?: string | null | undefined;
+  departmentId?: string | null | undefined;
+  designationId?: string | null | undefined;
+  reportingToId?: string | null | undefined;
+  teamLeadId?: string | null | undefined;
+  businessUnitIds?: string[] | undefined;
+  serviceLineIds?: string[] | undefined;
+};
+const assertUserRefs = (b: UserRefs) =>
+  assertOwnRefs({
+    role: [b.roleId],
+    department: [b.departmentId],
+    designation: [b.designationId],
+    user: [b.reportingToId, b.teamLeadId],
+    businessUnit: b.businessUnitIds ?? [],
+    serviceLine: b.serviceLineIds ?? [],
+  });
+
 const assertCanManage = (actor: Request["user"], target: { isSuperAdmin: boolean }) => {
   if (target.isSuperAdmin && !actor.isSuperAdmin) {
     throw ApiError(403, "Only a super admin can manage a super admin", "FORBIDDEN");
@@ -128,6 +149,8 @@ export const getUserById = async (req: Request, res: Response) => {
 export const createUser = async (req: Request, res: Response) => {
   const body = req.validatedBody as CreateUserInput;
   assertCanManage(req.user, body);
+  await assertUserRefs(body);
+  await assertSeatAvailable(req.user.tenantId);
 
   const { businessUnitIds, serviceLineIds, ...fields } = body;
 
@@ -139,6 +162,7 @@ export const createUser = async (req: Request, res: Response) => {
     const u = await tx.user.create({
       data: {
         ...definedOnly(fields),
+        tenantId: req.user.tenantId,
         passwordHash: placeholderHash,
         createdById: req.user.id,
         resetPasswordToken: setupToken,
@@ -151,6 +175,7 @@ export const createUser = async (req: Request, res: Response) => {
 
     await tx.auditLog.create({
       data: {
+        tenantId: req.user.tenantId,
         actorId: req.user.id,
         action: "CREATE",
         module: "users",
@@ -204,6 +229,7 @@ export const updateUser = async (req: Request, res: Response) => {
   if (!existing) throw notFound("User");
   assertCanManage(req.user, existing);
   if (body.isSuperAdmin !== undefined) assertCanManage(req.user, { isSuperAdmin: true });
+  await assertUserRefs(body);
 
   if (body.reportingToId) {
     if (body.reportingToId === id) {
@@ -238,6 +264,7 @@ export const updateUser = async (req: Request, res: Response) => {
 
     await tx.auditLog.create({
       data: {
+        tenantId: req.user.tenantId,
         actorId: req.user.id,
         action: "UPDATE",
         module: "users",
@@ -270,6 +297,7 @@ export const toggleUser = async (req: Request, res: Response) => {
   }
 
   const isActive = !existing.isActive;
+  if (isActive) await assertSeatAvailable(req.user.tenantId);
   const [updated] = await prisma.$transaction([
     prisma.user.update({
       where: { id },
@@ -315,6 +343,7 @@ export const adminResetPassword = async (req: Request, res: Response) => {
     prisma.refreshToken.deleteMany({ where: { userId: id } }),
     prisma.auditLog.create({
       data: {
+        tenantId: req.user.tenantId,
         actorId: req.user.id,
         action: "ADMIN_RESET_PASSWORD",
         module: "users",

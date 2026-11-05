@@ -61,6 +61,15 @@ const call = async <T>(
   }
 };
 
+export type WebsiteCheckResult = {
+  url: string;
+  opens: boolean;
+  why: string;
+  belongs: "CIN" | "NAME" | "OTHER_CIN" | "UNKNOWN" | "NO";
+  evidence: string[];
+  title: string | null;
+};
+
 export const engine = {
   dispatch: (svc: EngineService, payload: unknown) =>
     call<{ jobId: string | number; status?: string }>(svc, "POST", "/api/crm/jobs", payload),
@@ -74,6 +83,9 @@ export const engine = {
   stop: (svc: EngineService, jobId: string) =>
     call(svc, "POST", `/api/crm/jobs/${encodeURIComponent(jobId)}/stop`, {}),
   health: (svc: EngineService) => call<Record<string, unknown>>(svc, "GET", "/api/crm/health", undefined, 8_000),
+  // the branch finder: does a typed website open, and is it the client's?
+  checkWebsite: (svc: EngineService, body: { name: string; cin: string | null; url: string }) =>
+    call<WebsiteCheckResult>(svc, "POST", "/api/crm/website/check", body, 60_000),
   testKey: (svc: EngineService, provider: string) =>
     call<{ ok: boolean; detail?: string }>(svc, "POST", "/api/crm/keys/test", { provider }, 90_000),
 };

@@ -11,6 +11,7 @@ import businessUnitRoutes from "./businessUnit.routes";
 import { masterRouter } from "./master.routes";
 import lookupRoutes from "./lookup.routes";
 import clientRoutes from "./client.routes";
+import csrAgencyRoutes from "./csrAgency.routes";
 import spocRoutes from "./spoc.routes";
 import notificationRoutes from "./notification.routes";
 import { authLogRoutes, auditLogRoutes } from "./auth-logs.routes";
@@ -27,11 +28,14 @@ import alertRoutes from "./alert.routes";
 import runQuotaRoutes from "./runQuota.routes";
 import geoRoutes from "./geo.routes";
 import svcRoutes from "./svc.routes";
+import platformRoutes from "./platform.routes";
+import websiteRoutes from "./website.routes";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
 router.use("/me", meRoutes);
+router.use("/website-suggestions", websiteRoutes);
 
 // org + admin
 router.use("/users", userRoutes);
@@ -48,6 +52,7 @@ router.use("/admin", impersonationRoutes);
 
 // CRM
 router.use("/clients", clientRoutes);
+router.use("/csr-agencies", csrAgencyRoutes);
 router.use("/spocs", spocRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/pipeline-steps", pipelineStepRoutes);
@@ -59,6 +64,9 @@ router.use("/run-quotas", runQuotaRoutes);
 router.use("/geo", geoRoutes);
 router.use("/reports", reportRoutes);
 router.use("/search", searchRoutes);
+
+// enterprise console — platform admins, every tenant
+router.use("/platform", platformRoutes);
 
 // external services — service key, not user JWT
 router.use("/svc", svcRoutes);

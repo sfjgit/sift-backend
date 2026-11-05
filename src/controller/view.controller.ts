@@ -89,6 +89,7 @@ export const createView = async (req: Request, res: Response) => {
   const view = await prisma.$transaction(async (tx) => {
     const v = await tx.savedView.create({
       data: {
+        tenantId: req.user.tenantId,
         userId: req.user.id,
         module: body.module,
         name: body.name,

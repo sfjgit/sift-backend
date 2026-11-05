@@ -33,6 +33,7 @@ export const createLookup = async (req: Request, res: Response) => {
 
   const row = await prisma.lookup.create({
     data: {
+      tenantId: req.user.tenantId,
       type: body.type,
       code: body.code,
       label: body.label,

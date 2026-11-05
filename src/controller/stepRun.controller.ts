@@ -13,6 +13,7 @@ import { startRun, stopRun } from "@/services/pipeline/launch.service";
 import { pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
 import type { ListStepRunsQuery, StartStepRunInput } from "@/validators/stepRun.validators";
+import { PIPELINE_STEPS } from "@/config/pipeline";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const STEP = { id: true, key: true, label: true, target: true } as const;
@@ -41,10 +42,12 @@ const STEP_RUN_SELECT = {
   _count: { select: { childRuns: true, events: true } },
 } as const satisfies Prisma.StepRunSelect;
 
+const KNOWN_STEPS = PIPELINE_STEPS.map((s) => s.key);
+
 // ── GET /pipeline-steps — active steps in button order
 export const listPipelineSteps = async (_req: Request, res: Response) => {
   const steps = await prisma.pipelineStep.findMany({
-    where: { isActive: true },
+    where: { isActive: true, key: { in: KNOWN_STEPS } },
     select: {
       id: true,
       key: true,
@@ -87,7 +90,31 @@ export const listStepRuns = async (req: Request, res: Response) => {
     }),
   ]);
 
-  res.json({ success: true, data: runs, meta: pageMeta(total, q.page, q.limit) });
+  // running ones carry how long the step usually takes (median of its last 50 finished runs)
+  const activeSteps = [...new Set(runs.filter((r) => r.status === "QUEUED" || r.status === "RUNNING").map((r) => r.step.id))];
+  const typical = await typicalSeconds(activeSteps);
+  res.json({
+    success: true,
+    data: runs.map((r) => ({ ...r, typicalSeconds: typical.get(r.step.id) ?? null })),
+    meta: pageMeta(total, q.page, q.limit),
+  });
+};
+
+// timing only (no tenant data), so all tenants' runs count
+const typicalSeconds = async (stepIds: string[]) => {
+  if (!stepIds.length) return new Map<string, number>();
+  const rows = await prisma.$queryRaw<{ stepId: string; secs: number | null }[]>`
+    SELECT "stepId", percentile_cont(0.5) WITHIN GROUP (ORDER BY d) AS secs
+    FROM (
+      SELECT "stepId", EXTRACT(EPOCH FROM ("finishedAt" - "startedAt")) AS d,
+             row_number() OVER (PARTITION BY "stepId" ORDER BY "finishedAt" DESC) AS n
+      FROM "StepRun"
+      WHERE "status" = 'DONE' AND "startedAt" IS NOT NULL AND "finishedAt" IS NOT NULL
+        AND "stepId" IN (${Prisma.join(stepIds)})
+    ) t
+    WHERE n <= 50
+    GROUP BY "stepId"`;
+  return new Map(rows.filter((r) => r.secs !== null).map((r) => [r.stepId, Math.round(Number(r.secs))]));
 };
 
 // What a run put into the CRM, found through the records that point back at it
@@ -129,8 +156,8 @@ const runProduced = async (runId: string, clientId: string, perms: Record<string
           },
         })
       : [],
-    perms["client_programs.read"] ? prisma.clientProgram.count({ where: { sourceRunId: runId } }) : 0,
-    perms["client_financials.read"] ? prisma.clientFinancial.count({ where: { sourceRunId: runId } }) : 0,
+    perms["client_programs.read"] ? prisma.clientCsrProgram.count({ where: { sourceRunId: runId } }) : 0,
+    perms["client_financials.read"] ? prisma.clientCsrFinancial.count({ where: { sourceRunId: runId } }) : 0,
   ]);
 
   return {
@@ -226,9 +253,10 @@ export const getStepOverview = async (req: Request, res: Response) => {
 
   const [steps, latest, spocs, approved, documents, financials, programs, packs] = await Promise.all([
     prisma.pipelineStep.findMany({
-      where: { isActive: true },
+      // only steps this server knows (a DB shared with an older / newer server may hold others)
+      where: { isActive: true, key: { in: KNOWN_STEPS } },
       select: { id: true, key: true, label: true, uiOrder: true, userClientLimit: true, rerunAfterDays: true,
-        service: { select: { isActive: true, lastHealthOk: true } } },
+        service: { select: { code: true, name: true, isActive: true, lastHealthOk: true } } },
       orderBy: [{ uiOrder: { sort: "asc", nulls: "last" } }],
     }),
     prisma.stepRun.findMany({
@@ -241,8 +269,8 @@ export const getStepOverview = async (req: Request, res: Response) => {
     prisma.clientSpoc.count({ where: { clientId, isActive: true } }),
     prisma.clientSpoc.count({ where: { clientId, isActive: true, approvalStatus: "APPROVED" } }),
     prisma.clientDocument.count({ where: { clientId } }),
-    prisma.clientFinancial.count({ where: { clientId } }),
-    prisma.clientProgram.count({ where: { clientId } }),
+    prisma.clientCsrFinancial.count({ where: { clientId } }),
+    prisma.clientCsrProgram.count({ where: { clientId } }),
     prisma.outreachPack.count({ where: { clientId } }),
   ]);
 

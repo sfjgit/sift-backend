@@ -5,6 +5,7 @@
 // children are dispatched one at a time — each after the previous child's
 // results are saved, so every step works on CRM data.
 
+import { tenantIdOrThrow } from "@/utils/prisma/tenant";
 import crypto from "crypto";
 import { Prisma, StepRunStatus } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
@@ -13,7 +14,7 @@ import { logClientActivity } from "@/services/clientActivity.service";
 import { RUN_ALL_DEFAULT, stepDef } from "@/config/pipeline";
 import type { AuthUser } from "@/types/express";
 import { engine } from "./engineClient";
-import { ACTIVE, dispatchRun, isTerminal, moveRun, onChildEnded, recordEvent } from "./run.service";
+import { ACTIVE, dispatchRun, isTerminal, moveRun, onChildEnded, recordEvent, touchClient } from "./run.service";
 import { spocWhereForUserId } from "@/services/scope.service";
 import { assertSlots, canForceRerun, rerunBlock, slotBlock, type RuleUser } from "./runRules.service";
 
@@ -130,6 +131,15 @@ const missingInput = async (
       };
     }
   }
+  if (stepKey === "branches" || stepKey === "website") {
+    const client = await prisma.client.findUnique({ where: { id: clientId }, select: { website: true } });
+    if (!client?.website?.trim()) {
+      return {
+        message: "No website stored for this client",
+        howToContinue: "Add the client's official website, then run “Find office locations” again.",
+      };
+    }
+  }
   const needsSpocs = stepKey === "enrich" || stepKey === "validate" || (stepKey === "apollo" && options.mode !== "find");
   if (needsSpocs) {
     // the run only works on the requester's own SPOCs
@@ -172,6 +182,7 @@ const createRunRow = async (data: {
   prisma.$transaction(async (tx) => {
     const run = await tx.stepRun.create({
       data: {
+        tenantId: tenantIdOrThrow(),
         stepId: data.stepId,
         clientId: data.clientId,
         spocId: data.spocId,
@@ -196,6 +207,9 @@ const createRunRow = async (data: {
       });
     }
     return run;
+  }).then(async (run) => {
+    await touchClient(data.clientId);
+    return run;
   });
 
 // ── POST /step-runs ──────────────────────────────────────────────────────────
@@ -207,7 +221,7 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
 
   const client = await prisma.client.findFirst({
     where: { id: input.clientId, deletedAt: null },
-    select: { id: true, businessUnitId: true, serviceLines: { select: { serviceLineId: true } } },
+    select: { id: true, website: true, businessUnitId: true, serviceLines: { select: { serviceLineId: true } } },
   });
   if (!client) throw notFound("Client");
 
@@ -265,6 +279,8 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
     ...(forced && { rerun: true }),
     ...(chainKeys.length && { steps: chainKeys }),
     ...(spocIds && { spocIds }),
+    // the finder reads this website; a new one makes a new run (and lifts the re-run wait)
+    ...(step.key === "branches" && client.website && { website: client.website.trim() }),
     ...buSl,
   } as Prisma.InputJsonObject;
 

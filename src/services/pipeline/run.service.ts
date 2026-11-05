@@ -103,6 +103,15 @@ export const moveRun = async (
   return false;
 };
 
+// ── "last updated" = last run ────────────────────────────────────────────────
+
+// A run starting or ending marks its client as just updated, so the clients
+// list (newest updated first) brings it to the top — for every engine's steps.
+export const touchClient = (clientId: string) =>
+  prisma.client
+    .updateMany({ where: { id: clientId }, data: { updatedAt: new Date() } })
+    .catch((e) => loggers.error(`Could not mark client ${clientId} as updated`, e));
+
 // ── job payload ──────────────────────────────────────────────────────────────
 
 const callbackBase = () =>
@@ -146,8 +155,15 @@ export const buildJobPayload = async (runId: string) => {
       documents: {
         select: { fileKey: true, fileName: true, fy: true, type: { select: { code: true } } },
       },
-      financials: { orderBy: { fy: "desc" } },
-      programs: { include: { sector: { select: { label: true } } }, orderBy: { fy: "desc" } },
+      csrFinancials: { orderBy: { fy: "desc" } },
+      csrPrograms: {
+        include: {
+          sectors: { select: { sector: { select: { code: true, label: true } } } },
+          locations: { select: { state: true, district: true, city: true } },
+          agency: { select: { name: true, registrationNo: true } },
+        },
+        orderBy: { fy: "desc" },
+      },
     },
   });
 
@@ -216,7 +232,8 @@ export const buildJobPayload = async (runId: string) => {
     spocs: spocs.map(({ source, ...s }) => ({ ...s, source: source?.code ?? null })),
     context: {
       documents: documents.filter((d) => d.url),
-      financials: client.financials.map((f) => ({
+      // payload keys stay "financials" / "programs" — the engine's contract
+      financials: client.csrFinancials.map((f) => ({
         fy: f.fy,
         obligationRs: num(f.obligationRs),
         budgetRs: num(f.budgetRs),
@@ -224,14 +241,24 @@ export const buildJobPayload = async (runId: string) => {
         unspentRs: num(f.unspentRs),
         isLocked: f.isLocked,
       })),
-      programs: client.programs.map((p) => ({
+      programs: client.csrPrograms.map((p) => ({
         fy: p.fy,
         name: p.name,
-        sector: p.sector?.label ?? null,
+        sector: p.sectors.map((s) => s.sector.label).join("; ") || p.sectorText,
+        sectors: p.sectors.map((s) => s.sector.code),
         budgetRs: num(p.budgetRs),
-        locations: p.locations,
+        spentRs: num(p.spentRs),
+        unspentTransferredRs: num(p.unspentTransferredRs),
+        isOngoing: p.isOngoing,
+        duration: p.duration,
+        isLocalArea: p.isLocalArea,
+        locations: p.locationNote,
+        locationList: p.locations,
         beneficiaries: p.beneficiaries,
-        implementor: p.implementor,
+        mode: p.mode,
+        implementor: p.agency?.name ?? null,
+        agencyRegistrationNo: p.agency?.registrationNo ?? null,
+        isLocked: p.isLocked,
       })),
     },
     options: { ...((run.step.config as Record<string, unknown>) ?? {}), ...stepOptions },
@@ -339,7 +366,22 @@ export const onChildEnded = (fn: (parentRunId: string) => Promise<void>) => {
   chainHook = fn;
 };
 
+// other services that act when a run ends (the website check) — registered by
+// them, so this file never imports them (no import cycle)
+type RunEndedHook = (runId: string) => Promise<void>;
+const runEndedHooks: RunEndedHook[] = [];
+export const afterRunEnded = (fn: RunEndedHook) => {
+  runEndedHooks.push(fn);
+};
+
 const onRunEnded = async (runId: string) => {
+  for (const hook of runEndedHooks) {
+    await hook(runId).catch((e) => loggers.error(`After-run hook failed for ${runId}`, e));
+  }
+  await notifyRunEnded(runId);
+};
+
+const notifyRunEnded = async (runId: string) => {
   const run = await prisma.stepRun.findUnique({
     where: { id: runId },
     select: {
@@ -359,6 +401,7 @@ const onRunEnded = async (runId: string) => {
   const link = `/clients/${run.clientId}?tab=pipeline&run=${run.id}`;
 
   try {
+    await touchClient(run.clientId);
     // free the double-click guard so the step can be run again
     if (!run.idempotencyKey.endsWith(`:${run.id}`)) {
       await prisma.stepRun.update({

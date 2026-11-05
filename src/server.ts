@@ -51,6 +51,11 @@ const allowedOrigins = [
   "https://www.sfjbs.com",
 
   "https://sift-eight-pi.vercel.app",
+
+  // enterprise console (crm-enterprise-console)
+  "http://localhost:3100",
+  // more origins without a code change: CORS_EXTRA_ORIGINS=https://a,https://b
+  ...(process.env.CORS_EXTRA_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean),
 ];
 
 app.use(cookieParser());

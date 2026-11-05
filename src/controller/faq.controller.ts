@@ -74,7 +74,7 @@ export const createFaq = async (req: Request, res: Response) => {
   const body = req.validatedBody as CreateFaqInput;
 
   const faq = await prisma.faq.create({
-    data: { ...definedOnly(body), createdById: req.user.id },
+    data: { ...definedOnly(body), tenantId: req.user.tenantId, createdById: req.user.id },
     select: FAQ_SELECT,
   });
 

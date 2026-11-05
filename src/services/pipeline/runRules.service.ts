@@ -107,7 +107,8 @@ export const slotsFor = async (user: RuleUser, stepId?: string): Promise<Slot[]>
           status: { in: [...COUNTED] },
           createdAt: { gte: periodStart(r.period, now) },
           // all-steps rules count what the user started (a "Run all" is one run)
-          ...(r.stepId ? { stepId: r.stepId } : { parentRunId: null }),
+          // (the automatic website check is free: it never uses a slot)
+          ...(r.stepId ? { stepId: r.stepId } : { parentRunId: null, step: { key: { not: "website" } } }),
         },
       });
       return {
@@ -136,13 +137,14 @@ export const slotBlock = async (user: RuleUser, step: StepRef, topLevel: boolean
 };
 
 export const assertSlots = async (user: RuleUser, step: StepRef) => {
+  if (step.key === "website") return; // runs by itself when a website does not open
   const block = await slotBlock(user, step, true);
   if (block) throw ApiError(429, block, "RUN_SLOTS_USED");
 };
 
 // ── already done ─────────────────────────────────────────────────────────────
 
-const CLIENT_LEVEL = new Set(["reports", "report_spocs", "figures"]);
+const CLIENT_LEVEL = new Set(["reports", "report_spocs", "figures", "branches"]);
 
 export type DoneInfo = {
   runId: string;
@@ -191,6 +193,19 @@ const newInputSince = async (stepKey: string, clientId: string, userId: string, 
             OR: [{ approvedAt: after }, { outreachPacks: { none: {} } }] },
         })) > 0
       );
+    }
+    case "branches": {
+      // a new website (the old one was wrong or moved) — the run records the one it read
+      const [client, last] = await Promise.all([
+        prisma.client.findUnique({ where: { id: clientId }, select: { website: true } }),
+        prisma.stepRun.findFirst({
+          where: { clientId, status: "DONE", step: { key: "branches" }, finishedAt: { gte: since } },
+          orderBy: { finishedAt: "desc" },
+          select: { options: true },
+        }),
+      ]);
+      const used = ((last?.options ?? {}) as Record<string, unknown>).website;
+      return !!client?.website && typeof used === "string" && used.trim() !== client.website.trim();
     }
     default:
       return false;

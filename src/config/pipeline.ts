@@ -8,12 +8,33 @@
 // Contract with the engine: docs/PIPELINE_INTEGRATION.md
 
 export const CSR_PIPELINE = "CSR_PIPELINE";
+// the branch office finder (AI_Agent_2_Branch_vinutha_backend): reads a client's own website for its offices
+export const BRANCH_FINDER = "BRANCH_FINDER";
+
+// the external services the CRM sends steps to. `keyEnv` holds the key the CRM sends; the
+// same name with _URL is its address, with _INBOUND_KEY the key it sends back (seed stores the hash)
+export const SERVICES = {
+  [CSR_PIPELINE]: {
+    name: "CSR outreach pipeline",
+    keyEnv: "CSR_PIPELINE_KEY",
+    defaultUrl: "http://127.0.0.1:8770",
+    timeoutMins: 240,
+  },
+  [BRANCH_FINDER]: {
+    name: "Branch office finder",
+    keyEnv: "BRANCH_FINDER_KEY",
+    defaultUrl: "http://127.0.0.1:8771",
+    timeoutMins: 30,
+  },
+} as const;
+export type ServiceCode = keyof typeof SERVICES;
 
 // what a step's results may write — the ingest service refuses everything else
-export type ResultKind = "documents" | "spocs" | "financials" | "programs" | "outreach";
+export type ResultKind = "documents" | "spocs" | "financials" | "programs" | "outreach" | "locations" | "website";
 
 export type StepDef = {
   key: string;
+  service?: ServiceCode; // default CSR_PIPELINE
   label: string;
   uiOrder: number;
   engineStage: string | null; // null = orchestrated by the CRM, never dispatched
@@ -103,6 +124,31 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
     defaultRerunDays: 30,
   },
   {
+    key: "branches",
+    service: BRANCH_FINDER,
+    label: "Find office locations",
+    uiOrder: 9,
+    engineStage: "branches",
+    writes: ["locations"],
+    createsSpocs: false,
+    spocInput: "none",
+    defaultLimit: null,
+    defaultRerunDays: 90,
+  },
+  {
+    // runs by itself when a step finds the website does not open (never shown as a column)
+    key: "website",
+    service: BRANCH_FINDER,
+    label: "Find current website",
+    uiOrder: 10,
+    engineStage: "website",
+    writes: ["website"],
+    createsSpocs: false,
+    spocInput: "none",
+    defaultLimit: null,
+    defaultRerunDays: null,
+  },
+  {
     key: "run_all",
     label: "Run all steps",
     uiOrder: 0,
@@ -119,6 +165,19 @@ export const PIPELINE_STEPS: readonly StepDef[] = [
 export const RUN_ALL_DEFAULT = ["reports", "report_spocs", "figures", "enrich", "apollo", "validate"];
 
 export const stepDef = (key: string) => PIPELINE_STEPS.find((s) => s.key === key);
+export const serviceOf = (def: StepDef): ServiceCode => def.service ?? CSR_PIPELINE;
+
+// the finder's office types → LOCATION_TYPE codes
+export const FINDER_LOCATION_TYPE: Record<string, string> = {
+  HEAD_OFFICE: "HQ",
+  CORPORATE_OFFICE: "OFFICE",
+  REGISTERED_OFFICE: "REGISTERED_OFFICE",
+  REGIONAL_OFFICE: "BRANCH",
+  BRANCH: "BRANCH",
+  PLANT: "PLANT",
+  PROJECT_OFFICE: "OFFICE",
+  OFFICE: "OFFICE",
+};
 
 // SPOC_SOURCE / EMAIL_SOURCE / DOCUMENT_TYPE codes the engine sends; seeded as system lookups
 export const PIPELINE_LOOKUPS: Record<string, { code: string; label: string }[]> = {

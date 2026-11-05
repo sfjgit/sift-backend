@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { scopeArgs } from "./tenant";
 
 // Neon closes idle connections and suspends an idle database; the first query
 // after that fails with "Server has closed the connection" (P1017) or can't
@@ -28,10 +29,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const base = new PrismaClient();
 
+// every query is scoped to the caller's tenant (see ./tenant.ts), then reads
+// get the connection-drop retry
 const prisma = base.$extends({
   query: {
     $allModels: {
-      async $allOperations({ operation, args, query }) {
+      async $allOperations({ model, operation, args: raw, query }) {
+        const args = scopeArgs(model, operation, raw) as typeof raw;
         if (!READS.has(operation)) return query(args);
         for (let i = 0; ; i++) {
           try {

@@ -94,6 +94,7 @@ export const saveRoleGrants = async (req: Request, res: Response) => {
     prisma.rolePermission.createMany({ data: rows }),
     prisma.auditLog.create({
       data: {
+        tenantId: req.user.tenantId,
         actorId: req.user.id,
         action: "ROLE_PERMISSIONS_UPDATED",
         module: "roles",

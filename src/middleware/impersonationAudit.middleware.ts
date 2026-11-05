@@ -55,6 +55,7 @@ export const impersonationAudit = async (
       prisma.auditLog
         .create({
           data: {
+            tenantId: req.user.tenantId,
             actorId: log.impersonatorId,
             action: `IMPERSONATED_${req.method}`,
             module: "impersonation",

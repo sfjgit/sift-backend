@@ -25,6 +25,11 @@ export const resultNote = (stepKey: string, summary: Record<string, unknown>): s
   if (n(fin.saved)) parts.push(`${plural(n(fin.saved), "year")} of figures saved`);
   if (n(fin.flagged)) parts.push(`${plural(n(fin.flagged), "year")} of figures to check`);
   if (n((summary.programs as Counts)?.saved)) parts.push(plural(n((summary.programs as Counts).saved), "programme"));
+  const site = summary.website as { dead?: boolean; candidates?: number } | undefined;
+  if (site?.dead && n(site.candidates)) parts.push(`Website does not open — ${plural(n(site.candidates), "current website")} found`);
+  const locs = (summary.locations ?? {}) as Counts;
+  if (n(locs.saved)) parts.push(`${plural(n(locs.saved), "office")} saved`);
+  if (n(locs.alreadySaved)) parts.push(`${plural(n(locs.alreadySaved), "office")} already saved`);
   if (n((summary.outreach as Counts)?.packs)) parts.push(`${plural(n((summary.outreach as Counts).packs), "email pack")} written`);
 
   if (!parts.length && n(spocs.unchanged)) parts.push(`${plural(n(spocs.unchanged), "SPOC")} checked, nothing new`);

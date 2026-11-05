@@ -21,7 +21,15 @@ export const SPOC_DIMS = [
   "state",
   "isPrimary",
 ] as const;
-export const CLIENT_DIMS = ["status", "industry", "category", "createdBy", "state", "city"] as const;
+export const CLIENT_DIMS = [
+  "status",
+  "industry",
+  "category",
+  "employeeSize",
+  "createdBy",
+  "state",
+  "city",
+] as const;
 export const ACTIVITY_DIMS = ["type", "actor"] as const;
 
 export type SpocDim = (typeof SPOC_DIMS)[number];

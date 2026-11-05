@@ -83,27 +83,30 @@ export const MODULES = {
     description: "CSR policies, annual reports and other filings.",
     actions: {
       read: { label: "View / download", scoped: true, requires: ["clients.read"] },
-      upload: { label: "Upload", scoped: true, requires: ["client_documents.read"], reserved: true },
-      delete: { label: "Delete", scoped: true, requires: ["client_documents.read"], reserved: true },
+      upload: { label: "Upload / replace", scoped: true, requires: ["client_documents.read"] },
+      delete: { label: "Delete", scoped: true, requires: ["client_documents.read"] },
     },
   },
   client_financials: {
-    label: "CSR financials",
+    label: "Financials",
     group: "CRM",
     order: 6,
-    description: "Obligation, budget, spent and unspent figures per FY.",
+    description: "CSR figures (obligation, budget, spent, unspent) and company figures (revenue, profit, capital) per FY.",
     actions: {
       read: { label: "View", scoped: false, requires: ["clients.read"] },
-      update: { label: "Edit / lock", scoped: true, requires: ["client_financials.read"], reserved: true },
+      update: { label: "Edit / lock", scoped: true, requires: ["client_financials.read"] },
     },
   },
   client_programs: {
-    label: "CSR programs",
+    label: "CSR programmes",
     group: "CRM",
     order: 7,
-    description: "Programs a client funds, per FY and sector.",
+    description: "CSR projects a client funds per FY: sectors, where, how much, through which agency.",
     actions: {
       read: { label: "View", scoped: false, requires: ["clients.read"] },
+      create: { label: "Add", scoped: true, requires: ["client_programs.read"] },
+      update: { label: "Edit / lock", scoped: true, requires: ["client_programs.read"] },
+      delete: { label: "Delete", scoped: true, requires: ["client_programs.read"] },
     },
   },
   spocs: {

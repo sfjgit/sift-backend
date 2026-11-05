@@ -91,14 +91,51 @@ const resultFinancial = z.object({
   reviewReason: text(1000),
 });
 
+const coord = (max: number) => z.number().min(-max).max(max).nullable().optional();
+
 const resultProgram = z.object({
   fy,
   name: req(500),
+  // free text ("Education & healthcare") — matched to Schedule VII; kept as written
   sector: text(200),
+  // or Schedule VII codes when the engine already knows them (HEALTH, EDUCATION…)
+  sectors: z.array(z.string().trim().max(40)).max(13).optional(),
   budgetRs: money,
+  spentRs: money,
+  unspentTransferredRs: money,
+  isOngoing: z.boolean().nullable().optional(),
+  duration: text(100),
+  isLocalArea: z.boolean().nullable().optional(),
   locations: text(2000),
+  // structured places, when the report lists them
+  locationList: z
+    .array(
+      z
+        .object({
+          state: req(100),
+          district: text(100),
+          city: text(100),
+          latitude: coord(90),
+          longitude: coord(180),
+        })
+        // half a point can't be placed — drop both halves
+        .transform((l) =>
+          l.latitude == null || l.longitude == null ? { ...l, latitude: null, longitude: null } : l,
+        ),
+    )
+    .max(100)
+    .optional(),
   beneficiaries: text(500),
+  mode: z.enum(["DIRECT", "AGENCY"]).nullable().optional(),
   implementor: text(500),
+  agencyRegistrationNo: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^CSR\d{8}$/)
+    .nullable()
+    .optional()
+    .catch(null), // a malformed number is dropped, not the whole result
   sourceUrl: text(1000),
 });
 
@@ -127,6 +164,55 @@ const resultOutreach = z.object({
     .max(10),
 });
 
+// an office the branch finder read on the client's own website (saved as a ClientLocation)
+const coordText = (max: number) =>
+  z.coerce.number().finite().min(-max).max(max).nullish().catch(null).transform((v) => v ?? null);
+const resultLocation = z
+  .object({
+    address: req(1000),
+    label: text(200),
+    type: text(40),
+    state: text(100),
+    district: text(100),
+    pincode: z
+      .string()
+      .trim()
+      .regex(/^[1-9]\d{5}$/)
+      .nullish()
+      .catch(null)
+      .transform((v) => v ?? undefined),
+    latitude: coordText(90),
+    longitude: coordText(180),
+    evidence: text(1000),
+    pageUrl: text(1000),
+    checks: z.record(z.string(), z.unknown()).nullish().transform((v) => v ?? undefined),
+  })
+  .transform((l) => (l.latitude == null || l.longitude == null ? { ...l, latitude: null, longitude: null } : l));
+
+// the "website" step: is the stored website dead (it does not open), and which one is theirs now
+const resultWebsite = z.object({
+  oldUrl: text(500),
+  dead: z.boolean(),
+  opensAt: text(500),
+  tried: z
+    .array(z.object({ url: text(500), why: text(200), status: z.number().int().nullish() }))
+    .max(20)
+    .default([]),
+  candidates: z
+    .array(
+      z.object({
+        url: req(500),
+        opened: text(500),
+        title: text(200),
+        how: text(300),
+        evidence: z.array(z.string().max(300)).max(10).default([]),
+        confidence: z.coerce.number().min(0).max(1),
+      }),
+    )
+    .max(5)
+    .default([]),
+});
+
 export const svcResultsBody = z.object({
   status: z.enum(["DONE", "EMPTY", "FAILED", "STOPPED"]),
   summary: z.record(z.string(), z.unknown()).optional(),
@@ -143,6 +229,8 @@ export const svcResultsBody = z.object({
       financials: z.array(resultFinancial).max(100).optional(),
       programs: z.array(resultProgram).max(2000).optional(),
       outreach: z.array(resultOutreach).max(1000).optional(),
+      locations: z.array(resultLocation).max(1000).optional(),
+      website: resultWebsite.optional(),
     })
     .optional(),
 });
@@ -150,3 +238,5 @@ export const svcResultsBody = z.object({
 export type SvcEventInput = z.infer<typeof svcEventBody>;
 export type ResultsBody = z.infer<typeof svcResultsBody>;
 export type ResultSpoc = z.infer<typeof resultSpoc>;
+export type ResultLocation = z.infer<typeof resultLocation>;
+export type ResultWebsite = z.infer<typeof resultWebsite>;

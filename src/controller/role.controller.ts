@@ -61,6 +61,7 @@ export const createRole = async (req: Request, res: Response) => {
 
   const role = await prisma.role.create({
     data: {
+      tenantId: req.user.tenantId,
       name,
       description: description ?? null,
       permissions: { create: toGrantRows(grants) },

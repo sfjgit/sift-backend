@@ -206,6 +206,7 @@ export const createSpoc = async (req: Request, res: Response) => {
     const s = await tx.clientSpoc.create({
       data: {
         ...definedOnly(body),
+        tenantId: req.user.tenantId,
         nameKey: toNameKey(body.firstName, body.lastName),
         addedById: req.user.id,
         // added by a person = already vetted; pipeline SPOCs start PENDING
