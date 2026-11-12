@@ -1,0 +1,276 @@
+// File: entities.service.ts
+// Path: src/services/ai/entities.service.ts
+//
+// T1 — entity extraction + masking (spec §3). Pure read, runs BEFORE the
+// destructive guard so a DB value ("Closed", a client called "Delete Logistics")
+// becomes a {placeholder} and can't trip it.
+//
+// What the LLM gets: the masked text and each placeholder's KIND ("industry",
+// "user", "date") — never the label, never an id. Ids are put back in on the
+// server after the LLM answers (resolve.ts → substitute).
+//
+// Matching: a per-tenant dictionary (lowercased label → entity) is scanned with
+// word n-grams, longest first — cheap even with thousands of client names.
+// Labels of 3 characters or fewer ("IT", "CSR") only match in the same case.
+
+import { aiDb } from "@/config/aiDb";
+import { currentTenantId } from "@/utils/prisma/tenant";
+
+export type EntityKind =
+  | `lookup:${string}`
+  | "business_unit"
+  | "service_line"
+  | "department"
+  | "user"
+  | "client"
+  | "date_range"
+  | "fy";
+
+export interface Entity {
+  /** placeholder as it appears in the masked text, e.g. "{industry_1}" */
+  ph: string;
+  kind: EntityKind;
+  /** the id (lookup / BU / user / client), the FY ("2024-25"), or unused for dates */
+  value?: string;
+  from?: string; // date_range, YYYY-MM-DD
+  to?: string;
+  /** shown to the user in the reply ("Banking"), never sent to the LLM */
+  label: string;
+}
+
+export interface Extraction {
+  masked: string;
+  entities: Entity[];
+}
+
+interface DictEntry {
+  kind: EntityKind;
+  value: string;
+  label: string;
+  caseSensitive: boolean;
+}
+
+// ── dictionary per tenant, cached 5 min ──────────────────────────────────────
+
+const TTL_MS = 5 * 60_000;
+const MAX_NGRAM = 7;
+const cache = new Map<string, { at: number; dict: Map<string, DictEntry> }>();
+
+// first names that are also ordinary words never match on their own
+const COMMON_WORDS = new Set([
+  "show", "open", "list", "find", "all", "with", "from", "this", "that", "last", "next", "week",
+  "month", "year", "today", "clients", "client", "spocs", "users", "runs", "status", "active",
+  "pending", "april", "may", "june", "july", "august", "summer", "grace", "hope", "joy", "will",
+  "mark", "bill", "faith", "dawn", "rose", "victor", "sunny", "honey", "lucky", "happy", "prince",
+]);
+// legal suffixes dropped to make a second, shorter alias ("Infosys Limited" → "infosys")
+const SUFFIX_RE =
+  /\s+(limited|ltd\.?|private|pvt\.?|pvt\.? ltd\.?|private limited|llp|inc\.?|corp\.?|corporation|company|co\.?)$/i;
+
+const slug = (lookupType: string) => lookupType.toLowerCase();
+const kindSlug = (k: EntityKind) => (k.startsWith("lookup:") ? slug(k.slice(7)) : k);
+
+const put = (dict: Map<string, DictEntry>, label: string, e: Omit<DictEntry, "caseSensitive" | "label">) => {
+  const clean = label.replace(/\s+/g, " ").trim();
+  if (clean.length < 2) return;
+  const key = clean.toLowerCase();
+  if (!dict.has(key)) dict.set(key, { ...e, label: clean, caseSensitive: clean.length <= 3 });
+};
+
+const buildDictionary = async (): Promise<Map<string, DictEntry>> => {
+  const db = aiDb();
+  const [lookups, bus, sls, depts, users, clients] = await Promise.all([
+    db.lookup.findMany({ where: { isActive: true }, select: { id: true, type: true, label: true } }),
+    db.businessUnit.findMany({ where: { isActive: true }, select: { id: true, name: true, code: true } }),
+    db.serviceLine.findMany({ where: { isActive: true }, select: { id: true, name: true, code: true } }),
+    db.department.findMany({ where: { isActive: true }, select: { id: true, name: true } }),
+    db.user.findMany({
+      where: { isActive: true },
+      select: { id: true, firstName: true, lastName: true, displayName: true },
+    }),
+    db.client.findMany({ where: { deletedAt: null }, select: { id: true, name: true, shortName: true }, take: 50_000 }),
+  ]);
+
+  // priority = insertion order: people, org units, pick-lists, then clients
+  const dict = new Map<string, DictEntry>();
+  const firstNameCount = new Map<string, number>();
+  for (const u of users) firstNameCount.set(u.firstName.toLowerCase(), (firstNameCount.get(u.firstName.toLowerCase()) ?? 0) + 1);
+  for (const u of users) {
+    const full = `${u.firstName} ${u.lastName}`.trim();
+    put(dict, full, { kind: "user", value: u.id });
+    if (u.displayName) put(dict, u.displayName, { kind: "user", value: u.id });
+    const first = u.firstName.toLowerCase();
+    if (first.length >= 4 && firstNameCount.get(first) === 1 && !COMMON_WORDS.has(first)) {
+      put(dict, u.firstName, { kind: "user", value: u.id });
+    }
+  }
+  for (const b of bus) {
+    put(dict, b.name, { kind: "business_unit", value: b.id });
+    if (b.code) put(dict, b.code, { kind: "business_unit", value: b.id });
+  }
+  for (const s of sls) {
+    put(dict, s.name, { kind: "service_line", value: s.id });
+    if (s.code) put(dict, s.code, { kind: "service_line", value: s.id });
+  }
+  for (const d of depts) put(dict, d.name, { kind: "department", value: d.id });
+  for (const l of lookups) put(dict, l.label, { kind: `lookup:${l.type}`, value: l.id });
+  for (const c of clients) {
+    put(dict, c.name, { kind: "client", value: c.id });
+    const short = c.name.replace(SUFFIX_RE, "").trim();
+    if (short.length >= 4 && short !== c.name) put(dict, short, { kind: "client", value: c.id });
+    if (c.shortName && c.shortName.length >= 3) put(dict, c.shortName, { kind: "client", value: c.id });
+  }
+  return dict;
+};
+
+const dictionary = async () => {
+  const key = currentTenantId() ?? "_";
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.dict;
+  const dict = await buildDictionary();
+  cache.set(key, { at: Date.now(), dict });
+  return dict;
+};
+
+/** drop a tenant's dictionary (after lookups / users change) — optional, TTL covers it */
+export const forgetEntityCache = (tenantId?: string) => (tenantId ? cache.delete(tenantId) : cache.clear());
+
+// ── dates ────────────────────────────────────────────────────────────────────
+
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MON_RE = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+const monthIndex = (m: string) => MONTHS.findIndex((x) => x.startsWith(m.slice(0, 3)));
+
+type DateHit = { re: RegExp; make: (m: RegExpMatchArray, now: Date) => { from: string; to: string } | { fy: string } };
+
+const startOfWeek = (d: Date) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // Monday
+  return x;
+};
+const addDays = (d: Date, n: number) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+};
+const fyLabel = (startYear: number) => `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+
+const DATE_PATTERNS: DateHit[] = [
+  { re: /\btoday\b/i, make: (_, n) => ({ from: iso(n), to: iso(n) }) },
+  { re: /\byesterday\b/i, make: (_, n) => ({ from: iso(addDays(n, -1)), to: iso(addDays(n, -1)) }) },
+  { re: /\bthis week\b/i, make: (_, n) => ({ from: iso(startOfWeek(n)), to: iso(n) }) },
+  { re: /\blast week\b/i, make: (_, n) => ({ from: iso(addDays(startOfWeek(n), -7)), to: iso(addDays(startOfWeek(n), -1)) }) },
+  { re: /\bthis month\b/i, make: (_, n) => ({ from: iso(new Date(n.getFullYear(), n.getMonth(), 1)), to: iso(n) }) },
+  {
+    re: /\blast month\b/i,
+    make: (_, n) => ({ from: iso(new Date(n.getFullYear(), n.getMonth() - 1, 1)), to: iso(new Date(n.getFullYear(), n.getMonth(), 0)) }),
+  },
+  { re: /\bthis year\b/i, make: (_, n) => ({ from: `${n.getFullYear()}-01-01`, to: iso(n) }) },
+  { re: /\blast year\b/i, make: (_, n) => ({ from: `${n.getFullYear() - 1}-01-01`, to: `${n.getFullYear() - 1}-12-31` }) },
+  {
+    re: /\b(?:in the )?(?:last|past) (\d{1,3}) (day|week|month)s?\b/i,
+    make: (m, n) => {
+      const k = Number(m[1]);
+      const unit = m[2]!.toLowerCase();
+      const from = unit === "day" ? addDays(n, -k) : unit === "week" ? addDays(n, -7 * k) : new Date(n.getFullYear(), n.getMonth() - k, n.getDate());
+      return { from: iso(from), to: iso(n) };
+    },
+  },
+  {
+    re: /\bfy\s?'?(\d{2}|\d{4})(?:\s?[-/]\s?(\d{2}|\d{4}))?\b/i,
+    make: (m) => {
+      const a = Number(m[1]!.length === 2 ? `20${m[1]}` : m[1]);
+      // "FY25" alone = the year ending in 2025 (2024-25); "FY 2024-25" = starts 2024
+      return { fy: fyLabel(m[2] ? a : a - 1) };
+    },
+  },
+  { re: /\b(20\d{2})\s?[-/]\s?(\d{2})\b(?![-/]\d)/, make: (m) => ({ fy: fyLabel(Number(m[1])) }) },
+  {
+    re: new RegExp(`\\b(since|after|from|before|until|till|in|during) ${MON_RE}(?:,? (20\\d{2}))?\\b`, "i"),
+    make: (m, n) => {
+      const mi = monthIndex(m[2]!.toLowerCase());
+      let y = m[3] ? Number(m[3]) : n.getFullYear();
+      if (!m[3] && mi > n.getMonth()) y -= 1; // "since November" in March → last November
+      const first = new Date(y, mi, 1);
+      const last = new Date(y, mi + 1, 0);
+      const w = m[1]!.toLowerCase();
+      if (w === "since" || w === "after" || w === "from") return { from: iso(first), to: iso(n) };
+      if (w === "before" || w === "until" || w === "till") return { from: "2000-01-01", to: iso(addDays(first, -1)) };
+      return { from: iso(first), to: iso(last) };
+    },
+  },
+  {
+    re: new RegExp(`\\b${MON_RE} (20\\d{2})\\b`, "i"),
+    make: (m) => {
+      const mi = monthIndex(m[1]!.toLowerCase());
+      const y = Number(m[2]);
+      return { from: iso(new Date(y, mi, 1)), to: iso(new Date(y, mi + 1, 0)) };
+    },
+  },
+];
+
+// ── extraction ───────────────────────────────────────────────────────────────
+
+export const extractEntities = async (input: string, now = new Date()): Promise<Extraction> => {
+  const entities: Entity[] = [];
+  const counters = new Map<string, number>();
+  const next = (kind: EntityKind) => {
+    const s = kindSlug(kind);
+    const n = (counters.get(s) ?? 0) + 1;
+    counters.set(s, n);
+    return `{${s}_${n}}`;
+  };
+
+  // 1. dates first (they contain ordinary words like "may")
+  let text = input.replace(/\s+/g, " ").trim().replace(/[{}]/g, "");
+  for (const p of DATE_PATTERNS) {
+    for (;;) {
+      const m = text.match(p.re);
+      if (!m || m.index === undefined) break;
+      const made = p.make(m, now);
+      const kind: EntityKind = "fy" in made ? "fy" : "date_range";
+      const ph = next(kind);
+      entities.push(
+        "fy" in made ? { ph, kind, value: made.fy, label: `FY ${made.fy}` } : { ph, kind, from: made.from, to: made.to, label: m[0] },
+      );
+      // keep the preposition of "since March" so the sentence still reads
+      text = `${text.slice(0, m.index)}${ph}${text.slice(m.index + m[0].length)}`;
+    }
+  }
+
+  // 2. dictionary entities, longest n-gram first
+  const dict = await dictionary();
+  const tokens = text.split(" ");
+  const out: string[] = [];
+  const seen = new Map<string, string>(); // kind:value → placeholder (same thing twice = same ph)
+  for (let i = 0; i < tokens.length; ) {
+    let matched = 0;
+    for (let n = Math.min(MAX_NGRAM, tokens.length - i); n >= 1; n--) {
+      const raw = tokens.slice(i, i + n).join(" ");
+      const trimmed = raw.replace(/^[("'“]+|[)"'”.,;:!?]+$/g, "");
+      if (!trimmed || trimmed.startsWith("{")) continue;
+      const hit = dict.get(trimmed.toLowerCase());
+      if (!hit || (hit.caseSensitive && trimmed !== hit.label)) continue;
+      const key = `${hit.kind}:${hit.value}`;
+      let ph = seen.get(key);
+      if (!ph) {
+        ph = next(hit.kind);
+        seen.set(key, ph);
+        entities.push({ ph, kind: hit.kind, value: hit.value, label: hit.label });
+      }
+      const tail = raw.slice(raw.indexOf(trimmed) + trimmed.length);
+      out.push(ph + tail);
+      matched = n;
+      break;
+    }
+    if (matched) i += matched;
+    else out.push(tokens[i++]!);
+  }
+  return { masked: out.join(" "), entities };
+};
+
+/** "show {industry_1} clients" → kinds the LLM may see: [{ ph, kind }] */
+export const entityHints = (entities: Entity[]) =>
+  entities.map((e) => ({ placeholder: e.ph, kind: e.kind.startsWith("lookup:") ? `pick-list ${e.kind.slice(7)}` : e.kind }));

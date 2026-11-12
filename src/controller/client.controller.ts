@@ -122,7 +122,7 @@ const LIST_FIGURES_SELECT = {
   corporateFinancials: {
     orderBy: { fy: "desc" },
     take: 1,
-    select: { fy: true, revenueRs: true, netProfitRs: true, netWorthRs: true, paidUpCapitalRs: true },
+    select: { fy: true, revenueRs: true, netProfitRs: true, netWorthRs: true, paidUpCapitalRs: true, authorisedCapitalRs: true },
   },
 } as const satisfies Prisma.ClientSelect;
 

@@ -161,6 +161,21 @@ export const MODULES = {
       export: { label: "Export", scoped: false, requires: ["reports.read"], reserved: true },
     },
   },
+  ai_assistant: {
+    label: "AI assistant",
+    group: "Insights",
+    order: 22,
+    description:
+      "Read-only AI: Command mode opens pages for you, Canvas builds reports. It can never change data, for any role.",
+    actions: {
+      command_use: { label: "Use command mode", scoped: false },
+      canvas_use: { label: "Use AI Canvas (beta)", scoped: false, requires: ["reports.read"] },
+      canvas_export: { label: "Export canvas (Excel / PDF / PPT)", scoped: false, requires: ["ai_assistant.canvas_use"] },
+      canvas_save_template: { label: "Save canvas templates", scoped: false, requires: ["ai_assistant.canvas_use"] },
+      settings_manage: { label: "Manage AI settings, quotas, budget", scoped: false },
+      usage_view: { label: "View AI usage & cost", scoped: false },
+    },
+  },
   views: {
     label: "Saved views",
     group: "Insights",

@@ -51,6 +51,13 @@ const TENANT_MODELS = new Set<string>([
   "Faq",
   "CsrAgency",
   "SystemAlert",
+  // AI assistant (plain tenantId column, no FK)
+  "AiModeSetting",
+  "AiUserPreference",
+  "AiQuotaPolicy",
+  "AiUserQuotaOverride",
+  "ReportTemplate",
+  "AiAuditLog",
 ]);
 
 // tenantId may be null = platform row every tenant reads (not writes)

@@ -18,6 +18,7 @@ import { authLogRoutes, auditLogRoutes } from "./auth-logs.routes";
 import impersonationRoutes from "./impersonation.routes";
 import reportRoutes from "./report.routes";
 import searchRoutes from "./search.routes";
+import columnAccessRoutes from "./columnAccess.routes";
 import viewRoutes from "./view.routes";
 import faqRoutes from "./faq.routes";
 import pipelineStepRoutes from "./pipelineStep.routes";
@@ -30,6 +31,7 @@ import geoRoutes from "./geo.routes";
 import svcRoutes from "./svc.routes";
 import platformRoutes from "./platform.routes";
 import websiteRoutes from "./website.routes";
+import aiRoutes from "./ai.routes";
 
 const router = Router();
 
@@ -65,6 +67,9 @@ router.use("/geo", geoRoutes);
 router.use("/reports", reportRoutes);
 router.use("/search", searchRoutes);
 
+// AI assistant — read-only (command + canvas), settings, usage
+router.use("/ai", aiRoutes);
+
 // enterprise console — platform admins, every tenant
 router.use("/platform", platformRoutes);
 
@@ -72,6 +77,7 @@ router.use("/platform", platformRoutes);
 router.use("/svc", svcRoutes);
 // per-user + help
 router.use("/views", viewRoutes);
+router.use("/column-access", columnAccessRoutes);
 router.use("/faqs", faqRoutes);
 
 export default router;

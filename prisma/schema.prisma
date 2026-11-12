@@ -236,15 +236,15 @@ model Lookup {
   isSystem Boolean @default(false) // seeded rows code may reference — not deletable
   meta     Json?
 
-  clientsByIndustry      Client[]           @relation("ClientIndustry")
-  clientsByCategory      Client[]           @relation("ClientCategory")
-  clientsByEmployeeSize  Client[]           @relation("ClientEmployeeSize")
-  locationsByType        ClientLocation[]   @relation("LocationType")
-  technologiesByCategory ClientTechnology[] @relation("TechCategory")
-  spocsBySource          ClientSpoc[]       @relation("SpocSource")
-  spocsByEmailSource     ClientSpoc[]       @relation("SpocEmailSource")
-  spocsBySalesStatus     ClientSpoc[]       @relation("SpocSalesStatus")
-  documentsByType        ClientDocument[]   @relation("DocumentType")
+  clientsByIndustry      Client[]                 @relation("ClientIndustry")
+  clientsByCategory      Client[]                 @relation("ClientCategory")
+  clientsByEmployeeSize  Client[]                 @relation("ClientEmployeeSize")
+  locationsByType        ClientLocation[]         @relation("LocationType")
+  technologiesByCategory ClientTechnology[]       @relation("TechCategory")
+  spocsBySource          ClientSpoc[]             @relation("SpocSource")
+  spocsByEmailSource     ClientSpoc[]             @relation("SpocEmailSource")
+  spocsBySalesStatus     ClientSpoc[]             @relation("SpocSalesStatus")
+  documentsByType        ClientDocument[]         @relation("DocumentType")
   csrProgramSectors      ClientCsrProgramSector[] @relation("CsrProgramSector")
 
   createdAt DateTime @default(now())
@@ -565,10 +565,10 @@ model Client {
   csrFy      String?
   csrSpentRs Decimal? @db.Decimal(16, 2)
 
-  industryId      String?
-  industry        Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
-  categoryId      String?
-  category        Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
+  industryId String?
+  industry   Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
+  categoryId String?
+  category   Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
 
   legacyCaspaId Int?
 
@@ -1210,13 +1210,13 @@ model StepRun {
 
   events StepRunEvent[]
 
-  spocsCreated  ClientSpoc[]       @relation("SpocSourceRun")
-  locations     ClientLocation[]   @relation("LocationSourceRun")
-  technologies  ClientTechnology[] @relation("TechnologySourceRun")
-  documents     ClientDocument[]   @relation("DocumentSourceRun")
+  spocsCreated  ClientSpoc[]         @relation("SpocSourceRun")
+  locations     ClientLocation[]     @relation("LocationSourceRun")
+  technologies  ClientTechnology[]   @relation("TechnologySourceRun")
+  documents     ClientDocument[]     @relation("DocumentSourceRun")
   csrFinancials ClientCsrFinancial[] @relation("FinancialSourceRun")
   csrPrograms   ClientCsrProgram[]   @relation("ProgramSourceRun")
-  outreachPacks OutreachPack[]     @relation("OutreachSourceRun")
+  outreachPacks OutreachPack[]       @relation("OutreachSourceRun")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1395,4 +1395,163 @@ model Faq {
 
   @@index([tenantId, category, order])
   @@index([module])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI assistant layer (docs: CRM_AI_Assistant_Layer_Spec_v1). READ-ONLY by design:
+// these are the only tables the AI service writes, and only through the main
+// client. Business tables are read through aiDb (src/config/aiDb.ts) with a
+// SELECT-only Postgres role. tenantId is a plain column (no FK) so the tenant
+// guard scopes it like every other tenant table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AiMode {
+  OFF
+  COMMAND
+  CANVAS
+}
+
+enum AiUsageMode {
+  COMMAND
+  CANVAS
+  EXPORT
+}
+
+enum AiQuotaPeriod {
+  DAY
+  WEEK
+  MONTH
+}
+
+// one row per tenant — org-wide switches + monthly budget
+model AiModeSetting {
+  id               String   @id @default(uuid())
+  tenantId         String   @unique
+  commandEnabled   Boolean  @default(false)
+  canvasEnabled    Boolean  @default(false)
+  monthlyBudgetInr Decimal  @default(5000) @db.Decimal(12, 2)
+  alertThresholds  Json     @default("[50, 80, 100]")
+  alertsSent       Json     @default("{}") // { "2026-11": [50, 80] } — each threshold alerts once a month
+  updatedById      String?
+  updatedAt        DateTime @updatedAt
+}
+
+model AiUserPreference {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String   @unique
+  mode      AiMode   @default(OFF)
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// roleId null = the tenant's default (covers roles created later)
+model AiQuotaPolicy {
+  id          String        @id @default(uuid())
+  tenantId    String
+  roleId      String?
+  mode        AiUsageMode
+  period      AiQuotaPeriod
+  maxCount    Int? // null = unlimited
+  isActive    Boolean       @default(true)
+  updatedById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([tenantId, roleId, mode, period])
+}
+
+model AiUserQuotaOverride {
+  id          String        @id @default(uuid())
+  tenantId    String
+  userId      String
+  mode        AiUsageMode
+  period      AiQuotaPeriod
+  maxCount    Int?
+  reason      String?
+  updatedById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([userId, mode, period])
+  @@index([tenantId])
+}
+
+// platform-wide: a price change adds a row, old audit rows keep their cost
+model AiModelPricing {
+  id                   String   @id @default(uuid())
+  provider             String // "anthropic" | "self_hosted"
+  model                String // "claude-haiku-5-5"
+  inputPerMTokUsd      Decimal  @db.Decimal(10, 4)
+  outputPerMTokUsd     Decimal  @db.Decimal(10, 4)
+  cacheReadPerMTokUsd  Decimal  @db.Decimal(10, 4)
+  cacheWritePerMTokUsd Decimal  @db.Decimal(10, 4)
+  usdToInr             Decimal  @db.Decimal(10, 4)
+  effectiveFrom        DateTime
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
+  @@index([model, effectiveFrom])
+}
+
+// platform-wide: masked phrasings only ("show {status} clients in {industry}"),
+// never business values
+model CommandTemplate {
+  id        String   @id @default(uuid())
+  template  String   @unique
+  action    String
+  paramMap  Json
+  source    String   @default("llm") // llm | seed | manual
+  hitCount  Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// a saved canvas: the spec only — reruns fetch fresh data, no LLM call
+model ReportTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  prompt      String?
+  spec        Json
+  createdById String
+  isShared    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, createdById])
+}
+
+model AiAuditLog {
+  id               String       @id @default(uuid())
+  tenantId         String
+  userId           String
+  roleId           String?
+  buId             String?
+  mode             AiMode
+  usageMode        AiUsageMode?
+  input            String
+  template         String?
+  tier             String // guard | template | llm | fallback | none
+  action           String?
+  params           Json?
+  outcome          String // success | rejected_destructive | rejected_permission | rejected_scope | rejected_quota | budget_exhausted | invalid | error
+  countsToQuota    Boolean      @default(false)
+  model            String?
+  inputTokens      Int          @default(0)
+  outputTokens     Int          @default(0)
+  cacheReadTokens  Int          @default(0)
+  cacheWriteTokens Int          @default(0)
+  costUsd          Decimal      @default(0) @db.Decimal(12, 6)
+  costInr          Decimal      @default(0) @db.Decimal(12, 4)
+  latencyMs        Int
+  createdAt        DateTime     @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([roleId, createdAt])
+  @@index([outcome])
+  @@index([tier, createdAt])
 }
