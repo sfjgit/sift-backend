@@ -140,6 +140,16 @@ export const spocWhereForUserId = async (userId: string): Promise<Prisma.ClientS
   return grant === true ? {} : spocScopeWhere(user, grant);
 };
 
+// rows optionally tagged with a SPOC (activity, tasks): untagged ones are for everyone
+// who sees the client; tagged ones only for those who may see that SPOC.
+// Full access = no filter at all (an empty relation filter matches nothing here).
+export const spocTaggedVisibleTo = async (
+  userId: string,
+): Promise<{ OR?: [{ spocId: null }, { spoc: Prisma.ClientSpocWhereInput }] }> => {
+  const mine = await spocWhereForUserId(userId);
+  return Object.keys(mine).length ? { OR: [{ spocId: null }, { spoc: mine }] } : {};
+};
+
 export const stepRunScopeWhere = async (
   user: ScopeUser,
   scope: PermissionScope,

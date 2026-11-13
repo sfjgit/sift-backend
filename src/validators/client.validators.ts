@@ -3,12 +3,16 @@
 
 import { z } from "zod";
 import {
+  ClientActivityType,
   ClientEntityType,
   ClientStatus,
   EmailStatus,
   OutreachStatus,
   SpocApprovalStatus,
+  SpocDataFlag,
   ValidationBand,
+  WorkTaskKind,
+  WorkTaskStatus,
 } from "@prisma/client";
 import { csv, csvIds, optionalId, optionalText, paginationQuery } from "@/validators/validator";
 
@@ -21,6 +25,16 @@ const optionalUrl = z
   .optional();
 
 const optionalYears = z.number().min(0).max(99.9).nullable().optional();
+
+// project tags (Lookup PROJECT ids) — replaces the whole set when sent
+const projectIds = z
+  .array(z.string().uuid())
+  .max(20)
+  .transform((ids) => [...new Set(ids)])
+  .optional();
+
+// "me" = starred by me, "any" = by anyone, "none" = by nobody
+const keyAccountFilter = z.enum(["me", "any", "none"]).optional();
 
 // ── clients ──────────────────────────────────────────────────────────────────
 
@@ -39,6 +53,8 @@ export const createClientBody = z.object({
   businessUnitId: optionalId,
   // replaces the whole set when sent
   serviceLineIds: z.array(z.string().uuid()).max(20).optional(),
+  csrEligible: z.boolean().nullable().optional(),
+  projectIds,
 });
 
 export const updateClientBody = createClientBody.partial();
@@ -100,6 +116,10 @@ export const listClientsQuery = z.object({
   programState: csv(z.string().trim().min(1).max(100)),
   programDistrict: z.string().trim().max(100).optional(),
   programAgency: z.string().trim().max(200).optional(),
+  // sales marks
+  keyAccount: keyAccountFilter,
+  csrEligible: z.enum(["yes", "no", "unset"]).optional(),
+  projectId: ids,
   ...paginationQuery,
   // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
   // default: last updated first — a run starting / ending counts as an update
@@ -107,10 +127,59 @@ export const listClientsQuery = z.object({
   sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
-export const clientActivitiesQuery = z.object(paginationQuery);
+export const clientActivitiesQuery = z.object({
+  ...paginationQuery,
+  spocId: z.string().uuid().optional(),
+  type: csv(z.nativeEnum(ClientActivityType)),
+});
 
 export const clientNoteBody = z.object({
   content: z.string().trim().min(1, "Content is required").max(5000),
+  // a comment on one SPOC of this client
+  spocId: optionalId,
+});
+
+export const updateNoteBody = z.object({
+  content: z.string().trim().min(1, "Content is required").max(5000),
+});
+
+// ── tasks / calls / meetings, and the quick "I emailed / called / WhatsApped" log
+const dueAt = z.coerce.date().nullable().optional();
+
+export const listTasksQuery = z.object({
+  spocId: z.string().uuid().optional(),
+  status: csv(z.nativeEnum(WorkTaskStatus)),
+});
+
+export const createTaskBody = z.object({
+  spocId: optionalId,
+  kind: z.nativeEnum(WorkTaskKind).default("TASK"),
+  title: z.string().trim().min(1, "Say what needs doing").max(300),
+  notes: optionalText(2000),
+  dueAt,
+  assigneeId: z.string().uuid().optional(),
+});
+
+export const updateTaskBody = z
+  .object({
+    title: z.string().trim().min(1).max(300).optional(),
+    notes: optionalText(2000),
+    dueAt,
+    assigneeId: z.string().uuid().optional(),
+    status: z.nativeEnum(WorkTaskStatus).optional(),
+    closeNote: optionalText(2000),
+  })
+  .refine((b) => Object.keys(b).length > 0, "Nothing to update");
+
+export const taskParams = z.object({ id: z.string().uuid(), taskId: z.string().uuid() });
+
+export const INTERACTION_CHANNELS = ["EMAIL", "CALL", "WHATSAPP", "LINKEDIN", "OTHER"] as const;
+export const interactionBody = z.object({
+  spocId: optionalId,
+  channel: z.enum(INTERACTION_CHANNELS),
+  note: optionalText(2000),
+  // calls only: did they pick up?
+  connected: z.boolean().optional(),
 });
 
 export const noteParams = z.object({
@@ -199,6 +268,22 @@ const spocFields = {
   salesStatusId: optionalId,
   isPrimary: z.boolean().optional(),
   notes: optionalText(2000),
+  erp: optionalText(100),
+  dataFlag: z.nativeEnum(SpocDataFlag).nullable().optional(),
+  projectIds,
+  // CASPA SPOC profile
+  phone2: optionalText(30),
+  phone3: optionalText(30),
+  state: optionalText(100),
+  district: optionalText(100),
+  city: optionalText(100),
+  pincode: optionalText(10),
+  address: optionalText(500),
+  callConnected: z.boolean().nullable().optional(),
+  roleCategoryId: optionalId,
+  decisionAuthorityId: optionalId,
+  orgTypeId: optionalId,
+  revenueBandId: optionalId,
 };
 
 export const createSpocBody = z.object({
@@ -229,6 +314,11 @@ export const listSpocsQuery = z.object({
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .optional(),
+  // NONE = not flagged; BOTH_WRONG rows are hidden unless picked here
+  dataFlag: csv(z.union([z.nativeEnum(SpocDataFlag), z.literal("NONE")])),
+  keyAccount: keyAccountFilter,
+  projectId: csvIds,
+  erp: z.string().trim().max(100).optional(),
   isActive: z
     .enum(["true", "false"])
     .transform((v) => v === "true")
@@ -269,6 +359,23 @@ export const bulkAssignSpocsBody = z.object({
   assignToId: z.string().uuid("assignToId is required"),
   reason: optionalText(500),
 });
+
+// one bulk "set field" for SPOCs: any of the fields below, the rest untouched
+export const bulkUpdateSpocsBody = z
+  .object({
+    spocIds: bulkIds("SPOC"),
+    salesStatusId: z.string().uuid().nullable().optional(),
+    dataFlag: z.nativeEnum(SpocDataFlag).nullable().optional(),
+    erp: optionalText(100),
+    projectIds: z.array(z.string().uuid()).max(20).optional(),
+    projectMode: z.enum(["add", "remove", "replace"]).default("add"),
+  })
+  .refine(
+    (b) => b.salesStatusId !== undefined || b.dataFlag !== undefined || b.erp !== undefined || b.projectIds !== undefined,
+    { message: "Pick a field to set" },
+  );
+
+export type BulkUpdateSpocsInput = z.infer<typeof bulkUpdateSpocsBody>;
 
 export const bulkClientStatusBody = z.object({
   clientIds: bulkIds("client"),

@@ -5,7 +5,7 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { isUserInScope, spocScopeWhere } from "@/services/scope.service";
-import { assertLookups } from "@/services/lookup.service";
+import { assertLookupIds, assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { toNameKey } from "@/utils/names";
 import { notifyUsers } from "@/services/notification.service";
@@ -14,6 +14,7 @@ import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
 import type {
   BulkAssignSpocsInput,
+  BulkUpdateSpocsInput,
   CreateSpocInput,
   ListSpocsQuery,
   SpocApprovalInput,
@@ -61,20 +62,90 @@ const SPOC_SELECT = {
   source: { select: LOOKUP },
   emailSource: { select: LOOKUP },
   salesStatus: { select: LOOKUP },
+  // sales marks
+  erp: true,
+  dataFlag: true,
+  dataFlagAt: true,
+  dataFlagBy: { select: PERSON },
+  keyAccountUser: { select: PERSON },
+  projectIds: true,
+  projectSetAt: true,
+  projectSetBy: { select: PERSON },
+  // CASPA SPOC profile
+  phone2: true,
+  phone3: true,
+  state: true,
+  district: true,
+  city: true,
+  pincode: true,
+  address: true,
+  callConnected: true,
+  roleCategory: { select: LOOKUP },
+  decisionAuthority: { select: LOOKUP },
+  orgType: { select: LOOKUP },
+  revenueBand: { select: LOOKUP },
 } as const satisfies Prisma.ClientSpocSelect;
+
+// field names as people say them, for the timeline ("Updated mobile 2, city")
+const FIELD_LABELS: Record<string, string> = {
+  firstName: "first name",
+  lastName: "last name",
+  phone: "mobile",
+  phone2: "mobile 2",
+  phone3: "mobile 3",
+  linkedinUrl: "LinkedIn",
+  totalExpYears: "total experience",
+  currentOrgExpYears: "experience at this org",
+  businessUnitId: "business unit",
+  serviceLineId: "service line",
+  locationId: "office",
+  sourceId: "source",
+  emailSourceId: "email source",
+  isPrimary: "primary SPOC",
+  erp: "ERP",
+  dataFlag: "data flag",
+  projectIds: "projects",
+  callConnected: "call connected",
+  roleCategoryId: "role category",
+  decisionAuthorityId: "decision authority",
+  orgTypeId: "organization type",
+  revenueBandId: "SPOC revenue",
+};
+const fieldLabel = (k: string) => FIELD_LABELS[k] ?? k;
+
+const fullNameOf = (p: { firstName: string; lastName: string | null }) => `${p.firstName} ${p.lastName ?? ""}`.trim();
+
+// who set a mark and when — stamped whenever the mark itself is sent
+const markStamps = (
+  body: { dataFlag?: unknown; projectIds?: unknown },
+  userId: string,
+): Prisma.ClientSpocUncheckedUpdateInput => {
+  const now = new Date();
+  return {
+    ...(body.dataFlag !== undefined && { dataFlagById: body.dataFlag ? userId : null, dataFlagAt: body.dataFlag ? now : null }),
+    ...(body.projectIds !== undefined && { projectSetById: userId, projectSetAt: now }),
+  };
+};
 
 // ── field mask ───────────────────────────────────────────────────────────────
 
 export const toSpocResponse = <T extends { email: string | null; phone: string | null }>(
   spoc: T,
   map: PermissionMap,
-): T => (map["spocs.view_contact"] ? spoc : { ...spoc, email: null, phone: null });
+): T =>
+  map["spocs.view_contact"]
+    ? spoc
+    : { ...spoc, email: null, phone: null, ...("phone2" in spoc && { phone2: null, phone3: null }) };
 
 const spocLookups = (body: UpdateSpocInput) =>
   assertLookups({
     sourceId: [body.sourceId, "SPOC_SOURCE"],
     emailSourceId: [body.emailSourceId, "EMAIL_SOURCE"],
     salesStatusId: [body.salesStatusId, "SALES_STATUS"],
+    roleCategoryId: [body.roleCategoryId, "SPOC_ROLE"],
+    decisionAuthorityId: [body.decisionAuthorityId, "DECISION_AUTHORITY"],
+    orgTypeId: [body.orgTypeId, "ORG_TYPE"],
+    revenueBandId: [body.revenueBandId, "REVENUE_BAND"],
   });
 
 // location must be an active address of the SPOC's own client
@@ -116,11 +187,17 @@ const assertAssignable = async (req: Request, userId: string) => {
   }
 };
 
-// ── GET /spocs
-export const listSpocs = async (req: Request, res: Response) => {
-  const q = req.validatedQuery as ListSpocsQuery;
+// data flag filter; with none picked, "both wrong" SPOCs stay out of lists (as in CASPA)
+const dataFlagWhere = (picked: ListSpocsQuery["dataFlag"]): Prisma.ClientSpocWhereInput => {
+  if (!picked?.length) return { OR: [{ dataFlag: null }, { dataFlag: { not: "BOTH_WRONG" } }] };
+  const flags = picked.filter((f): f is Exclude<typeof f, "NONE"> => f !== "NONE");
+  return {
+    OR: [...(picked.includes("NONE") ? [{ dataFlag: null }] : []), ...(flags.length ? [{ dataFlag: { in: flags } }] : [])],
+  };
+};
 
-  const where: Prisma.ClientSpocWhereInput = {
+// the list filters — shared by GET /spocs and GET /spocs/stats
+const spocListWhere = async (req: Request, q: ListSpocsQuery): Promise<Prisma.ClientSpocWhereInput> => ({
     AND: [
       await spocScopeWhere(req.user, req.scope!),
       {
@@ -135,14 +212,25 @@ export const listSpocs = async (req: Request, res: Response) => {
         ...(q.validationBand?.length && { validationBand: { in: q.validationBand } }),
         ...(q.approvalStatus?.length && { approvalStatus: { in: q.approvalStatus } }),
         ...(q.reviewFlag !== undefined && { reviewFlag: q.reviewFlag }),
+        ...(q.keyAccount === "me" && { keyAccountUserId: req.user.id }),
+        ...(q.keyAccount === "any" && { keyAccountUserId: { not: null } }),
+        ...(q.keyAccount === "none" && { keyAccountUserId: null }),
+        ...(q.projectId?.length && { projectIds: { hasSome: q.projectId } }),
+        ...(q.erp && { erp: { contains: q.erp, mode: "insensitive" } }),
         ...(q.search && {
           OR: (["firstName", "lastName", "email", "designation"] as const).map((field) => ({
             [field]: { contains: q.search, mode: "insensitive" },
           })),
         }),
       },
+      dataFlagWhere(q.dataFlag),
     ],
-  };
+});
+
+// ── GET /spocs
+export const listSpocs = async (req: Request, res: Response) => {
+  const q = req.validatedQuery as ListSpocsQuery;
+  const where = await spocListWhere(req, q);
 
   const [total, spocs] = await Promise.all([
     prisma.clientSpoc.count({ where }),
@@ -200,12 +288,14 @@ export const createSpoc = async (req: Request, res: Response) => {
 
   await assertAssignable(req, body.handlerId);
   await spocLookups(body);
+  await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
   await assertLocation(client.id, body.locationId);
 
   const spoc = await prisma.$transaction(async (tx) => {
     const s = await tx.clientSpoc.create({
       data: {
         ...definedOnly(body),
+        ...(markStamps(body, req.user.id) as object),
         tenantId: req.user.tenantId,
         nameKey: toNameKey(body.firstName, body.lastName),
         addedById: req.user.id,
@@ -255,9 +345,11 @@ export const updateSpoc = async (req: Request, res: Response) => {
 
   const existing = await findSpocInScope(req, id);
   await spocLookups(body);
+  await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
   await assertLocation(existing.clientId, body.locationId);
 
   const data: Prisma.ClientSpocUncheckedUpdateInput = definedOnly(body);
+  const stamps = markStamps(body, req.user.id);
 
   if (body.firstName !== undefined || body.lastName !== undefined) {
     data.nameKey = toNameKey(
@@ -266,16 +358,39 @@ export const updateSpoc = async (req: Request, res: Response) => {
     );
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const s = await tx.clientSpoc.update({ where: { id }, data, select: SPOC_SELECT });
+  // status history: CASPA overwrote the status; here every change is a timeline row
+  const before =
+    body.salesStatusId !== undefined
+      ? await prisma.clientSpoc.findUnique({
+          where: { id },
+          select: { salesStatusId: true, salesStatus: { select: { label: true } } },
+        })
+      : null;
+  const statusChanged = !!before && before.salesStatusId !== (body.salesStatusId ?? null);
 
-    await logClientActivity(tx, {
-      clientId: existing.clientId,
-      spocId: id,
-      actorId: req.user.id,
-      type: "SPOC_UPDATED",
-      summary: `Updated ${Object.keys(data).filter((k) => k !== "nameKey").join(", ")}`,
-    });
+  const updated = await prisma.$transaction(async (tx) => {
+    const s = await tx.clientSpoc.update({ where: { id }, data: { ...data, ...stamps }, select: SPOC_SELECT });
+
+    if (statusChanged) {
+      await logClientActivity(tx, {
+        clientId: existing.clientId,
+        spocId: id,
+        actorId: req.user.id,
+        type: "SALES_STATUS_CHANGED",
+        summary: `${before!.salesStatus?.label ?? "No status"} → ${s.salesStatus?.label ?? "No status"}`,
+        meta: { from: before!.salesStatusId, to: s.salesStatus?.id ?? null },
+      });
+    }
+    const others = Object.keys(data).filter((k) => k !== "nameKey" && k !== "salesStatusId");
+    if (others.length) {
+      await logClientActivity(tx, {
+        clientId: existing.clientId,
+        spocId: id,
+        actorId: req.user.id,
+        type: "SPOC_UPDATED",
+        summary: `Updated ${others.map(fieldLabel).join(", ")}`,
+      });
+    }
 
     return s;
   });
@@ -512,6 +627,210 @@ export const decideSpocApproval = async (req: Request, res: Response) => {
       updated: changed.length,
       unchanged: spocs.length - changed.length,
       notFound: body.spocIds.length - spocs.length, // out of scope or inactive
+    },
+  });
+};
+
+// ── POST /spocs/:id/key-account — star / unstar for me. One holder per SPOC:
+// someone else's star is locked (an admin can take it over).
+export const toggleSpocKeyAccount = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const spoc = await findSpocInScope(req, id);
+  const current = await prisma.clientSpoc.findUnique({
+    where: { id },
+    select: { keyAccountUserId: true, keyAccountUser: { select: PERSON } },
+  });
+  const mine = current?.keyAccountUserId === req.user.id;
+  if (current?.keyAccountUserId && !mine && !req.user.isSuperAdmin) {
+    throw ApiError(409, `Key account of ${fullNameOf(current.keyAccountUser!)}`, "KEY_ACCOUNT_TAKEN");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const s = await tx.clientSpoc.update({
+      where: { id },
+      data: { keyAccountUserId: mine ? null : req.user.id },
+      select: SPOC_SELECT,
+    });
+    await logClientActivity(tx, {
+      clientId: spoc.clientId,
+      spocId: id,
+      actorId: req.user.id,
+      type: "SPOC_UPDATED",
+      summary: `${fullNameOf(spoc)} ${mine ? "removed from" : "marked as"} key account`,
+    });
+    return s;
+  });
+
+  res.json({
+    success: true,
+    message: mine ? "Key account removed" : "Marked as your key account",
+    data: toSpocResponse(updated, req.permissions!),
+  });
+};
+
+// ── PATCH /spocs/bulk-update — set status / data flag / ERP / projects on many
+export const bulkUpdateSpocs = async (req: Request, res: Response) => {
+  const body = req.validatedBody as BulkUpdateSpocsInput;
+  await assertLookups({ salesStatusId: [body.salesStatusId, "SALES_STATUS"] });
+  if (body.projectIds) await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
+
+  const found = await prisma.clientSpoc.findMany({
+    where: { id: { in: body.spocIds }, ...(await spocScopeWhere(req.user, req.scope!)) },
+    select: { id: true, clientId: true, firstName: true, lastName: true, isActive: true, projectIds: true },
+  });
+  const byId = new Map(found.map((s) => [s.id, s]));
+  const skipped: { id: string; reason: string }[] = [];
+  const eligible: typeof found = [];
+  for (const id of body.spocIds) {
+    const s = byId.get(id);
+    if (!s) skipped.push({ id, reason: "SPOC not found" });
+    else if (!s.isActive) skipped.push({ id, reason: "SPOC is inactive" });
+    else eligible.push(s);
+  }
+
+  const base: Prisma.ClientSpocUncheckedUpdateInput = {
+    ...(body.salesStatusId !== undefined && { salesStatusId: body.salesStatusId }),
+    ...(body.dataFlag !== undefined && { dataFlag: body.dataFlag }),
+    ...(body.erp !== undefined && { erp: body.erp }),
+    ...markStamps(body, req.user.id),
+  };
+  const fields = [
+    body.salesStatusId !== undefined && "sales status",
+    body.dataFlag !== undefined && "data flag",
+    body.erp !== undefined && "ERP",
+    body.projectIds !== undefined && "projects",
+  ].filter(Boolean).join(", ");
+
+  const nextProjects = (had: string[]) => {
+    const picked = body.projectIds!;
+    if (body.projectMode === "replace") return picked;
+    if (body.projectMode === "remove") return had.filter((p) => !picked.includes(p));
+    return [...new Set([...had, ...picked])];
+  };
+
+  if (eligible.length) {
+    await prisma.$transaction(
+      async (tx) => {
+        if (body.projectIds === undefined) {
+          await tx.clientSpoc.updateMany({ where: { id: { in: eligible.map((s) => s.id) } }, data: base as Prisma.ClientSpocUncheckedUpdateManyInput });
+        } else {
+          // projects merge per SPOC (add / remove keep the others)
+          for (const s of eligible) {
+            await tx.clientSpoc.update({ where: { id: s.id }, data: { ...base, projectIds: nextProjects(s.projectIds) } });
+          }
+        }
+        for (const s of eligible) {
+          await logClientActivity(tx, {
+            clientId: s.clientId,
+            spocId: s.id,
+            actorId: req.user.id,
+            type: "SPOC_UPDATED",
+            summary: `Updated ${fields} on ${fullNameOf(s)}`,
+            meta: { bulk: true },
+          });
+        }
+      },
+      { timeout: 30_000 },
+    );
+  }
+
+  res.json({
+    success: true,
+    message: `${eligible.length} SPOC${eligible.length === 1 ? "" : "s"} updated`,
+    data: { updated: eligible.length, skipped },
+  });
+};
+
+// ── GET /spocs/stats — counts for the Stats view, same filters as the list.
+// One light query, counted in memory (a tenant has thousands of SPOCs, not millions).
+const STATS_CAP = 50_000;
+export const spocStats = async (req: Request, res: Response) => {
+  const q = req.validatedQuery as ListSpocsQuery;
+  const where = await spocListWhere(req, q);
+  const rows = await prisma.clientSpoc.findMany({
+    where,
+    take: STATS_CAP,
+    select: {
+      clientId: true,
+      email: true,
+      phone: true,
+      linkedinUrl: true,
+      designation: true,
+      approvalStatus: true,
+      validationBand: true,
+      emailStatus: true,
+      dataFlag: true,
+      keyAccountUserId: true,
+      projectIds: true,
+      salesStatus: { select: { id: true, label: true } },
+      handler: { select: PERSON },
+      businessUnit: { select: { id: true, name: true } },
+      location: { select: { state: true } },
+      client: {
+        select: {
+          category: { select: { id: true, label: true } },
+          locations: { where: { isPrimary: true, isActive: true }, select: { state: true }, take: 1 },
+        },
+      },
+    },
+  });
+
+  type Bucket = { key: string; label: string; count: number };
+  const tally = () => new Map<string, Bucket>();
+  const add = (m: Map<string, Bucket>, key: string | null | undefined, label: string | null | undefined) => {
+    const k = key ?? "_none";
+    const b = m.get(k) ?? { key: k, label: key ? (label ?? key) : "Not set", count: 0 };
+    b.count++;
+    m.set(k, b);
+  };
+  const by = {
+    salesStatus: tally(),
+    category: tally(),
+    state: tally(),
+    handler: tally(),
+    businessUnit: tally(),
+    approval: tally(),
+    band: tally(),
+  };
+  const clients = new Set<string>();
+  const has = { email: 0, phone: 0, linkedin: 0, designation: 0, salesStatus: 0, location: 0 };
+  let keyAccounts = 0;
+  let flagged = 0;
+  let withProjects = 0;
+
+  for (const r of rows) {
+    clients.add(r.clientId);
+    if (r.email) has.email++;
+    if (r.phone) has.phone++;
+    if (r.linkedinUrl) has.linkedin++;
+    if (r.designation) has.designation++;
+    if (r.salesStatus) has.salesStatus++;
+    const state = (r.location?.state ?? r.client.locations[0]?.state ?? "").trim();
+    if (state) has.location++;
+    if (r.keyAccountUserId) keyAccounts++;
+    if (r.dataFlag) flagged++;
+    if (r.projectIds.length) withProjects++;
+    add(by.salesStatus, r.salesStatus?.id, r.salesStatus?.label);
+    add(by.category, r.client.category?.id, r.client.category?.label);
+    add(by.state, state ? state.toLowerCase() : null, state);
+    add(by.handler, r.handler.id, fullNameOf(r.handler));
+    add(by.businessUnit, r.businessUnit.id, r.businessUnit.name);
+    add(by.approval, r.approvalStatus, r.approvalStatus);
+    add(by.band, r.validationBand, r.validationBand);
+  }
+  const sorted = (m: Map<string, Bucket>) => [...m.values()].sort((a, b) => b.count - a.count);
+
+  res.json({
+    success: true,
+    data: {
+      total: rows.length,
+      capped: rows.length === STATS_CAP,
+      clients: clients.size,
+      keyAccounts,
+      flagged,
+      withProjects,
+      has,
+      by: Object.fromEntries(Object.entries(by).map(([k, m]) => [k, sorted(m)])),
     },
   });
 };

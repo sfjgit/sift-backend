@@ -29,3 +29,12 @@ export const assertLookups = async (
     throw ApiError(400, `Invalid lookup value for: ${bad.join(", ")}`, "INVALID_LOOKUP");
   }
 };
+
+// a list of lookup ids (tags) — every one must be an active row of this type
+export const assertLookupIds = async (ids: string[] | null | undefined, type: LookupType, field: string) => {
+  if (!ids?.length) return;
+  const n = await prisma.lookup.count({ where: { id: { in: ids }, type, isActive: true } });
+  if (n !== new Set(ids).size) {
+    throw ApiError(400, `Invalid lookup value for: ${field}`, "INVALID_LOOKUP");
+  }
+};

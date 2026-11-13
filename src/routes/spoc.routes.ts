@@ -8,6 +8,7 @@ import { validate, idParams } from "@/validators/validator";
 import {
   assignSpocBody,
   bulkAssignSpocsBody,
+  bulkUpdateSpocsBody,
   createSpocBody,
   listSpocsQuery,
   spocApprovalBody,
@@ -15,6 +16,7 @@ import {
 } from "@/validators/client.validators";
 import {
   listSpocs,
+  spocStats,
   getSpocById,
   createSpoc,
   updateSpoc,
@@ -22,6 +24,8 @@ import {
   deleteSpoc,
   bulkAssignSpocs,
   decideSpocApproval,
+  bulkUpdateSpocs,
+  toggleSpocKeyAccount,
 } from "@/controller/spoc.controller";
 
 const router = Router();
@@ -30,6 +34,7 @@ const read = authorize("spocs.read");
 router.use(authenticateUser);
 
 router.get("/", read, validate.query(listSpocsQuery), listSpocs);
+router.get("/stats", read, validate.query(listSpocsQuery), spocStats);
 router.post("/", authorize("spocs.create"), validate.body(createSpocBody), createSpoc);
 
 // bulk — before /:id so "bulk-assign" isn't read as an id
@@ -38,6 +43,13 @@ router.patch(
   authorize("spocs.assign"),
   validate.body(bulkAssignSpocsBody),
   bulkAssignSpocs,
+);
+
+router.patch(
+  "/bulk-update",
+  authorize("spocs.update"),
+  validate.body(bulkUpdateSpocsBody),
+  bulkUpdateSpocs,
 );
 
 router.post(
@@ -61,6 +73,8 @@ router.patch(
   validate.request({ params: idParams, body: assignSpocBody }),
   assignSpoc,
 );
+// personal key-account star (one holder per SPOC)
+router.post("/:id/key-account", authorize("spocs.update"), validate.params(idParams), toggleSpocKeyAccount);
 router.delete("/:id", authorize("spocs.delete"), validate.params(idParams), deleteSpoc);
 
 export default router;

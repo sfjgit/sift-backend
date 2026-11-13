@@ -3,10 +3,10 @@
 
 import crypto from "crypto";
 import { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
+import { ClientActivityType, Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { clientScopeWhere, spocWhereForUserId } from "@/services/scope.service";
-import { assertLookups } from "@/services/lookup.service";
+import { clientScopeWhere, spocTaggedVisibleTo, spocWhereForUserId } from "@/services/scope.service";
+import { assertLookupIds, assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers } from "@/services/notification.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
@@ -29,6 +29,14 @@ import type {
 } from "@/validators/client.validators";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
+const NOTE_SELECT = {
+  id: true,
+  content: true,
+  createdAt: true,
+  editedAt: true,
+  author: { select: PERSON },
+  spoc: { select: PERSON },
+} as const satisfies Prisma.ClientNoteSelect;
 const LOOKUP = { id: true, code: true, label: true } as const;
 const ORG = { id: true, name: true, code: true } as const;
 
@@ -83,6 +91,12 @@ const CLIENT_LIST_SELECT = {
     take: 1,
   },
   _count: { select: { spocs: { where: { isActive: true } }, locations: BRANCHES } },
+  // sales marks
+  csrEligible: true,
+  projectIds: true,
+  projectSetAt: true,
+  projectSetBy: { select: PERSON },
+  keyAccounts: { select: { createdAt: true, user: { select: PERSON } }, orderBy: { createdAt: "asc" } },
 } as const satisfies Prisma.ClientSelect;
 
 // list rows also carry what the CRM holds and the last pipeline run
@@ -184,7 +198,7 @@ const CLIENT_DETAIL_SELECT = {
   },
   technologies: { select: TECHNOLOGY_SELECT, orderBy: { createdAt: "asc" } },
   notes: {
-    select: { id: true, content: true, createdAt: true, author: { select: PERSON } },
+    select: NOTE_SELECT,
     orderBy: { createdAt: "desc" },
   },
 } as const satisfies Prisma.ClientSelect;
@@ -234,6 +248,17 @@ const CORPORATE_SELECT = {
   isLocked: true,
   updatedAt: true,
 } as const satisfies Prisma.ClientCorporateFinancialSelect;
+
+// a SPOC named in a note / task / log must be one of this client's
+export const assertSpocOfClient = async (clientId: string, spocId: string | null | undefined) => {
+  if (!spocId) return null;
+  const spoc = await prisma.clientSpoc.findFirst({
+    where: { id: spocId, clientId },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  if (!spoc) throw ApiError(400, "That SPOC is not on this client", "INVALID_SPOC");
+  return spoc;
+};
 
 // client by id within the caller's scope for this action — out of scope = 404
 export const findClientInScope = async (req: Request, id: string) => {
@@ -381,6 +406,13 @@ const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereI
       },
     });
   if (prog.length) and.push({ csrPrograms: { some: { AND: prog } } });
+
+  // sales marks
+  if (q.keyAccount === "me") and.push({ keyAccounts: { some: { userId: me } } });
+  if (q.keyAccount === "any") and.push({ keyAccounts: { some: {} } });
+  if (q.keyAccount === "none") and.push({ keyAccounts: { none: {} } });
+  if (q.csrEligible) and.push({ csrEligible: q.csrEligible === "unset" ? null : q.csrEligible === "yes" });
+  if (any(q.projectId)) and.push({ projectIds: { hasSome: q.projectId! } });
 
   if (q.search) {
     and.push({
@@ -542,6 +574,7 @@ export const createClient = async (req: Request, res: Response) => {
     employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
   await assertOrg(body.businessUnitId, body.serviceLineIds);
+  await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
   const { serviceLineIds, ...fields } = body;
 
   const client = await prisma.$transaction(async (tx) => {
@@ -550,6 +583,7 @@ export const createClient = async (req: Request, res: Response) => {
         ...definedOnly(fields),
         tenantId: req.user.tenantId,
         createdById: req.user.id,
+        ...(body.projectIds?.length && { projectSetById: req.user.id, projectSetAt: new Date() }),
         ...(serviceLineIds?.length && { serviceLines: serviceLinesData(serviceLineIds) }),
       },
       select: CLIENT_LIST_SELECT,
@@ -580,6 +614,7 @@ export const updateClient = async (req: Request, res: Response) => {
     employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
   await assertOrg(body.businessUnitId, body.serviceLineIds);
+  await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
 
   const { serviceLineIds, ...fields } = body;
   const before = await prisma.client.findUnique({ where: { id }, select: { website: true } });
@@ -596,6 +631,7 @@ export const updateClient = async (req: Request, res: Response) => {
       where: { id },
       data: {
         ...data,
+        ...(body.projectIds !== undefined && { projectSetById: req.user.id, projectSetAt: new Date() }),
         ...(serviceLineIds && { serviceLines: { deleteMany: {}, ...serviceLinesData(serviceLineIds) } }),
       },
       select: CLIENT_LIST_SELECT,
@@ -681,13 +717,15 @@ export const deleteClient = async (req: Request, res: Response) => {
 // ── GET /clients/:id/activities
 export const listClientActivities = async (req: Request, res: Response) => {
   const { id } = req.validatedParams;
-  const q = req.validatedQuery as { page: number; limit: number };
+  const q = req.validatedQuery as { page: number; limit: number; spocId?: string; type?: ClientActivityType[] };
   await findClientInScope(req, id);
 
   // activity on someone else's SPOC stays with them
   const where: Prisma.ClientActivityWhereInput = {
     clientId: id,
-    OR: [{ spocId: null }, { spoc: await spocWhereForUserId(req.user.id) }],
+    ...(q.spocId && { spocId: q.spocId }),
+    ...(q.type?.length && { type: { in: q.type } }),
+    ...(await spocTaggedVisibleTo(req.user.id)),
   };
   const [total, rows] = await Promise.all([
     prisma.clientActivity.count({ where }),
@@ -713,17 +751,19 @@ export const listClientActivities = async (req: Request, res: Response) => {
 // ── POST /clients/:id/notes — anyone who can see the client; handlers get notified
 export const addClientNote = async (req: Request, res: Response) => {
   const { id } = req.validatedParams;
-  const { content } = req.validatedBody;
+  const { content, spocId } = req.validatedBody as { content: string; spocId?: string | null };
   const client = await findClientInScope(req, id);
+  await assertSpocOfClient(id, spocId);
 
   const note = await prisma.$transaction(async (tx) => {
     const n = await tx.clientNote.create({
-      data: { clientId: id, authorId: req.user.id, content },
-      select: { id: true, content: true, createdAt: true, author: { select: PERSON } },
+      data: { clientId: id, spocId: spocId ?? null, authorId: req.user.id, content },
+      select: NOTE_SELECT,
     });
 
     await logClientActivity(tx, {
       clientId: id,
+      spocId: spocId ?? null,
       actorId: req.user.id,
       type: "NOTE_ADDED",
       summary: content.length > 120 ? `${content.slice(0, 117)}...` : content,
@@ -746,6 +786,37 @@ export const addClientNote = async (req: Request, res: Response) => {
   });
 
   res.status(201).json({ success: true, data: note });
+};
+
+// ── PATCH /clients/:id/notes/:noteId — the author corrects their own comment
+export const updateClientNote = async (req: Request, res: Response) => {
+  const { id, noteId } = req.validatedParams;
+  const { content } = req.validatedBody as { content: string };
+  await findClientInScope(req, id);
+
+  const mine = await prisma.clientNote.findFirst({
+    where: { id: noteId, clientId: id, authorId: req.user.id },
+    select: { id: true, spocId: true },
+  });
+  if (!mine) throw notFound("Note");
+
+  const note = await prisma.$transaction(async (tx) => {
+    const n = await tx.clientNote.update({
+      where: { id: noteId },
+      data: { content, editedAt: new Date() },
+      select: NOTE_SELECT,
+    });
+    await logClientActivity(tx, {
+      clientId: id,
+      spocId: mine.spocId,
+      actorId: req.user.id,
+      type: "NOTE_UPDATED",
+      summary: content.length > 120 ? `${content.slice(0, 117)}...` : content,
+    });
+    return n;
+  });
+
+  res.json({ success: true, data: note });
 };
 
 // ── DELETE /clients/:id/notes/:noteId — own notes; anyone's with client_notes.delete_any
@@ -1175,4 +1246,35 @@ export const removeClientDocument = async (req: Request, res: Response) => {
   });
   void deleteFromS3(doc.fileKey).catch(() => undefined);
   res.json({ success: true, message: "Document removed" });
+};
+
+// ── POST /clients/:id/key-account — my personal star; many users per client.
+// It marks the client for me only: it never widens who can see it.
+export const toggleClientKeyAccount = async (req: Request, res: Response) => {
+  const { id } = req.validatedParams;
+  const client = await findClientInScope(req, id);
+  const key = { clientId_userId: { clientId: id, userId: req.user.id } };
+  const had = await prisma.clientKeyAccount.findUnique({ where: key });
+
+  await prisma.$transaction(async (tx) => {
+    if (had) await tx.clientKeyAccount.delete({ where: key });
+    else await tx.clientKeyAccount.create({ data: { clientId: id, userId: req.user.id } });
+    await logClientActivity(tx, {
+      clientId: id,
+      actorId: req.user.id,
+      type: "CLIENT_UPDATED",
+      summary: `${had ? "Removed" : "Marked"} "${client.name}" as a key account`,
+    });
+  });
+
+  const keyAccounts = await prisma.clientKeyAccount.findMany({
+    where: { clientId: id },
+    select: { createdAt: true, user: { select: PERSON } },
+    orderBy: { createdAt: "asc" },
+  });
+  res.json({
+    success: true,
+    message: had ? "Key account removed" : "Marked as your key account",
+    data: { starred: !had, keyAccounts },
+  });
 };

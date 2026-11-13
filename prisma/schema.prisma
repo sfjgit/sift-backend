@@ -60,6 +60,13 @@ enum AuthLogType {
   FAILED_LOGIN
 }
 
+// CASPA spoc_data_flag; BOTH_WRONG hides the SPOC from lists unless asked for
+enum SpocDataFlag {
+  CONTACT_WRONG
+  EMAIL_WRONG
+  BOTH_WRONG
+}
+
 enum EmailStatus {
   UNVERIFIED
   GOOD // Apollo-verified or Bouncer deliverable
@@ -117,6 +124,12 @@ enum ClientActivityType {
   SPOC_REJECTED
   OUTREACH_UPDATED
   CLIENT_ASSIGNED
+  NOTE_UPDATED
+  TASK_ADDED
+  TASK_UPDATED
+  TASK_CLOSED
+  SALES_STATUS_CHANGED
+  INTERACTION_LOGGED
 }
 
 // Outreach is sent by people from their own mailbox; the CRM tracks it.
@@ -211,6 +224,7 @@ model Tenant {
   faqs          Faq[]
   systemAlerts  SystemAlert[]
   csrAgencies   CsrAgency[]
+  workTasks     WorkTask[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -244,6 +258,10 @@ model Lookup {
   spocsBySource          ClientSpoc[]             @relation("SpocSource")
   spocsByEmailSource     ClientSpoc[]             @relation("SpocEmailSource")
   spocsBySalesStatus     ClientSpoc[]             @relation("SpocSalesStatus")
+  spocsByRoleCategory    ClientSpoc[]             @relation("SpocRoleCategory")
+  spocsByDecision        ClientSpoc[]             @relation("SpocDecisionAuthority")
+  spocsByOrgType         ClientSpoc[]             @relation("SpocOrgType")
+  spocsByRevenueBand     ClientSpoc[]             @relation("SpocRevenueBand")
   documentsByType        ClientDocument[]         @relation("DocumentType")
   csrProgramSectors      ClientCsrProgramSector[] @relation("CsrProgramSector")
 
@@ -405,6 +423,14 @@ model User {
   spocsApproved           ClientSpoc[]           @relation("SpocApprovedBy")
   spocAssignmentsReceived ClientSpocAssignment[] @relation("SpocAssignedTo")
   spocAssignmentsGiven    ClientSpocAssignment[] @relation("SpocAssignedBy")
+  keyAccountClients       ClientKeyAccount[]     @relation("ClientKeyAccountUser")
+  keyAccountSpocs         ClientSpoc[]           @relation("SpocKeyAccount")
+  spocDataFlagsSet        ClientSpoc[]           @relation("SpocDataFlagBy")
+  spocProjectsSet         ClientSpoc[]           @relation("SpocProjectSetBy")
+  clientProjectsSet       Client[]               @relation("ClientProjectSetBy")
+  tasksAssigned           WorkTask[]             @relation("WorkTaskAssignee")
+  tasksCreated            WorkTask[]             @relation("WorkTaskCreatedBy")
+  tasksClosed             WorkTask[]             @relation("WorkTaskClosedBy")
 
   clientActivities ClientActivity[]  @relation("ClientActivityActor")
   stepRuns         StepRun[]         @relation("StepRunRequestedBy")
@@ -572,6 +598,15 @@ model Client {
 
   legacyCaspaId Int?
 
+  // sales marks (CASPA parity): eligible for CSR, project tags (Lookup PROJECT ids)
+  csrEligible    Boolean?
+  projectIds     String[]           @default([])
+  projectSetById String?
+  projectSetBy   User?              @relation("ClientProjectSetBy", fields: [projectSetById], references: [id])
+  projectSetAt   DateTime?
+  keyAccounts    ClientKeyAccount[]
+  tasks          WorkTask[]
+
   // one BU owns the client; it can be served by several service lines.
   // New SPOCs from pipeline runs take the BU from here.
   businessUnitId String?
@@ -626,6 +661,18 @@ model Client {
 // who works a client — set by super admin / clients.assign. Assigned users see
 // the client (clients.read scope); SPOCs stay private to their handler.
 // History is kept; the active row has endedAt null.
+// a personal "key account" star: many users per client, does not grant access
+model ClientKeyAccount {
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation("ClientKeyAccountUser", fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([clientId, userId])
+  @@index([userId])
+}
+
 model ClientAssignment {
   id           String @id @default(uuid())
   clientId     String
@@ -789,6 +836,45 @@ model ClientSpoc {
   isActive  Boolean @default(true)
   notes     String?
 
+  // more contact + the SPOC's own place (CASPA spoc_edit)
+  phone2        String?
+  phone3        String?
+  state         String?
+  district      String?
+  city          String?
+  pincode       String?
+  address       String?
+  latitude      Decimal? @db.Decimal(9, 6)
+  longitude     Decimal? @db.Decimal(9, 6)
+  distanceKm    Decimal? @db.Decimal(8, 1) // from our nearest office
+  callConnected Boolean? // CASPA "Connected call status"
+
+  // profile (admin-editable lists)
+  roleCategoryId      String?
+  roleCategory        Lookup? @relation("SpocRoleCategory", fields: [roleCategoryId], references: [id])
+  decisionAuthorityId String?
+  decisionAuthority   Lookup? @relation("SpocDecisionAuthority", fields: [decisionAuthorityId], references: [id])
+  orgTypeId           String?
+  orgType             Lookup? @relation("SpocOrgType", fields: [orgTypeId], references: [id])
+  revenueBandId       String?
+  revenueBand         Lookup? @relation("SpocRevenueBand", fields: [revenueBandId], references: [id])
+
+  notesList ClientNote[]
+  tasks     WorkTask[]
+
+  // sales marks (CASPA parity)
+  erp              String? // the ERP the SPOC's org runs (CASPA tbl_spoc_list.erp)
+  dataFlag         SpocDataFlag?
+  dataFlagById     String?
+  dataFlagBy       User?         @relation("SpocDataFlagBy", fields: [dataFlagById], references: [id])
+  dataFlagAt       DateTime?
+  keyAccountUserId String? // one holder; others see it locked
+  keyAccountUser   User?         @relation("SpocKeyAccount", fields: [keyAccountUserId], references: [id])
+  projectIds       String[]      @default([])
+  projectSetById   String?
+  projectSetBy     User?         @relation("SpocProjectSetBy", fields: [projectSetById], references: [id])
+  projectSetAt     DateTime?
+
   legacyCaspaId Int?
 
   sourceRunId String?
@@ -817,6 +903,8 @@ model ClientSpoc {
   @@index([salesStatusId])
   @@index([validationBand])
   @@index([approvalStatus])
+  @@index([dataFlag])
+  @@index([keyAccountUserId])
   // SPOC + global search
   @@index([firstName(ops: raw("gin_trgm_ops"))], type: Gin)
   @@index([lastName(ops: raw("gin_trgm_ops"))], type: Gin)
@@ -843,17 +931,67 @@ model ClientSpocAssignment {
 }
 
 model ClientNote {
-  id       String @id @default(uuid())
+  id       String      @id @default(uuid())
   clientId String
-  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client   Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // a comment on one SPOC (shows on the SPOC and the client); null = client note
+  spocId   String?
+  spoc     ClientSpoc? @relation(fields: [spocId], references: [id], onDelete: SetNull)
   authorId String
-  author   User   @relation("ClientNoteAuthor", fields: [authorId], references: [id])
+  author   User        @relation("ClientNoteAuthor", fields: [authorId], references: [id])
   content  String
+  editedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([clientId])
+  @@index([spocId])
+}
+
+// a to-do or a call to make, on a client or one of its SPOCs (CASPA s_tasks)
+model WorkTask {
+  id       String      @id @default(uuid())
+  tenantId String
+  tenant   Tenant      @relation(fields: [tenantId], references: [id])
+  clientId String
+  client   Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  spocId   String?
+  spoc     ClientSpoc? @relation(fields: [spocId], references: [id], onDelete: SetNull)
+
+  kind   WorkTaskKind   @default(TASK)
+  title  String
+  notes  String?
+  dueAt  DateTime?
+  status WorkTaskStatus @default(OPEN)
+
+  assigneeId  String
+  assignee    User      @relation("WorkTaskAssignee", fields: [assigneeId], references: [id])
+  createdById String
+  createdBy   User      @relation("WorkTaskCreatedBy", fields: [createdById], references: [id])
+  closeNote   String?
+  closedAt    DateTime?
+  closedById  String?
+  closedBy    User?     @relation("WorkTaskClosedBy", fields: [closedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, assigneeId, status])
+  @@index([clientId])
+  @@index([spocId])
+}
+
+enum WorkTaskKind {
+  TASK
+  CALL
+  MEETING
+}
+
+enum WorkTaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
 }
 
 model ClientActivity {

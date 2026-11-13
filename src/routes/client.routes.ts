@@ -11,6 +11,12 @@ import {
   setAssignmentsBody,
   clientActivitiesQuery,
   clientNoteBody,
+  updateNoteBody,
+  listTasksQuery,
+  createTaskBody,
+  updateTaskBody,
+  taskParams,
+  interactionBody,
   clientStatusBody,
   createClientBody,
   createLocationBody,
@@ -36,11 +42,13 @@ import {
   getClientById,
   createClient,
   updateClient,
+  toggleClientKeyAccount,
   updateClientStatus,
   deleteClient,
   listClientActivities,
   addClientNote,
   deleteClientNote,
+  updateClientNote,
   addClientLocation,
   updateClientLocation,
   removeClientLocation,
@@ -66,6 +74,14 @@ import {
 } from "@/controller/website.controller";
 import { singleFile } from "@/middleware/upload";
 import { bulkAssignClients, listClientAssignments, setClientAssignments } from "@/controller/clientAssignment.controller";
+
+import {
+  listClientTasks,
+  createClientTask,
+  updateClientTask,
+  deleteClientTask,
+  logClientInteraction,
+} from "@/controller/clientWork.controller";
 
 const router = Router();
 const read = authorize("clients.read");
@@ -104,6 +120,8 @@ router.post(
 );
 
 router.get("/:id", read, validate.params(idParams), getClientById);
+// my key-account star — a personal mark, so seeing the client is enough
+router.post("/:id/key-account", read, validate.params(idParams), toggleClientKeyAccount);
 router.get("/:id/assignments", read, validate.params(idParams), listClientAssignments);
 router.put(
   "/:id/assignments",
@@ -207,7 +225,21 @@ router.post(
   validate.request({ params: idParams, body: clientNoteBody }),
   addClientNote,
 );
+router.patch(
+  "/:id/notes/:noteId",
+  authorize("client_notes.create"),
+  validate.request({ params: noteParams, body: updateNoteBody }),
+  updateClientNote,
+);
 router.delete("/:id/notes/:noteId", read, validate.params(noteParams), deleteClientNote);
+
+// tasks / calls / meetings and the quick contact log — anyone who can add notes
+const work = authorize("client_notes.create");
+router.get("/:id/tasks", read, validate.request({ params: idParams, query: listTasksQuery }), listClientTasks);
+router.post("/:id/tasks", work, validate.request({ params: idParams, body: createTaskBody }), createClientTask);
+router.patch("/:id/tasks/:taskId", work, validate.request({ params: taskParams, body: updateTaskBody }), updateClientTask);
+router.delete("/:id/tasks/:taskId", work, validate.params(taskParams), deleteClientTask);
+router.post("/:id/interactions", work, validate.request({ params: idParams, body: interactionBody }), logClientInteraction);
 
 // locations + technologies
 router.post(

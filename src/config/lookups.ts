@@ -18,6 +18,13 @@ export const LOOKUP_TYPES = [
   "EMAIL_SOURCE",
   "SALES_STATUS",
   "PROGRAM_SECTOR",
+  // project tags on clients and SPOCs (NASSCOM, STPI, AWS-Restart…)
+  "PROJECT",
+  // SPOC profile (CASPA "Additional SPOC details")
+  "SPOC_ROLE",
+  "DECISION_AUTHORITY",
+  "ORG_TYPE",
+  "REVENUE_BAND",
 ] as const;
 
 export type LookupType = (typeof LOOKUP_TYPES)[number];
@@ -29,6 +36,11 @@ export type DefaultLookup = { code: string; label: string; meta?: Record<string,
 export const SYSTEM_LOOKUPS: Partial<Record<LookupType, DefaultLookup[]>> = {
   ...(PIPELINE_LOOKUPS as Partial<Record<LookupType, DefaultLookup[]>>),
   DOCUMENT_TYPE: [...(PIPELINE_LOOKUPS.DOCUMENT_TYPE ?? []), { code: "OTHER", label: "Other attachment" }],
+  PROJECT: [
+    { code: "NASSCOM", label: "NASSCOM" },
+    { code: "STPI", label: "STPI" },
+    { code: "AWS_RESTART", label: "AWS-Restart" },
+  ],
   LOCATION_TYPE: [
     { code: "HQ", label: "Head office" },
     { code: "REGISTERED_OFFICE", label: "Registered office" },
@@ -40,6 +52,35 @@ export const SYSTEM_LOOKUPS: Partial<Record<LookupType, DefaultLookup[]>> = {
 };
 
 export const DEFAULT_LOOKUPS: Partial<Record<LookupType, DefaultLookup[]>> = {
+  SPOC_ROLE: [
+    { code: "FINAL_DECISION_MAKER", label: "Final Decision Maker" },
+    { code: "KEY_INFLUENCER", label: "Key Influencer" },
+    { code: "INFLUENCER", label: "Influencer" },
+    { code: "GATEKEEPER", label: "Gatekeeper" },
+    { code: "EXECUTION_OWNER", label: "Execution Owner" },
+  ],
+  DECISION_AUTHORITY: [
+    { code: "FINAL_APPROVAL", label: "Final Approval" },
+    { code: "BUDGET_OWNER", label: "Budget Owner" },
+    { code: "VENDOR_SELECTION", label: "Vendor Selection" },
+    { code: "PROGRAM_DESIGN", label: "Program Design" },
+    { code: "EXECUTION", label: "Execution" },
+    { code: "COMPLIANCE_APPROVAL", label: "Compliance Approval" },
+  ],
+  ORG_TYPE: [
+    { code: "CORPORATE", label: "Corporate" },
+    { code: "CORPORATE_FOUNDATION", label: "Corporate Foundation" },
+    { code: "TRUST", label: "Trust" },
+  ],
+  REVENUE_BAND: [
+    { code: "R_0_1L", label: "Up to ₹1 lakh" },
+    { code: "R_1L_5L", label: "₹1 – 5 lakh" },
+    { code: "R_5L_10L", label: "₹5 – 10 lakh" },
+    { code: "R_10L_20L", label: "₹10 – 20 lakh" },
+    { code: "R_20L_50L", label: "₹20 – 50 lakh" },
+    { code: "R_50L_1CR", label: "₹50 lakh – 1 crore" },
+    { code: "R_1CR_PLUS", label: "₹1 crore +" },
+  ],
   EMPLOYEE_SIZE: [
     { code: "E_1_10", label: "1–10", meta: { min: 1, max: 10 } },
     { code: "E_11_50", label: "11–50", meta: { min: 11, max: 50 } },
