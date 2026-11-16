@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/authorize";
+import { authorize, requireSuperAdmin } from "@/middleware/authorize";
 import { idParams, validate } from "@/validators/validator";
 import { aiAccess, aiInputLimit, aiQuota, aiRateLimit } from "@/middleware/aiAccess";
 import { getAiMe, getInsights, logLocalCommand, runCommand, setAiPreference } from "@/controller/aiCommand.controller";
@@ -43,7 +43,8 @@ router.post("/canvas/run", aiAccess("CANVAS"), aiRateLimit("CANVAS"), run);
 router.get("/canvas/templates", aiAccess("CANVAS"), listTemplates);
 router.post("/canvas/templates", aiAccess("CANVAS", "ai_assistant.canvas_save_template"), saveTemplate);
 router.delete("/canvas/templates/:id", aiAccess("CANVAS"), validate.params(idParams), deleteTemplate);
-router.post("/canvas/export", aiAccess("CANVAS", "ai_assistant.canvas_export"), aiQuota("EXPORT"), exportCanvas);
+// exports are for the super admin only
+router.post("/canvas/export", requireSuperAdmin, aiAccess("CANVAS", "ai_assistant.canvas_export"), aiQuota("EXPORT"), exportCanvas);
 
 // THREADS — saved conversations (follow-ups, explain, memory). Same guards as canvas.
 router.post("/assist", aiAccess("CANVAS"), aiInputLimit("prompt"), aiRateLimit("CANVAS"), aiQuota("CANVAS"), threads.assistAsk);
@@ -70,6 +71,6 @@ router.patch("/settings/templates/:id", manage, validate.params(idParams), patch
 // usage & cost
 const usage = authorize("ai_assistant.usage_view");
 router.get("/usage", usage, getUsage);
-router.get("/usage/export", usage, exportUsage);
+router.get("/usage/export", usage, requireSuperAdmin, exportUsage);
 
 export default router;

@@ -3,7 +3,7 @@
 
 import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
-import { authorize } from "@/middleware/authorize";
+import { authorize, requireSuperAdmin } from "@/middleware/authorize";
 import { validate, idParams } from "@/validators/validator";
 import {
   bulkAssignBody,
@@ -105,7 +105,8 @@ router.post("/assign", authorize("clients.assign"), validate.body(bulkAssignBody
 // the 3D office map — before /:id so "map" isn't read as an id
 router.get("/map", read, getClientMap);
 // the nested data behind an export (extra sheets) — read-only
-router.post("/export-details", read, getExportDetails);
+// exports are for the super admin only
+router.post("/export-details", read, requireSuperAdmin, getExportDetails);
 // the website: replace it (old one kept in the history), and the history
 router.post(
   "/:id/website",

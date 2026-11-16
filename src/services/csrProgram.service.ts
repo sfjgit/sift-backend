@@ -41,6 +41,7 @@ export const CSR_PROGRAM_SELECT = {
   mode: true,
   agency: { select: { id: true, name: true, registrationNo: true, website: true } },
   beneficiaries: true,
+  sdgs: true,
   sourceUrl: true,
   isLocked: true,
   updatedAt: true,

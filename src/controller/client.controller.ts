@@ -34,6 +34,7 @@ const NOTE_SELECT = {
   content: true,
   createdAt: true,
   editedAt: true,
+  section: true,
   author: { select: PERSON },
   spoc: { select: PERSON },
 } as const satisfies Prisma.ClientNoteSelect;
@@ -189,6 +190,12 @@ const TECHNOLOGY_SELECT = {
 
 const CLIENT_DETAIL_SELECT = {
   ...CLIENT_LIST_SELECT,
+  foundationName: true,
+  foundationWebsite: true,
+  isListed: true,
+  subCategory: true,
+  linkedinEmployees: true,
+  marketCapRs: true,
   approvedAt: true,
   approvedBy: { select: PERSON },
   locations: {
@@ -751,13 +758,13 @@ export const listClientActivities = async (req: Request, res: Response) => {
 // ── POST /clients/:id/notes — anyone who can see the client; handlers get notified
 export const addClientNote = async (req: Request, res: Response) => {
   const { id } = req.validatedParams;
-  const { content, spocId } = req.validatedBody as { content: string; spocId?: string | null };
+  const { content, spocId, section } = req.validatedBody as { content: string; spocId?: string | null; section?: string };
   const client = await findClientInScope(req, id);
   await assertSpocOfClient(id, spocId);
 
   const note = await prisma.$transaction(async (tx) => {
     const n = await tx.clientNote.create({
-      data: { clientId: id, spocId: spocId ?? null, authorId: req.user.id, content },
+      data: { clientId: id, spocId: spocId ?? null, section: section ?? null, authorId: req.user.id, content },
       select: NOTE_SELECT,
     });
 

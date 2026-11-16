@@ -606,6 +606,14 @@ model Client {
 
   legacyCaspaId Int?
 
+  // CASPA "Ideal customer profile" facts with no other home
+  foundationName    String?
+  foundationWebsite String?
+  isListed          Boolean? // listed on an exchange — BRSR applies only then
+  subCategory       String?
+  linkedinEmployees Int?
+  marketCapRs       Decimal? @db.Decimal(18, 2)
+
   // sales marks (CASPA parity): eligible for CSR, project tags (Lookup PROJECT ids)
   csrEligible    Boolean?
   projectIds     String[]           @default([])
@@ -949,6 +957,9 @@ model ClientNote {
   author   User        @relation("ClientNoteAuthor", fields: [authorId], references: [id])
   content  String
   editedAt DateTime?
+  // a comment / observation on one section of the client page (CASPA "tab
+  // comments": info, branches, csr, reports, spocs, …); null = general note
+  section  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1135,6 +1146,8 @@ model ClientCsrProgram {
   agency   CsrAgency?             @relation(fields: [agencyId], references: [id])
 
   beneficiaries String?
+  // UN Sustainable Development Goals the programme maps to (1–17)
+  sdgs          Int[]    @default([])
   sourceUrl     String?
 
   sourceRunId String?

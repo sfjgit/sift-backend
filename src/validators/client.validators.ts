@@ -55,6 +55,13 @@ export const createClientBody = z.object({
   serviceLineIds: z.array(z.string().uuid()).max(20).optional(),
   csrEligible: z.boolean().nullable().optional(),
   projectIds,
+  // CASPA ICP facts
+  foundationName: optionalText(300),
+  foundationWebsite: optionalUrl,
+  isListed: z.boolean().nullable().optional(),
+  subCategory: optionalText(200),
+  linkedinEmployees: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  marketCapRs: z.number().min(0).max(1e17).nullable().optional(),
 });
 
 export const updateClientBody = createClientBody.partial();
@@ -133,10 +140,15 @@ export const clientActivitiesQuery = z.object({
   type: csv(z.nativeEnum(ClientActivityType)),
 });
 
+// sections of the client page that take their own comments (CASPA tab comments)
+export const NOTE_SECTIONS = ["info", "branches", "skilling", "csr", "reports", "spocs", "technology", "outreach", "meetings", "sales_assets", "marketing_assets"] as const;
+
 export const clientNoteBody = z.object({
   content: z.string().trim().min(1, "Content is required").max(5000),
   // a comment on one SPOC of this client
   spocId: optionalId,
+  // a comment on one section of the client page
+  section: z.enum(NOTE_SECTIONS).optional(),
 });
 
 export const updateNoteBody = z.object({
@@ -453,6 +465,8 @@ const csrProgramFields = z.object({
   fy: fyText,
   name: z.string().trim().min(1, "Programme name is required").max(500),
   sectorIds: z.array(z.string().uuid()).max(13),
+  // the sector as written (imports) when it matches no Schedule VII activity
+  sectorText: optionalText(1000),
   isOngoing: z.boolean().nullable().optional(),
   duration: optionalText(100),
   isLocalArea: z.boolean().nullable().optional(),
@@ -473,6 +487,12 @@ const csrProgramFields = z.object({
     .nullable()
     .optional(),
   beneficiaries: optionalText(1000),
+  // UN SDGs 1–17
+  sdgs: z
+    .array(z.number().int().min(1).max(17))
+    .max(17)
+    .transform((n) => [...new Set(n)].sort((a, b) => a - b))
+    .optional(),
   sourceUrl: optionalUrl,
 });
 
