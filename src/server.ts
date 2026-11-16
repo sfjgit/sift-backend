@@ -13,6 +13,8 @@ import { httpLogger, errorLogger, requestTimer } from "./middleware/httpLogger";
 import router from "./routes";
 import { impersonationAudit } from "./middleware/impersonationAudit.middleware";
 import { HttpError } from "./utils/httpError";
+import { dbMeter } from "./utils/prisma/meter";
+import { rememberError, requestId } from "./utils/recentErrors";
 
 dotenv.config();
 
@@ -76,6 +78,8 @@ app.use(
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
+    // the undo id of a request (recycle bin) — read by the app to offer "Undo"
+    exposedHeaders: ["X-Change-Batch", "X-Request-Id", "Server-Timing"],
   })
 );
 
@@ -103,6 +107,8 @@ app.use(limiter);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+app.use(requestId);
+app.use(dbMeter);
 app.use(impersonationAudit);
 // HTTP request logging
 app.use(httpLogger);
@@ -153,6 +159,13 @@ app.use((req, res) => {
 // Error handling middleware (should be last)
 app.use(errorLogger);
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+  // kept for bug tickets (matched by X-Request-Id)
+  rememberError(
+    req,
+    res,
+    err instanceof HttpError ? err.statusCode : err instanceof ZodError ? 400 : err instanceof Prisma.PrismaClientKnownRequestError && ["P2002", "P2025", "P2003"].includes(err.code) ? (err.code === "P2025" ? 404 : err.code === "P2002" ? 409 : 400) : (err.status || 500),
+    err,
+  );
   if (err instanceof HttpError) {
     res.status(err.statusCode).json({
       success: false,

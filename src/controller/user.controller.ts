@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { assertOwnRefs, assertSeatAvailable } from "@/services/tenant.service";
 import prisma from "@/utils/prisma/client";
 import { getReportingLineIds, userScopeWhere } from "@/services/scope.service";
+import { buildOrgTree, visibleUserIds } from "@/services/org.service";
 import { logAuthEvent } from "@/services/authLog.service";
 import { sendMail } from "@/utils/mailer";
 import { getUserPermissionMap } from "@/services/permission.service";
@@ -407,4 +408,14 @@ export const listUserOptions = async (req: Request, res: Response) => {
   });
 
   res.json({ success: true, data: users });
+};
+
+// ── GET /users/org-tree?root=<id> — the reporting tree with each person's load.
+// Anyone sees themselves and the people below them; users.read widens it.
+export const getOrgTree = async (req: Request, res: Response) => {
+  const perms = await getUserPermissionMap(req.user);
+  const visible = await visibleUserIds(req.user, perms);
+  const rootId = typeof req.query.root === "string" && /^[0-9a-f-]{36}$/i.test(req.query.root) ? req.query.root : visible ? req.user.id : null;
+  const tree = await buildOrgTree(prisma as never, { visible, rootId, includeInactive: req.query.inactive === "true" });
+  res.json({ success: true, data: tree });
 };

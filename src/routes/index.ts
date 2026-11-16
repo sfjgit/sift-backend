@@ -32,6 +32,8 @@ import svcRoutes from "./svc.routes";
 import platformRoutes from "./platform.routes";
 import websiteRoutes from "./website.routes";
 import aiRoutes from "./ai.routes";
+import recycleRoutes from "./recycle.routes";
+import ticketRoutes from "./ticket.routes";
 
 const router = Router();
 
@@ -69,6 +71,8 @@ router.use("/search", searchRoutes);
 
 // AI assistant — read-only (command + canvas), settings, usage
 router.use("/ai", aiRoutes);
+router.use("/recycle-bin", recycleRoutes);
+router.use("/tickets", ticketRoutes);
 
 // enterprise console — platform admins, every tenant
 router.use("/platform", platformRoutes);

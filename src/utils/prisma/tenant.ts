@@ -58,6 +58,10 @@ const TENANT_MODELS = new Set<string>([
   "AiUserQuotaOverride",
   "ReportTemplate",
   "AiAuditLog",
+  // recycle bin (tenantId may be null for system writes outside a tenant)
+  "ChangeLog",
+  // support tickets
+  "Ticket",
 ]);
 
 // tenantId may be null = platform row every tenant reads (not writes)
@@ -89,6 +93,8 @@ const VIA_PARENT: Record<string, (t: string) => object> = {
   OutreachMessage: (t) => ({ pack: { client: { tenantId: t } } }),
   ClientSpocAssignment: (t) => ({ spoc: { tenantId: t } }),
   StepRunEvent: (t) => ({ run: { tenantId: t } }),
+  TicketAttachment: (t) => ({ ticket: { tenantId: t } }),
+  TicketEvent: (t) => ({ ticket: { tenantId: t } }),
 };
 
 const READ_OPS = new Set([

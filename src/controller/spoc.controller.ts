@@ -197,9 +197,13 @@ const dataFlagWhere = (picked: ListSpocsQuery["dataFlag"]): Prisma.ClientSpocWhe
 };
 
 // the list filters — shared by GET /spocs and GET /spocs/stats
-const spocListWhere = async (req: Request, q: ListSpocsQuery): Promise<Prisma.ClientSpocWhereInput> => ({
+/** who is asking: the route's req, or the assistant with the user's spocs.read grant */
+export type Asker = { user: Request["user"]; scope?: Request["scope"] | true | null | undefined };
+const scopeOf = async (who: Asker) => (who.scope === true || who.scope == null ? {} : spocScopeWhere(who.user, who.scope));
+
+const spocListWhere = async (req: Asker, q: ListSpocsQuery): Promise<Prisma.ClientSpocWhereInput> => ({
     AND: [
-      await spocScopeWhere(req.user, req.scope!),
+      await scopeOf(req),
       {
         isActive: q.isActive,
         client: { deletedAt: null },
@@ -744,9 +748,8 @@ export const bulkUpdateSpocs = async (req: Request, res: Response) => {
 // ── GET /spocs/stats — counts for the Stats view, same filters as the list.
 // One light query, counted in memory (a tenant has thousands of SPOCs, not millions).
 const STATS_CAP = 50_000;
-export const spocStats = async (req: Request, res: Response) => {
-  const q = req.validatedQuery as ListSpocsQuery;
-  const where = await spocListWhere(req, q);
+export const computeSpocStats = async (who: Asker, q: ListSpocsQuery) => {
+  const where = await spocListWhere(who, q);
   const rows = await prisma.clientSpoc.findMany({
     where,
     take: STATS_CAP,
@@ -820,17 +823,28 @@ export const spocStats = async (req: Request, res: Response) => {
   }
   const sorted = (m: Map<string, Bucket>) => [...m.values()].sort((a, b) => b.count - a.count);
 
-  res.json({
-    success: true,
-    data: {
-      total: rows.length,
-      capped: rows.length === STATS_CAP,
-      clients: clients.size,
-      keyAccounts,
-      flagged,
-      withProjects,
-      has,
-      by: Object.fromEntries(Object.entries(by).map(([k, m]) => [k, sorted(m)])),
-    },
-  });
+  return {
+    total: rows.length,
+    capped: rows.length === STATS_CAP,
+    clients: clients.size,
+    keyAccounts,
+    flagged,
+    withProjects,
+    has,
+    by: Object.fromEntries(Object.entries(by).map(([k, m]) => [k, sorted(m)])) as Record<keyof typeof by, Bucket[]>,
+  };
+};
+
+/** ids of the SPOCs a list filter shows (for an AI action on "these"), capped */
+export const spocIdsFor = async (who: Asker, q: ListSpocsQuery, cap: number) => {
+  const where = await spocListWhere(who, q);
+  const [total, rows] = await Promise.all([
+    prisma.clientSpoc.count({ where }),
+    prisma.clientSpoc.findMany({ where, select: { id: true, firstName: true, lastName: true }, orderBy: { firstName: "asc" }, take: cap }),
+  ]);
+  return { total, rows: rows.map((r) => ({ id: r.id, name: `${r.firstName} ${r.lastName ?? ""}`.trim() })) };
+};
+
+export const spocStats = async (req: Request, res: Response) => {
+  res.json({ success: true, data: await computeSpocStats(req, req.validatedQuery as ListSpocsQuery) });
 };

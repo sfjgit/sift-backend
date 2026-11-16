@@ -12,6 +12,7 @@
     "seed:faqs": "tsx src/scripts/faqs.seed.ts",
     "seed:sales-marks": "tsx src/scripts/salesMarks.seed.ts",
     "seed:spoc-profile": "tsx src/scripts/spocProfile.seed.ts",
+    "backfill:assignments": "tsx src/scripts/backfillAssignments.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "migrate:deploy": "npx prisma migrate deploy",
     "perm:prune": "tsx src/scripts/permissions.prune.ts",

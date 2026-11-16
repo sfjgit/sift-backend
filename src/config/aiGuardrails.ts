@@ -74,6 +74,16 @@ const CLAUSE_SPLIT =
   /\s*(?:[.;!?\n]|,|\band then\b|\bthen\b|\band also\b|\balso\b|\bafter that\b|\bafterwards\b|\band\b|\bplus\b|&|\+)\s*/;
 
 const VERB_SET = new Set<string>(DESTRUCTIVE_VERBS);
+
+// "generate a report", "create a chart", "build a dashboard", "report banao": these
+// verbs only make something to LOOK at when what they make is a report. Anything
+// else ("create a client", "run the pipeline", "send the report") stays rejected.
+const READ_ARTEFACT = /\b(reports?|charts?|graphs?|canvas(es)?|summary|summaries|dashboards?|breakdowns?|overviews?|analysis|analyses|tables?|pie|trends?|visuali[sz]ations?|stats|statistics|kpis?|insights?|views?)\b/;
+const MAKE_VERBS = new Set(["generate", "create", "build", "make", "prepare", "add", "run", "start", "draw", "plot"]);
+const MAKE_NATIVE = /^(banao|bana do|bana)$/;
+/** canvas edits: "remove the table", "drop the pie chart" — the canvas, not CRM data */
+const BLOCK_NOUN = /\b(chart|charts|graph|graphs|table|tables|pie|block|blocks|kpi|kpis|trend|line)\b/;
+const BLOCK_VERBS = new Set(["remove", "drop", "delete", "hide"]);
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const NATIVE_RE = new RegExp(`(^|\\s)(${NATIVE_DESTRUCTIVE.map(escape).join("|")})(\\s|$)`);
 const SUFFIX_RE = new RegExp(
@@ -99,7 +109,12 @@ export type GuardResult =
  * G3 — runs on ENTITY-MASKED text, so a status called "Closed" or a client called
  * "Delete Logistics" has already become a {placeholder} and can't trigger it.
  */
-export const checkDestructiveIntent = (maskedText: string): GuardResult => {
+/** inside the canvas these verbs change the REPORT ("remove the trend chart", "replace it with users") */
+const CANVAS_EDIT_VERBS = new Set(["remove", "drop", "delete", "hide", "replace", "swap", "change", "edit", "modify", "update", "set", "add", "clear", "reset", "move", "rename", "increase", "decrease", "lower", "raise", "start", "create", "generate", "make", "build", "run", "mark", "correct", "fix"]);
+/** …unless the clause is plainly about CRM records rather than the report */
+const RECORD_ACTION = /\b(from (the )?(crm|database|db|system)|permanently|in the crm|their (status|owner|handler)|status to|assign|reassign|send|email (them|the)|approve|reject)\b/;
+
+export const checkDestructiveIntent = (maskedText: string, opts: { canvas?: boolean } = {}): GuardResult => {
   const text = normaliseInput(maskedText);
 
   for (const re of OVERRIDE_PATTERNS) {
@@ -107,7 +122,8 @@ export const checkDestructiveIntent = (maskedText: string): GuardResult => {
     if (m) return { ok: false, reason: "override", matched: m[0] };
   }
   const native = text.match(NATIVE_RE);
-  if (native) return { ok: false, reason: "destructive", matched: native[2]! };
+  if (native && !(MAKE_NATIVE.test(native[2]!) && READ_ARTEFACT.test(text)))
+    return { ok: false, reason: "destructive", matched: native[2]! };
   const suffix = text.match(SUFFIX_RE);
   if (suffix) return { ok: false, reason: "destructive", matched: suffix[0] };
 
@@ -116,7 +132,13 @@ export const checkDestructiveIntent = (maskedText: string): GuardResult => {
     const clause = raw.replace(LEAD_RE, "").trim();
     if (!clause) continue;
     const first = clause.split(" ")[0]!.replace(/[^a-z']/g, "");
-    if (VERB_SET.has(first)) return { ok: false, reason: "destructive", matched: first };
+    if (!VERB_SET.has(first)) continue;
+    // canvas: editing the report is not changing data — the AI has no write path anyway
+    if (opts.canvas && CANVAS_EDIT_VERBS.has(first) && !RECORD_ACTION.test(clause)) continue;
+    // making a report / chart is reading; removing a chart from the canvas is not touching data
+    if (MAKE_VERBS.has(first) && READ_ARTEFACT.test(clause)) continue;
+    if (BLOCK_VERBS.has(first) && BLOCK_NOUN.test(clause) && !/\b(clients?|spocs?|leads?|users?|records?|data|all)\b/.test(clause)) continue;
+    return { ok: false, reason: "destructive", matched: first };
   }
   return { ok: true };
 };

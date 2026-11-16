@@ -70,9 +70,17 @@ const SUFFIX_RE =
 const slug = (lookupType: string) => lookupType.toLowerCase();
 const kindSlug = (k: EntityKind) => (k.startsWith("lookup:") ? slug(k.slice(7)) : k);
 
+// words people use to talk to the assistant — never read as a pick-list value / name,
+// even when a lookup happens to be called that (there is an email source named "Report")
+const COMMAND_WORDS = new Set([
+  "report", "reports", "chart", "charts", "graph", "graphs", "table", "tables", "stats", "statistics", "summary",
+  "dashboard", "canvas", "overview", "list", "data", "details", "detail", "breakdown", "trend", "pie", "bar", "line",
+  "count", "total", "top", "new", "other", "others", "none", "unknown", "manual", "me", "my", "team", "back", "previous",
+]);
+
 const put = (dict: Map<string, DictEntry>, label: string, e: Omit<DictEntry, "caseSensitive" | "label">) => {
   const clean = label.replace(/\s+/g, " ").trim();
-  if (clean.length < 2) return;
+  if (clean.length < 2 || COMMAND_WORDS.has(clean.toLowerCase())) return;
   const key = clean.toLowerCase();
   if (!dict.has(key)) dict.set(key, { ...e, label: clean, caseSensitive: clean.length <= 3 });
 };

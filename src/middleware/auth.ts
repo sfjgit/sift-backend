@@ -5,6 +5,8 @@ import { verifyAccessToken, type JWTPayLoad } from "@/utils/jwt";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { runInTenant } from "@/utils/prisma/tenant";
+import { runWithChanges } from "@/utils/prisma/changes";
+import { randomUUID } from "node:crypto";
 import { config } from "dotenv";
 import { Request, Response, NextFunction } from "express";
 import {
@@ -120,7 +122,10 @@ export const authenticateUser = async (
   const { isActive, tenant, ...authUser } = user;
   req.user = authUser;
   // everything after this runs as the user's tenant (every Prisma query is scoped)
-  runInTenant(user.tenantId, next);
+  // …and every write it makes is one undoable batch (recycle bin)
+  const batchId = randomUUID();
+  res.setHeader("X-Change-Batch", batchId);
+  runInTenant(user.tenantId, () => runWithChanges({ actorId: user.id, batchId, source: req.get("x-ai-action") ? "ai" : "web" }, next));
 };
 
 // ─── Set Token Cookies ────────────────────────────────────────────────────────

@@ -19,8 +19,10 @@ import type { AuthUser } from "@/types/express";
 import type { AiDb } from "@/config/aiDb";
 import { AI_DEFAULTS } from "@/config/aiDefaults";
 import { clientScopeWhere, spocScopeWhere, stepRunScopeWhere } from "@/services/scope.service";
+import { buildOrgTree, visibleUserIds, type OrgTreeNode } from "@/services/org.service";
+import { FREE_ROW_CAP, runFreeSql } from "@/services/ai/sql.service";
 
-export type ReturnType = "single" | "series" | "rows";
+export type ReturnType = "single" | "series" | "rows" | "tree";
 export type ValueFormat = "number" | "money" | "percent";
 
 export interface SingleResult {
@@ -47,7 +49,13 @@ export interface RowsResult {
   rows: Record<string, string | number | null>[];
   total: number;
 }
-export type QueryResult = SingleResult | SeriesResult | RowsResult;
+/** a reporting tree (org chart) */
+export interface TreeResult {
+  kind: "tree";
+  root: OrgTreeNode;
+  total: number;
+}
+export type QueryResult = SingleResult | SeriesResult | RowsResult | TreeResult;
 
 export interface QueryCtx {
   user: AuthUser;
@@ -81,6 +89,8 @@ const ids = z.union([id, z.array(id).max(20)]).transform((v) => (Array.isArray(v
 const range = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict();
 const fy = z.string().regex(/^\d{4}-\d{2}$/);
 const top = z.number().int().min(1).max(50);
+/** a place name as the user said it ("Bengaluru", "Maharashtra") — matched with its other spellings */
+const place = z.string().trim().min(2).max(60);
 
 const clientFilter = {
   status: z.enum(Object.values($Enums.ClientStatus) as [string, ...string[]]).optional(),
@@ -89,9 +99,14 @@ const clientFilter = {
   businessUnitId: ids.optional(),
   entityType: z.enum(Object.values($Enums.ClientEntityType) as [string, ...string[]]).optional(),
   added: range.optional(),
+  /** me = assigned to the asking user; team = them + the people who report to them */
+  owner: z.enum(["me", "team"]).optional(),
+  assignedToId: ids.optional(),
+  state: place.optional(),
+  city: place.optional(),
 };
 const CLIENT_FILTER_DOC =
-  "status (PENDING|ACTIVE|INACTIVE), industryId ({industry_N}), categoryId ({client_category_N}), businessUnitId ({business_unit_N}), entityType (COMPANY|GOVERNMENT|INSTITUTION), added ({date_range_N})";
+  "status (PENDING|ACTIVE|INACTIVE), industryId ({industry_N}), categoryId ({client_category_N}), businessUnitId ({business_unit_N}), entityType (COMPANY|GOVERNMENT|INSTITUTION), added ({date_range_N}), owner (me = assigned to me | team = me and my team), assignedToId ({user_N}), state (office state, as the user said it), city (office city, as the user said it)";
 
 type ClientFilter = { [K in keyof typeof clientFilter]?: z.infer<(typeof clientFilter)[K]> };
 
@@ -102,6 +117,48 @@ const grantOf = (ctx: QueryCtx, key: PermissionKey) => {
   const g = ctx.perms[key];
   return g === undefined ? null : g;
 };
+
+// other spellings of the same place, so "Bangalore" finds "Bengaluru Urban"
+const PLACE_ALIASES: string[][] = [
+  ["bengaluru", "bangalore", "bengalooru", "bangaluru"],
+  ["mumbai", "bombay"],
+  ["chennai", "madras"],
+  ["kolkata", "calcutta"],
+  ["gurugram", "gurgaon"],
+  ["pune", "poona"],
+  ["mysuru", "mysore"],
+  ["mangaluru", "mangalore"],
+  ["thiruvananthapuram", "trivandrum"],
+  ["kerala", "keralam"],
+  ["odisha", "orissa"],
+  ["puducherry", "pondicherry"],
+];
+const spellings = (v: string) => {
+  const t = v.trim().toLowerCase();
+  return PLACE_ALIASES.find((g) => g.includes(t)) ?? [t];
+};
+const placeMatch = (field: "state" | "city" | "district", v: string) =>
+  spellings(v).map((x) => ({ [field]: { contains: x, mode: "insensitive" as const } }));
+
+/**
+ * The asking user + everyone below them, all the way down the chain (people who
+ * report to them, the people who report to those, …) via reportingTo / teamLead.
+ */
+export const teamIdsOf = async (db: AiDb, rootId: string) => {
+  const seen = new Set<string>([rootId]);
+  let level = [rootId];
+  for (let depth = 0; depth < 12 && level.length; depth++) {
+    const next = await db.user.findMany({
+      where: { isActive: true, OR: [{ teamLeadId: { in: level } }, { reportingToId: { in: level } }], id: { notIn: [...seen] } },
+      select: { id: true },
+      take: 2_000,
+    });
+    level = next.map((u) => u.id).filter((id) => !seen.has(id));
+    level.forEach((id) => seen.add(id));
+  }
+  return [...seen];
+};
+const teamIds = (ctx: QueryCtx) => teamIdsOf(ctx.db, ctx.user.id);
 
 /** clients the user may see + the block's filters */
 const clientWhere = async (ctx: QueryCtx, f: ClientFilter): Promise<Prisma.ClientWhereInput> => {
@@ -118,9 +175,41 @@ const clientWhere = async (ctx: QueryCtx, f: ClientFilter): Promise<Prisma.Clien
       f.businessUnitId ? { businessUnitId: { in: f.businessUnitId } } : {},
       f.entityType ? { entityType: f.entityType as $Enums.ClientEntityType } : {},
       f.added ? { createdAt: { gte: day(f.added.from), lte: day(f.added.to, true) } } : {},
+      f.owner === "me" ? { assignments: { some: { userId: ctx.user.id, endedAt: null } } } : {},
+      f.owner === "team" ? { assignments: { some: { userId: { in: await teamIds(ctx) }, endedAt: null } } } : {},
+      f.assignedToId ? { assignments: { some: { userId: { in: f.assignedToId }, endedAt: null } } } : {},
+      f.state ? { locations: { some: { isActive: true, OR: placeMatch("state", f.state) } } } : {},
+      f.city ? { locations: { some: { isActive: true, OR: [...placeMatch("city", f.city), ...placeMatch("district", f.city)] } } } : {},
     ],
   };
 };
+
+/** SPOC filters shared by the SPOC queries */
+const spocFilter = {
+  clientId: id.optional(),
+  /** me = SPOCs I handle; team = me and the people who report to me */
+  owner: z.enum(["me", "team"]).optional(),
+  handlerId: ids.optional(),
+  state: place.optional(),
+  city: place.optional(),
+};
+const SPOC_FILTER_DOC =
+  "clientId ({client_N}), owner (me = SPOCs I handle | team = me and my team), handlerId ({user_N}), state (as the user said it), city (as the user said it)";
+type SpocFilter = { [K in keyof typeof spocFilter]?: z.infer<(typeof spocFilter)[K]> };
+
+const spocFilterWhere = async (ctx: QueryCtx, f: SpocFilter): Promise<Prisma.ClientSpocWhereInput> => ({
+  AND: [
+    f.clientId ? { clientId: f.clientId } : {},
+    f.owner === "me" ? { handlerId: ctx.user.id } : {},
+    f.owner === "team" ? { handlerId: { in: await teamIds(ctx) } } : {},
+    f.handlerId ? { handlerId: { in: f.handlerId } } : {},
+    // the SPOC's own address, or else its client's offices
+    f.state ? { OR: [...placeMatch("state", f.state), { client: { locations: { some: { isActive: true, OR: placeMatch("state", f.state) } } } }] } : {},
+    f.city
+      ? { OR: [...placeMatch("city", f.city), ...placeMatch("district", f.city), { client: { locations: { some: { isActive: true, OR: [...placeMatch("city", f.city), ...placeMatch("district", f.city)] } } } }] }
+      : {},
+  ],
+});
 
 const spocWhere = async (ctx: QueryCtx): Promise<Prisma.ClientSpocWhereInput> => {
   const g = grantOf(ctx, "spocs.read");
@@ -290,7 +379,7 @@ const BUSINESS = [
   q({
     name: "clients_list",
     label: "Clients",
-    description: "A table of clients matching the filters (name, status, industry, business unit, latest CSR spent, added on).",
+    description: "A table of clients matching the filters (name, who they are assigned to, status, industry, business unit, latest CSR spent, added on).",
     permission: "clients.read",
     returns: "rows",
     params: z.object({ sort: z.enum(["name", "newest", "csr_spent"]).optional(), limit: z.number().int().min(1).max(10_000).optional(), ...clientFilter }).strict(),
@@ -315,11 +404,13 @@ const BUSINESS = [
             createdAt: true,
             industry: { select: { label: true } },
             businessUnit: { select: { name: true } },
+            assignments: { where: { endedAt: null }, select: { user: { select: { firstName: true, lastName: true } } }, take: 10 },
           },
         }),
       ]);
       const columns: Column[] = [
         { key: "name", label: "Client", type: "text" },
+        { key: "assignedTo", label: "Assigned to", type: "text" },
         { key: "status", label: "Status", type: "text" },
         { key: "industry", label: "Industry", type: "text" },
         { key: "businessUnit", label: "Business unit", type: "text" },
@@ -337,6 +428,7 @@ const BUSINESS = [
         total,
         rows: rows.map((r) => ({
           name: r.name,
+          assignedTo: r.assignments.map((a) => `${a.user.firstName} ${a.user.lastName ?? ""}`.trim()).join(", ") || "Nobody",
           status: r.status,
           industry: r.industry?.label ?? null,
           businessUnit: r.businessUnit?.name ?? null,
@@ -487,15 +579,15 @@ const BUSINESS = [
     description: "How many active SPOCs (client contacts) the user can see, optionally for one client.",
     permission: "spocs.read",
     returns: "single",
-    params: z.object({ clientId: id.optional(), approvalStatus: z.enum(Object.values($Enums.SpocApprovalStatus) as [string, ...string[]]).optional() }).strict(),
-    paramDoc: "clientId ({client_N}), approvalStatus (PENDING|APPROVED|REJECTED)",
+    params: z.object({ ...spocFilter, approvalStatus: z.enum(Object.values($Enums.SpocApprovalStatus) as [string, ...string[]]).optional() }).strict(),
+    paramDoc: `${SPOC_FILTER_DOC}, approvalStatus (PENDING|APPROVED|REJECTED)`,
     llm: true,
     run: async (ctx, p) => ({
       kind: "single",
       format: "number",
       value: await ctx.db.clientSpoc.count({
         where: {
-          AND: [await spocWhere(ctx), p.clientId ? { clientId: p.clientId } : {}, p.approvalStatus ? { approvalStatus: p.approvalStatus as $Enums.SpocApprovalStatus } : {}],
+          AND: [await spocWhere(ctx), await spocFilterWhere(ctx, p), p.approvalStatus ? { approvalStatus: p.approvalStatus as $Enums.SpocApprovalStatus } : {}],
         },
       }),
     }),
@@ -509,11 +601,11 @@ const BUSINESS = [
     params: z
       .object({
         by: z.enum(["sales_status", "approval_status", "email_status", "validation_band", "handler", "business_unit"]),
-        clientId: id.optional(),
         top: top.optional(),
+        ...spocFilter,
       })
       .strict(),
-    paramDoc: "by (required: sales_status|approval_status|email_status|validation_band|handler|business_unit), clientId ({client_N}), top",
+    paramDoc: `by (required: sales_status|approval_status|email_status|validation_band|handler|business_unit), top, ${SPOC_FILTER_DOC}`,
     llm: true,
     run: async (ctx, p) => {
       const field = {
@@ -525,7 +617,7 @@ const BUSINESS = [
         business_unit: "businessUnitId",
       }[p.by] as "salesStatusId" | "approvalStatus" | "emailStatus" | "validationBand" | "handlerId" | "businessUnitId";
       const rows = await ctx.db.clientSpoc.findMany({
-        where: { AND: [await spocWhere(ctx), p.clientId ? { clientId: p.clientId } : {}] },
+        where: { AND: [await spocWhere(ctx), await spocFilterWhere(ctx, p)] },
         select: { [field]: true },
         take: 100_000,
       });
@@ -553,19 +645,19 @@ const BUSINESS = [
     returns: "rows",
     params: z
       .object({
-        clientId: id.optional(),
+        ...spocFilter,
         approvalStatus: z.enum(Object.values($Enums.SpocApprovalStatus) as [string, ...string[]]).optional(),
         salesStatusId: ids.optional(),
         limit: z.number().int().min(1).max(10_000).optional(),
       })
       .strict(),
-    paramDoc: "clientId ({client_N}), approvalStatus (PENDING|APPROVED|REJECTED), salesStatusId ({sales_status_N}), limit",
+    paramDoc: `${SPOC_FILTER_DOC}, approvalStatus (PENDING|APPROVED|REJECTED), salesStatusId ({sales_status_N}), limit`,
     llm: true,
     run: async (ctx, p) => {
       const where: Prisma.ClientSpocWhereInput = {
         AND: [
           await spocWhere(ctx),
-          p.clientId ? { clientId: p.clientId } : {},
+          await spocFilterWhere(ctx, p),
           p.approvalStatus ? { approvalStatus: p.approvalStatus as $Enums.SpocApprovalStatus } : {},
           p.salesStatusId ? { salesStatusId: { in: p.salesStatusId } } : {},
         ],
@@ -610,6 +702,190 @@ const BUSINESS = [
           handler: `${r.handler.firstName} ${r.handler.lastName}`.trim(),
         })),
       };
+    },
+  }),
+  // ── free hand (super admin only — services/ai/sql.service.ts) ─────────────
+  q({
+    name: "free_sql",
+    label: "Custom query",
+    description: "A read-only query the assistant wrote for a super admin.",
+    permission: "ai_assistant.canvas_use",
+    returns: "rows",
+    params: z
+      .object({
+        sql: z.string().min(6).max(4_000),
+        args: z.array(z.union([z.string().max(200), z.number()])).max(20).optional(),
+        shape: z.enum(["rows", "series", "single"]).default("rows"),
+        label: z.string().max(80).optional(),
+        values: z.array(z.string().max(80)).max(5).optional(),
+        format: z.enum(["number", "money", "percent"]).optional(),
+      })
+      .strict(),
+    paramDoc: "",
+    llm: false,
+    run: async (ctx, p) => {
+      const { rows, capped } = await runFreeSql(ctx.user, p.sql, p.args ?? []);
+      const keys = rows.length ? Object.keys(rows[0]!) : [];
+      const isNum = (k: string) => rows.some((r) => typeof r[k] === "number") && rows.every((r) => r[k] === null || typeof r[k] === "number");
+      const isDate = (k: string) => rows.some((r) => typeof r[k] === "string") && rows.every((r) => r[k] === null || /^\d{4}-\d{2}-\d{2}T/.test(String(r[k])));
+      const fmt = p.format ?? "number";
+      if (p.shape === "single") {
+        const k = keys.find(isNum);
+        return { kind: "single", format: fmt, value: k ? (rows[0]![k] as number) : null };
+      }
+      if (p.shape === "series") {
+        const label = p.label && keys.includes(p.label) ? p.label : (keys.find((k) => !isNum(k)) ?? keys[0]!);
+        const values = (p.values ?? []).filter((v) => keys.includes(v) && isNum(v));
+        const nums = values.length ? values : keys.filter((k) => k !== label && isNum(k)).slice(0, 5);
+        return {
+          kind: "series",
+          format: fmt,
+          series: nums.map((k) => ({ key: k, label: k.replace(/_/g, " ") })),
+          points: rows.map((r) => ({ label: String(r[label] ?? "—"), ...Object.fromEntries(nums.map((k) => [k, Number(r[k] ?? 0)])) })),
+        };
+      }
+      const columns: Column[] = keys.map((k) => ({ key: k, label: k.replace(/_/g, " "), type: isNum(k) ? (fmt === "money" && /amount|spent|budget|value|rs|inr|revenue|csr/i.test(k) ? "money" : "number") : isDate(k) ? "date" : "text" }));
+      return { kind: "rows", columns, rows: rows.slice(0, Math.min(ctx.rowCap, FREE_ROW_CAP)), total: capped ? FREE_ROW_CAP + 1 : rows.length };
+    },
+  }),
+
+  // ── people ─────────────────────────────────────────────────────────────────
+  q({
+    name: "org_tree",
+    label: "Org chart",
+    description:
+      "An org chart: the reporting tree of who reports to whom, each person with clients, SPOCs and tasks. Use ONLY when the user asks for structure — org chart, hierarchy, reporting line, team tree, who reports to whom.",
+    permission: "users.read",
+    returns: "tree",
+    params: z.object({ team: z.boolean().optional(), rootUserId: id.optional() }).strict(),
+    paramDoc: "team (true = start from me: my reporting line), rootUserId ({user_N} — start from that person)",
+    llm: true,
+    run: async (ctx, p) => {
+      const visible = await visibleUserIds(ctx.user, ctx.perms);
+      const { root, total } = await buildOrgTree(ctx.db as never, { visible, rootId: p.rootUserId ?? (p.team ? ctx.user.id : null) });
+      return { kind: "tree", root, total };
+    },
+  }),
+  q({
+    name: "users_count",
+    label: "Number of people",
+    description: "How many active CRM users (people / team members) there are, optionally only my team (everyone under me in the reporting chain).",
+    permission: "users.read",
+    returns: "single",
+    params: z.object({ team: z.boolean().optional() }).strict(),
+    paramDoc: "team (true = only me and everyone under me)",
+    llm: true,
+    run: async (ctx, p) => ({
+      kind: "single",
+      format: "number",
+      value: await ctx.db.user.count({ where: { isActive: true, ...(p.team && { id: { in: await teamIds(ctx) } }) } }),
+    }),
+  }),
+  q({
+    name: "users_by",
+    label: "People grouped",
+    description: "Active users (people / team members) counted per role / department / designation / team lead / reporting manager.",
+    permission: "users.read",
+    returns: "series",
+    params: z.object({ by: z.enum(["role", "department", "designation", "team_lead", "reporting_to"]), team: z.boolean().optional(), top: top.optional() }).strict(),
+    paramDoc: "by (required: role|department|designation|team_lead|reporting_to), team (true = only my team), top",
+    llm: true,
+    run: async (ctx, p) => {
+      const field = { role: "roleId", department: "departmentId", designation: "designationId", team_lead: "teamLeadId", reporting_to: "reportingToId" }[p.by] as
+        | "roleId" | "departmentId" | "designationId" | "teamLeadId" | "reportingToId";
+      const rows = await ctx.db.user.findMany({
+        where: { isActive: true, ...(p.team && { id: { in: await teamIds(ctx) } }) },
+        select: { id: true, roleId: true, departmentId: true, designationId: true, teamLeadId: true, reportingToId: true },
+        take: 10_000,
+      });
+      const named = (model: "role" | "department" | "designation") => async (keys: string[]) => {
+        const list =
+          model === "role"
+            ? await ctx.db.role.findMany({ where: { id: { in: keys } }, select: { id: true, name: true } })
+            : model === "department"
+              ? await ctx.db.department.findMany({ where: { id: { in: keys } }, select: { id: true, name: true } })
+              : await ctx.db.designation.findMany({ where: { id: { in: keys } }, select: { id: true, name: true } });
+        return new Map(list.map((x) => [x.id, x.name]));
+      };
+      const labelOf = p.by === "role" ? named("role") : p.by === "department" ? named("department") : p.by === "designation" ? named("designation") : userLabels(ctx.db);
+      return countBy(rows.map((r) => r[field] ?? null), labelOf, p.top ?? 15);
+    },
+  }),
+  q({
+    name: "users_workload",
+    label: "Workload per person",
+    description: "A table of people with how much each one handles: clients assigned, SPOCs handled, open tasks and overdue tasks. Optionally only my team.",
+    permission: "users.read",
+    returns: "rows",
+    params: z.object({ team: z.boolean().optional(), limit: z.number().int().min(1).max(10_000).optional() }).strict(),
+    paramDoc: "team (true = only me and everyone under me), limit",
+    llm: true,
+    run: async (ctx, p) => {
+      const users = await ctx.db.user.findMany({
+        where: { isActive: true, ...(p.team && { id: { in: await teamIds(ctx) } }) },
+        select: { id: true, firstName: true, lastName: true, roleId: true, reportingToId: true },
+        take: 5_000,
+      });
+      const ids = users.map((u) => u.id);
+      const [assigned, handled, open, overdue, roles] = await Promise.all([
+        ctx.db.clientAssignment.groupBy({ by: ["userId"], where: { userId: { in: ids }, endedAt: null, client: { deletedAt: null } }, _count: true }),
+        ctx.db.clientSpoc.groupBy({ by: ["handlerId"], where: { handlerId: { in: ids }, isActive: true }, _count: true }),
+        ctx.db.workTask.groupBy({ by: ["assigneeId"], where: { assigneeId: { in: ids }, status: { not: "DONE" } }, _count: true }),
+        ctx.db.workTask.groupBy({ by: ["assigneeId"], where: { assigneeId: { in: ids }, status: { not: "DONE" }, dueAt: { lt: new Date() } }, _count: true }),
+        ctx.db.role.findMany({ where: { id: { in: [...new Set(users.map((u) => u.roleId).filter(Boolean) as string[])] } }, select: { id: true, name: true } }),
+      ]);
+      const m = (rows: { _count: number }[], key: (r: never) => string) => new Map(rows.map((r) => [key(r as never), r._count]));
+      const a = m(assigned, (r: { userId: string }) => r.userId);
+      const h = m(handled, (r: { handlerId: string }) => r.handlerId);
+      const o = m(open, (r: { assigneeId: string }) => r.assigneeId);
+      const od = m(overdue, (r: { assigneeId: string }) => r.assigneeId);
+      const roleName = new Map(roles.map((r) => [r.id, r.name]));
+      const byId = new Map(users.map((u) => [u.id, u]));
+      const rows = users
+        .map((u) => ({
+          name: `${u.firstName} ${u.lastName ?? ""}`.trim(),
+          role: (u.roleId && roleName.get(u.roleId)) ?? null,
+          reportsTo: u.reportingToId && byId.get(u.reportingToId) ? `${byId.get(u.reportingToId)!.firstName} ${byId.get(u.reportingToId)!.lastName ?? ""}`.trim() : null,
+          clients: a.get(u.id) ?? 0,
+          spocs: h.get(u.id) ?? 0,
+          openTasks: o.get(u.id) ?? 0,
+          overdue: od.get(u.id) ?? 0,
+        }))
+        .sort((x, y) => y.clients + y.spocs - (x.clients + x.spocs));
+      return {
+        kind: "rows",
+        total: rows.length,
+        columns: [
+          { key: "name", label: "Person", type: "text" },
+          { key: "role", label: "Role", type: "text" },
+          { key: "reportsTo", label: "Reports to", type: "text" },
+          { key: "clients", label: "Clients assigned", type: "number" },
+          { key: "spocs", label: "SPOCs handled", type: "number" },
+          { key: "openTasks", label: "Open tasks", type: "number" },
+          { key: "overdue", label: "Overdue", type: "number" },
+        ],
+        rows: rows.slice(0, Math.min(p.limit ?? ctx.rowCap, ctx.rowCap)),
+      };
+    },
+  }),
+  q({
+    name: "users_load_by",
+    label: "Load per person",
+    description: "Per person: how many clients are assigned to each user (clients by assigned user / owner), SPOCs each one handles, or open tasks each one has — a chart of who carries how much. Optionally only my team.",
+    permission: "users.read",
+    returns: "series",
+    params: z.object({ metric: z.enum(["clients", "spocs", "open_tasks"]), team: z.boolean().optional(), top: top.optional() }).strict(),
+    paramDoc: "metric (required: clients|spocs|open_tasks), team (true = only my team), top",
+    llm: true,
+    run: async (ctx, p) => {
+      const scope = p.team ? { in: await teamIds(ctx) } : undefined;
+      const values: string[] =
+        p.metric === "clients"
+          ? (await ctx.db.clientAssignment.findMany({ where: { endedAt: null, client: { deletedAt: null }, ...(scope && { userId: scope }) }, select: { userId: true }, take: 100_000 })).map((r) => r.userId)
+          : p.metric === "spocs"
+            ? (await ctx.db.clientSpoc.findMany({ where: { isActive: true, ...(scope && { handlerId: scope }) }, select: { handlerId: true }, take: 100_000 })).map((r) => r.handlerId)
+            : (await ctx.db.workTask.findMany({ where: { status: { not: "DONE" }, ...(scope && { assigneeId: scope }) }, select: { assigneeId: true }, take: 100_000 })).map((r) => r.assigneeId);
+      return countBy(values, userLabels(ctx.db), p.top ?? 15);
     },
   }),
   q({
@@ -918,10 +1194,11 @@ export const QUERIES: readonly QueryDef[] = [...BUSINESS, ...USAGE] as unknown a
 export const queryDef = (name: string) => QUERIES.find((x) => x.name === name);
 
 /** component ↔ return type (spec §4 L4: component must match the query's return type) */
-export const COMPONENT_ACCEPTS: Record<"kpi" | "bar" | "line" | "pie" | "table", ReturnType[]> = {
+export const COMPONENT_ACCEPTS: Record<"kpi" | "bar" | "line" | "pie" | "table" | "org", ReturnType[]> = {
   kpi: ["single"],
   bar: ["series"],
   line: ["series"],
   pie: ["series"],
   table: ["rows", "series"],
+  org: ["tree"],
 };

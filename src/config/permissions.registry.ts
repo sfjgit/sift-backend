@@ -269,6 +269,26 @@ export const MODULES = {
       view_audit_log: { label: "View audit log", scoped: false },
     },
   },
+  recycle_bin: {
+    label: "Recycle bin & undo",
+    group: "Administration",
+    order: 35.5,
+    description: "Everything deleted or changed is kept — see it and put it back. Scope = whose changes.",
+    actions: {
+      read: { label: "View", scoped: true },
+      restore: { label: "Restore / undo", scoped: true, requires: ["recycle_bin.read"] },
+    },
+  },
+  support: {
+    label: "Support tickets",
+    group: "Administration",
+    order: 35.8,
+    description: "Anyone can report a problem or suggest a feature and follow their own tickets. These grants are for the people who fix them.",
+    actions: {
+      manage: { label: "See all tickets, triage, assign, ask to reproduce", scoped: false },
+      diagnose: { label: "Run the AI diagnosis", scoped: false, requires: ["support.manage"] },
+    },
+  },
   help: {
     label: "Help & FAQs",
     group: "Administration",

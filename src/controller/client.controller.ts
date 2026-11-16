@@ -1278,3 +1278,106 @@ export const toggleClientKeyAccount = async (req: Request, res: Response) => {
     data: { starred: !had, keyAccounts },
   });
 };
+
+// ── GET /clients/stats — counts for the Stats view, same filters as the list.
+type StatBucket = { key: string; label: string; count: number };
+export type ClientAsker = { user: Request["user"]; scope: Request["scope"] | true | null | undefined; figures: boolean };
+const CLIENT_STATS_CAP = 50_000;
+
+export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) => {
+  if (!who.figures) {
+    delete q.csrSpentMinCr;
+    delete q.csrSpentMaxCr;
+  }
+  const where: Prisma.ClientWhereInput = {
+    deletedAt: null,
+    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...clientFilterWhere(q, who.user.id)],
+  };
+  const rows = await prisma.client.findMany({
+    where,
+    take: CLIENT_STATS_CAP,
+    select: {
+      status: true,
+      entityType: true,
+      website: true,
+      linkedinUrl: true,
+      cin: true,
+      csrSpentRs: true,
+      csrEligible: true,
+      industry: { select: { id: true, label: true } },
+      category: { select: { id: true, label: true } },
+      businessUnit: { select: { id: true, name: true } },
+      locations: { where: { isPrimary: true, isActive: true }, select: { state: true }, take: 1 },
+      _count: { select: { spocs: { where: { isActive: true } }, keyAccounts: true } },
+    },
+  });
+
+  const tally = () => new Map<string, StatBucket>();
+  const add = (m: Map<string, StatBucket>, key: string | null | undefined, label: string | null | undefined) => {
+    const k = key ?? "_none";
+    const b = m.get(k) ?? { key: k, label: key ? (label ?? key) : "Not set", count: 0 };
+    b.count++;
+    m.set(k, b);
+  };
+  const by = { status: tally(), industry: tally(), category: tally(), state: tally(), businessUnit: tally(), entityType: tally() };
+  const has = { website: 0, linkedin: 0, cin: 0, spocs: 0, csrFigures: 0, state: 0 };
+  let keyAccounts = 0;
+  let csrEligible = 0;
+  let spocs = 0;
+  let csrSpentRs = 0;
+
+  for (const r of rows) {
+    if (r.website) has.website++;
+    if (r.linkedinUrl) has.linkedin++;
+    if (r.cin) has.cin++;
+    if (r._count.spocs) has.spocs++;
+    spocs += r._count.spocs;
+    if (r.csrSpentRs !== null) {
+      has.csrFigures++;
+      csrSpentRs += Number(r.csrSpentRs);
+    }
+    const state = (r.locations[0]?.state ?? "").trim();
+    if (state) has.state++;
+    if (r._count.keyAccounts) keyAccounts++;
+    if (r.csrEligible) csrEligible++;
+    add(by.status, r.status, r.status);
+    add(by.industry, r.industry?.id, r.industry?.label);
+    add(by.category, r.category?.id, r.category?.label);
+    add(by.state, state ? state.toLowerCase() : null, state);
+    add(by.businessUnit, r.businessUnit?.id, r.businessUnit?.name);
+    add(by.entityType, r.entityType, r.entityType);
+  }
+  const sorted = (m: Map<string, StatBucket>) => [...m.values()].sort((a, b) => b.count - a.count);
+  return {
+    total: rows.length,
+    capped: rows.length === CLIENT_STATS_CAP,
+    spocs,
+    keyAccounts,
+    csrEligible,
+    /** null when the caller may not see CSR figures */
+    csrSpentRs: who.figures ? csrSpentRs : null,
+    has: { ...has, csrFigures: who.figures ? has.csrFigures : null },
+    by: Object.fromEntries(Object.entries(by).map(([k, m]) => [k, sorted(m)])) as Record<keyof typeof by, StatBucket[]>,
+  };
+};
+
+/** ids of the clients a list filter shows (for an AI action on "these"), capped */
+export const clientIdsFor = async (who: ClientAsker, q: ListClientsQuery, cap: number) => {
+  const where: Prisma.ClientWhereInput = {
+    deletedAt: null,
+    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...clientFilterWhere(q, who.user.id)],
+  };
+  const [total, rows] = await Promise.all([
+    prisma.client.count({ where }),
+    prisma.client.findMany({ where, select: { id: true, name: true }, orderBy: { name: "asc" }, take: cap }),
+  ]);
+  return { total, rows };
+};
+
+export const clientStats = async (req: Request, res: Response) => {
+  const data = await computeClientStats(
+    { user: req.user, scope: req.scope, figures: !!req.permissions!["client_financials.read"] },
+    req.validatedQuery as ListClientsQuery,
+  );
+  res.json({ success: true, data });
+};

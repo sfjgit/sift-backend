@@ -25,7 +25,7 @@ import { PrismaClient } from "@prisma/client";
 
 // ── the spec ─────────────────────────────────────────────────────────────────
 
-export const COMPONENTS = ["kpi", "bar", "line", "pie", "table"] as const;
+export const COMPONENTS = ["kpi", "bar", "line", "pie", "table", "org"] as const;
 export const WIDTHS = ["full", "half", "third"] as const;
 
 const blockSchema = z
@@ -72,8 +72,14 @@ const PARAM_KINDS: Record<string, string> = {
   added: "date_range",
   period: "date_range",
   fy: "fy",
+  assignedToId: "user",
+  handlerId: "user",
 };
 const PH = /^\{[a-z_]+_\d+\}$/;
+
+/** "{user_1}" → "Rakhi Sen" in any text the model wrote (titles, summaries, questions) */
+export const unmaskText = (text: string, ex: Extraction | null | undefined) =>
+  text.replace(/\{[a-z_]+_\d+\}/g, (ph) => ex?.entities.find((e) => e.ph === ph)?.label ?? "that");
 
 /** put entity values back in place of placeholders, checking each kind */
 const substitute = (params: Record<string, unknown>, ex: Extraction | null) => {
@@ -100,14 +106,14 @@ const substitute = (params: Record<string, unknown>, ex: Extraction | null) => {
  * return type, params pass the query's strict schema. `llmOnly` rejects queries
  * that are never offered to the LLM (usage dashboard) when the spec came from it.
  */
-export const validateSpec = (raw: unknown, perms: PermissionMap, opts: { ex?: Extraction | null; llmOnly?: boolean } = {}) => {
+export const validateSpec = (raw: unknown, perms: PermissionMap, opts: { ex?: Extraction | null; llmOnly?: boolean; allow?: string[] } = {}) => {
   const parsed = canvasSpecSchema.safeParse(raw);
   if (!parsed.success) throw new SpecInvalid(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const blocks = parsed.data.blocks.map((b, i) => {
     const def = queryDef(b.query);
-    if (!def || (opts.llmOnly && !def.llm)) throw new SpecInvalid(`unknown query ${b.query}`);
+    if (!def || (opts.llmOnly && !def.llm && !opts.allow?.includes(def.name))) throw new SpecInvalid(`unknown query ${b.query}`);
     if (!perms[def.permission]) throw new SpecInvalid(`no access to ${def.label}`);
-    if (!COMPONENT_ACCEPTS[b.component].includes(def.returns)) throw new SpecInvalid(`${b.component} can't show ${def.label}`);
+    if (def.name !== "free_sql" && !COMPONENT_ACCEPTS[b.component].includes(def.returns)) throw new SpecInvalid(`${b.component} can't show ${def.label}`);
     const params = substitute(b.params ?? {}, opts.ex ?? null);
     const ok = def.params.safeParse(params);
     if (!ok.success) throw new SpecInvalid(`${def.name}: ${ok.error.issues.map((x) => `${x.path.join(".")} ${x.message}`).join("; ")}`);
@@ -116,11 +122,11 @@ export const validateSpec = (raw: unknown, perms: PermissionMap, opts: { ex?: Ex
       component: b.component,
       query: b.query,
       params: params,
-      title: b.title ?? def.label,
-      width: b.width ?? (b.component === "kpi" ? "third" : b.component === "table" ? "full" : "half"),
+      title: unmaskText(b.title ?? def.label, opts.ex),
+      width: b.width ?? (b.component === "kpi" ? "third" : b.component === "table" || b.component === "org" ? "full" : "half"),
     };
   });
-  return { title: parsed.data.title, blocks };
+  return { title: unmaskText(parsed.data.title, opts.ex), blocks };
 };
 
 export type ValidSpec = ReturnType<typeof validateSpec>;
@@ -148,14 +154,14 @@ export const runSpec = async (user: AuthUser, perms: PermissionMap, spec: ValidS
 
 // ── generate (LLM) ───────────────────────────────────────────────────────────
 
-const catalogFor = (perms: PermissionMap) =>
+export const catalogFor = (perms: PermissionMap) =>
   QUERIES.filter((q) => q.llm && perms[q.permission])
     .map((q) => `- ${q.name} [returns ${q.returns}] — ${q.description} Params: ${q.paramDoc}`)
     .join("\n");
 
 const SYSTEM = (catalog: string) => `You compose read-only report pages ("canvases") for a sales & marketing CRM.
 Call compose_canvas with a title and 1-${AI_DEFAULTS.canvasMaxBlocks} blocks. Each block = one query from the catalog + one component.
-Components: kpi (for [returns single]), bar / line / pie (for [returns series]; line for trends over time, pie only for few slices), table (for [returns rows] or series).
+Components: kpi (for [returns single]), bar / line / pie (for [returns series]; line for trends over time, pie only for few slices), table (for [returns rows] or series), org (for [returns tree] — the org chart, full width).
 Widths: full | half | third (kpis usually third, charts half, tables full).
 Names in the request are masked as {placeholders}: put them into params exactly as given (e.g. "industryId": "{industry_1}", "added": "{date_range_1}", "fy": "{fy_1}").
 Never invent ids or values. Only use params listed for that query.

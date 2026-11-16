@@ -23,6 +23,7 @@ import {
   upsertQuotas,
 } from "@/controller/aiSettings.controller";
 import { exportUsage, getUsage } from "@/controller/aiUsage.controller";
+import * as threads from "@/controller/aiThread.controller";
 
 const router = Router();
 router.use(authenticateUser);
@@ -43,6 +44,17 @@ router.get("/canvas/templates", aiAccess("CANVAS"), listTemplates);
 router.post("/canvas/templates", aiAccess("CANVAS", "ai_assistant.canvas_save_template"), saveTemplate);
 router.delete("/canvas/templates/:id", aiAccess("CANVAS"), validate.params(idParams), deleteTemplate);
 router.post("/canvas/export", aiAccess("CANVAS", "ai_assistant.canvas_export"), aiQuota("EXPORT"), exportCanvas);
+
+// THREADS — saved conversations (follow-ups, explain, memory). Same guards as canvas.
+router.post("/assist", aiAccess("CANVAS"), aiInputLimit("prompt"), aiRateLimit("CANVAS"), aiQuota("CANVAS"), threads.assistAsk);
+router.post("/threads/ask", aiAccess("CANVAS"), aiInputLimit("prompt"), aiRateLimit("CANVAS"), aiQuota("CANVAS"), threads.ask);
+router.get("/threads", aiAccess("CANVAS"), threads.list);
+router.get("/suggestions", aiAccess("CANVAS"), threads.suggestions);
+router.post("/threads", aiAccess("CANVAS"), aiRateLimit("CANVAS"), threads.createFromSpec);
+router.get("/threads/:id", aiAccess("CANVAS"), validate.params(idParams), threads.open);
+router.patch("/threads/:id", aiAccess("CANVAS"), validate.params(idParams), threads.patch);
+router.put("/threads/:id/spec", aiAccess("CANVAS"), aiRateLimit("CANVAS"), validate.params(idParams), threads.editSpec);
+router.delete("/threads/:id", aiAccess("CANVAS"), validate.params(idParams), threads.remove);
 
 // settings (never reachable through the AI itself)
 const manage = authorize("ai_assistant.settings_manage");

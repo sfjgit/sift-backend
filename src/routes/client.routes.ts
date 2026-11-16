@@ -47,6 +47,7 @@ import {
   deleteClient,
   listClientActivities,
   addClientNote,
+  clientStats,
   deleteClientNote,
   updateClientNote,
   addClientLocation,
@@ -89,6 +90,7 @@ const read = authorize("clients.read");
 router.use(authenticateUser);
 
 router.get("/", read, validate.query(listClientsQuery), listClients);
+router.get("/stats", read, validate.query(listClientsQuery), clientStats);
 router.post("/", authorize("clients.create"), validate.body(createClientBody), createClient);
 
 // bulk — before /:id so "bulk-status" isn't read as an id

@@ -10,6 +10,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PrismaClient } from "@prisma/client";
 import { AI_MAX_INPUT_CHARS, AI_READ_ONLY, checkDestructiveIntent } from "@/config/aiGuardrails";
+import { checkSql, runFreeSql, schemaForModel } from "@/services/ai/sql.service";
 import { AI_READ_OPERATIONS, AiWriteBlockedError, makeReadOnly, type AiDb } from "@/config/aiDb";
 import { COMMAND_ACTIONS, commandAction } from "@/config/commandRegistry";
 import { QUERIES } from "@/config/queryRegistry";
@@ -53,6 +54,35 @@ describe("G3 — destructive intent guard (spec §11)", () => {
       "approve all pending spocs",
       "DELETE FROM clients",
     ])
+      rejects(s);
+  });
+  it("inside the canvas, editing the report is allowed — record actions are not", () => {
+    const ok = (t: string) => assert.equal(checkDestructiveIntent(t, { canvas: true }).ok, true, t);
+    const no = (t: string) => assert.equal(checkDestructiveIntent(t, { canvas: true }).ok, false, t);
+    ok("Remove the clients trend chart and show clients by assigned user as a bar chart");
+    ok("replace it with users");
+    ok("change it to a pie");
+    no("delete all clients from the crm");
+    no("assign these clients to ravi");
+    no("send email to all spocs");
+    no("change their status to won");
+  });
+  it("making a report is reading → allowed", () => {
+    for (const s of [
+      "generate a detailed report",
+      "generate report",
+      "create a chart of clients by industry",
+      "build me a dashboard of spocs",
+      "please prepare a summary report",
+      "add a pie chart",
+      "run a report on csr spent",
+      "report banao",
+      "remove the table",
+    ])
+      passes(s);
+  });
+  it("…but making or removing data still isn't", () => {
+    for (const s of ["create a client", "generate emails for all spocs", "send the report to ravi", "add a spoc", "run the pipeline", "delete all clients", "remove spocs table data", "client banao", "generate report and delete clients"])
       rejects(s);
   });
   it('"show closed leads" → allowed (status masked first, and "closed" is not the verb)', () => {
@@ -144,11 +174,11 @@ describe("L1 — every canvas query only reads", () => {
     },
   ) as AiDb;
   const user = { id: "00000000-0000-0000-0000-000000000001", roleId: "r", departmentId: null } as unknown as AuthUser;
-  for (const q of QUERIES) {
+  for (const q of QUERIES.filter((x) => x.name !== "free_sql")) {
     it(`${q.name} uses read operations only`, async () => {
       calls.length = 0;
       const params = q.params.parse(
-        q.name === "clients_by" ? { by: "status" } : q.name === "spocs_by" ? { by: "approval_status" } : q.name === "runs_by" ? { by: "status" } : /^csr_total$/.test(q.name) ? { metric: "spent" } : {},
+        q.name === "clients_by" ? { by: "status" } : q.name === "spocs_by" ? { by: "approval_status" } : q.name === "runs_by" ? { by: "status" } : q.name === "users_by" ? { by: "role", team: true } : q.name === "users_load_by" ? { metric: "clients", team: true } : q.name === "users_workload" ? { team: true } : /^csr_total$/.test(q.name) ? { metric: "spent" } : {},
       );
       await q.run({ user, perms: ALL, db: fake, aiTables: fake, rowCap: 10 }, params);
       for (const c of calls) assert.ok((AI_READ_OPERATIONS as readonly string[]).includes(c.split(".")[1]!), `${q.name} called ${c}`);
@@ -198,3 +228,31 @@ describe("cost & quota maths", () => {
 //   - Super Admin with a 50/day limit sends #51 → rejected            (quota.service: no exemption)
 //   - New role with no policy → org default                          (quota.service effectiveLimits)
 //   - Any write via aiDb → Postgres refuses                          (ai_readonly role, prisma/sql)
+
+describe("free hand (super admin only)", () => {
+  const bad = (sql: string) => assert.throws(() => checkSql(sql), undefined, sql);
+  it("only a single SELECT gets through", () => {
+    assert.ok(checkSql('SELECT "name" FROM "Client" WHERE "deletedAt" IS NULL;'));
+    assert.ok(checkSql('WITH x AS (SELECT 1) SELECT * FROM x'));
+    for (const s of [
+      'DELETE FROM "Client"',
+      'UPDATE "Client" SET "name" = $1',
+      'SELECT 1; DROP TABLE "Client"',
+      'INSERT INTO "Client" VALUES (1)',
+      'SELECT * INTO new_table FROM "Client"',
+      "SELECT pg_sleep(30)",
+      "SELECT set_config('role', 'postgres', false)",
+      'WITH d AS (DELETE FROM "Client" RETURNING *) SELECT * FROM d',
+    ])
+      bad(s);
+  });
+  it("secret tables and columns are off limits", () => {
+    for (const s of ['SELECT * FROM "RefreshToken"', 'SELECT "passwordHash" FROM "User"', 'SELECT * FROM "ChangeLog"', 'SELECT * FROM "Tenant"', 'SELECT "email" FROM "User"'])
+      bad(s);
+    assert.ok(!/passwordHash|RefreshToken|ChangeLog|resetPasswordToken/.test(schemaForModel()), "schema shown to the model has no secrets");
+  });
+  it("refuses anyone who is not a super admin, before touching the database", async () => {
+    await assert.rejects(runFreeSql({ isSuperAdmin: false }, "SELECT 1", []), /super admin/);
+    await assert.rejects(runFreeSql({}, "SELECT 1", []), /super admin/);
+  });
+});

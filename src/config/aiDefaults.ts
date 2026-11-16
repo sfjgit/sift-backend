@@ -19,7 +19,8 @@ export const AI_DEFAULTS = {
   /** requests per minute per user (L7) */
   ratePerMin: {
     COMMAND: int(process.env.AI_RATE_COMMAND_PER_MIN, 30),
-    CANVAS: int(process.env.AI_RATE_CANVAS_PER_MIN, 10),
+    // a conversation: follow-ups, explain, page commands (most of them free)
+    CANVAS: int(process.env.AI_RATE_CANVAS_PER_MIN, 30),
   },
 
   /** prefilled per role by scripts/ai.seed.ts (spec §14.3) */

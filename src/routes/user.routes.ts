@@ -13,6 +13,7 @@ import {
   userOptionsQuery,
 } from "@/validators/user.validators";
 import {
+  getOrgTree,
   listUsers,
   getUserById,
   createUser,
@@ -32,6 +33,8 @@ router.post("/", authorize("users.create"), validate.body(createUserBody), creat
 
 // picker — any logged-in user; scope resolved in the controller. Before /:id.
 router.get("/options", validate.query(userOptionsQuery), listUserOptions);
+// the reporting tree — everyone sees their own line; users.read shows more
+router.get("/org-tree", getOrgTree);
 
 router.get("/:id", read, validate.params(idParams), getUserById);
 router.put("/:id", authorize("users.update"), validate.request({ params: idParams, body: updateUserBody }), updateUser);

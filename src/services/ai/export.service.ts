@@ -46,6 +46,31 @@ const safeSheet = (name: string, used: Set<string>) => {
 /** a block's data as header + rows (series and rows both become a table) */
 const tabular = (r: QueryResult): { columns: Column[]; rows: Record<string, unknown>[] } | null => {
   if (r.kind === "rows") return { columns: r.columns, rows: r.rows };
+  if (r.kind === "tree") {
+    // the org chart as a list, top down
+    const rows: Record<string, unknown>[] = [];
+    const byId = new Map<string, string>();
+    const walk = (n: (typeof r)["root"], boss: string | null) => {
+      const name = `${n.firstName} ${n.lastName ?? ""}`.trim();
+      byId.set(n.id, name);
+      if (!n.virtual) rows.push({ name, role: n.role.name, reportsTo: boss, teamSize: n.teamSize, clients: n.stats.clients, spocs: n.stats.spocs, openTasks: n.stats.openTasks, overdue: n.stats.overdue });
+      n.children.forEach((c) => walk(c, n.virtual ? null : name));
+    };
+    walk(r.root, null);
+    return {
+      columns: [
+        { key: "name", label: "Person", type: "text" },
+        { key: "role", label: "Role", type: "text" },
+        { key: "reportsTo", label: "Reports to", type: "text" },
+        { key: "teamSize", label: "People below", type: "number" },
+        { key: "clients", label: "Clients", type: "number" },
+        { key: "spocs", label: "SPOCs", type: "number" },
+        { key: "openTasks", label: "Open tasks", type: "number" },
+        { key: "overdue", label: "Overdue", type: "number" },
+      ],
+      rows,
+    };
+  }
   if (r.kind === "series") {
     const t = r.format === "money" ? "money" : r.format === "percent" ? "percent" : "number";
     return {

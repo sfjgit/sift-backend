@@ -1,5 +1,7 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { scopeArgs } from "./tenant";
+import { isTracked, trackedWrite, WRITE_OPS } from "./changes";
+import { metered } from "./meter";
 
 // Neon closes idle connections and suspends an idle database; the first query
 // after that fails with "Server has closed the connection" (P1017) or can't
@@ -34,8 +36,12 @@ const base = new PrismaClient();
 const prisma = base.$extends({
   query: {
     $allModels: {
-      async $allOperations({ model, operation, args: raw, query }) {
+      async $allOperations({ model, operation, args: raw, query: run }) {
         const args = scopeArgs(model, operation, raw) as typeof raw;
+        const query = (a: typeof args) => metered(() => run(a));
+        // every write keeps what it changed (recycle bin & undo — ./changes.ts)
+        if (WRITE_OPS.has(operation) && isTracked(model))
+          return trackedWrite(base, model!, operation, args as Record<string, unknown>, (a) => query(a as typeof args));
         if (!READS.has(operation)) return query(args);
         for (let i = 0; ; i++) {
           try {
