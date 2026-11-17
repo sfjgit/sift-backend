@@ -689,7 +689,7 @@ export const askThread = async (
       fromMemory = true;
       tier = "template";
     } else {
-      if ((await budgetState()).exhausted) {
+      if (!user.isSuperAdmin && (await budgetState()).exhausted) {
         outcome = "budget_exhausted";
         return done({ kind: "error", message: `${BASIC_MODE_MESSAGE} Your saved canvases and anything I have answered before still work.`, turn: null, turnTier: "local", save: false });
       }

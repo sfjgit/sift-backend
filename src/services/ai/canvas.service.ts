@@ -227,7 +227,7 @@ export const generateCanvas = async (user: AuthUser, perms: PermissionMap, promp
       outcome = "rejected_destructive";
       return done({ type: "rejected", message: `${READ_ONLY_MESSAGE} Canvas only builds read-only reports.` });
     }
-    if ((await budgetState()).exhausted) {
+    if (!user.isSuperAdmin && (await budgetState()).exhausted) {
       outcome = "budget_exhausted";
       return done({ type: "error", message: `${BASIC_MODE_MESSAGE} Saved canvas templates still work.` });
     }

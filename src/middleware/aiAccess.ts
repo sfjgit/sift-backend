@@ -74,6 +74,7 @@ export const aiRateLimit = (mode: Mode) =>
     windowMs: 60_000,
     limit: AI_DEFAULTS.ratePerMin[mode],
     keyGenerator: (req) => `ai:${mode}:${req.user.id}`, // AI routes always run after authenticateUser
+    skip: (req) => !!req.user?.isSuperAdmin, // the super admin is never limited
     standardHeaders: true,
     legacyHeaders: false,
     handler: (req, res) => {

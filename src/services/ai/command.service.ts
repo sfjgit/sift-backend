@@ -396,7 +396,7 @@ export const resolveCommand = async (user: AuthUser, perms: PermissionMap, input
       return done({ type: "search", q: input, message });
     };
 
-    if ((await budgetState()).exhausted) return fallback("budget", BASIC_MODE_MESSAGE);
+    if (!user.isSuperAdmin && (await budgetState()).exhausted) return fallback("budget", BASIC_MODE_MESSAGE);
     if (!llmConfigured()) return fallback("not_configured", "The AI isn't set up yet — searching instead.");
 
     // T3

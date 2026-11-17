@@ -3,8 +3,9 @@
 //
 // Usage quotas (spec §14). Most specific wins:
 //   user override  >  role policy  >  tenant default (roleId null)  >  aiDefaults
-// Super Admin is a role like any other — no exemption; "unlimited" (null) is an
-// explicit setting, not a bypass.
+// The super admin is never limited (17 Nov 2026, owner's call: they test the AI
+// all day) — no quota, no per-minute limit, no "monthly budget used up" mode.
+// Everyone else: "unlimited" (null) is an explicit setting, not a bypass.
 //
 // Counting: AiAuditLog is the source of truth (countsToQuota = true rows in the
 // period). No Redis in this stack, so a short in-memory cache keeps it cheap;
@@ -84,7 +85,9 @@ export interface QuotaState {
   resetsAt: Date | null;
 }
 
-export const quotaState = async (user: Pick<AuthUser, "id" | "roleId">, mode: AiUsageMode): Promise<QuotaState> => {
+export const quotaState = async (user: Pick<AuthUser, "id" | "roleId"> & { isSuperAdmin?: boolean }, mode: AiUsageMode): Promise<QuotaState> => {
+  // super admin: counted (for the usage page) but never stopped
+  if (user.isSuperAdmin) return { ok: true, used: await usedSince(user.id, mode, periodStart("DAY")), max: null, period: "DAY", resetsAt: null };
   const limits = await effectiveLimits(user, mode);
   let tightest: QuotaState = { ok: true, used: 0, max: null, period: null, resetsAt: null };
   let bestLeft = Infinity;
