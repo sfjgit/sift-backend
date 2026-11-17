@@ -441,7 +441,7 @@ export const listClients = async (req: Request, res: Response) => {
   if (!canFigures) {
     delete q.csrSpentMinCr;
     delete q.csrSpentMaxCr;
-    if (q.sortBy === "csrSpentRs") q.sortBy = "createdAt";
+    if (q.sortBy === "csrSpentRs" || q.sortBy === "csrFy") q.sortBy = "createdAt";
   }
   // programme filters need programme access
   if (!req.permissions!["client_programs.read"]) {
@@ -469,9 +469,16 @@ export const listClients = async (req: Request, res: Response) => {
       },
       // figures sort with blanks last, whichever direction
       orderBy:
-        q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount"
-          ? [{ [q.sortBy]: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
-          : { [q.sortBy]: q.sortDir },
+        q.sortBy === "csrFy"
+          ? // latest CSR year, then the bigger spend within a year
+            [
+              { csrFy: { sort: q.sortDir, nulls: "last" } },
+              { csrSpentRs: { sort: "desc", nulls: "last" } },
+              { name: "asc" },
+            ]
+          : q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount"
+            ? [{ [q.sortBy]: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
+            : { [q.sortBy]: q.sortDir },
       ...toSkipTake(q),
     }),
   ]);

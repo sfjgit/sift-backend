@@ -429,7 +429,8 @@ const notifyRunEnded = async (runId: string) => {
         severity: ok ? "SUCCESS" : run.status === "STOPPED" ? "INFO" : "ERROR",
         title: `${run.step.label} ${verb}`,
         body: ok ? run.client.name : `${run.client.name}: ${run.errorMessage ?? ""}`.trim(),
-        link,
+        // a finished run opens its results page (new / changed / already there)
+        link: run.status === "DONE" ? `/pipeline-runs/${run.id}` : link,
         referenceId: run.id,
         referenceType: "STEP_RUN",
       });

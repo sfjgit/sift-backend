@@ -23,6 +23,7 @@ import { ResultKind, stepDef } from "@/config/pipeline";
 import type { ResultsBody, ResultSpoc, ResultWebsite } from "@/validators/svc.validators";
 import { isTerminal, moveRun, recordEvent } from "./run.service";
 import { saveBranchOffices } from "./branchOffices.service";
+import { diffFields, MAX_CHANGES, norm, type ChangeRow } from "./changes";
 
 // claim marker: one delivery saves at a time; a second one waits for the retry
 const SAVING = "Saving results…";
@@ -40,6 +41,7 @@ type Ctx = {
   lookups: Map<string, Map<string, string>>; // type → code/label (lowercased) → id
   conflicts: Record<string, unknown>[];
   skipped: Record<string, unknown>[];
+  changes: ChangeRow[]; // what happened to each row → the results page
 };
 
 const loadLookups = async () => {
@@ -159,6 +161,17 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
     }
     const emailSourceId = fill.email ? lookupId(ctx, "EMAIL_SOURCE", s.emailSource) : null;
     const filled = Object.keys(fill);
+    const mine = ctx.conflicts.filter((c) => c.spocId === existing!.id && c.current !== undefined);
+    if (mine.length) {
+      ctx.changes.push({
+        kind: "spocs",
+        change: "kept",
+        id: existing.id,
+        label,
+        sub: existing.designation,
+        fields: mine.map((c) => ({ field: String(c.field), from: norm(c.current), to: norm(c.proposed) })),
+      });
+    }
     const sources = filled.length && s.fieldSources
       ? { ...((existing.fieldSources as Record<string, unknown>) ?? {}),
           ...Object.fromEntries(filled.filter((f) => s.fieldSources![f]).map((f) => [f, s.fieldSources![f]])) }
@@ -171,7 +184,23 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
       ...validation,
       ...review,
     };
-    if (!Object.keys(data).length) return "unchanged";
+    if (!Object.keys(data).length) {
+      ctx.changes.push({ kind: "spocs", change: "same", id: existing.id, label, sub: existing.designation });
+      return "unchanged";
+    }
+    const scoreChange =
+      s.validation?.score !== undefined && norm(existing.validationScore) !== norm(s.validation.score)
+        ? [{ field: "score", from: norm(existing.validationScore), to: norm(s.validation.score) }]
+        : [];
+    const fieldChanges = [...filled.map((f) => ({ field: f, from: null, to: norm(fill[f]) })), ...scoreChange];
+    ctx.changes.push({
+      kind: "spocs",
+      change: fieldChanges.length ? "updated" : "same",
+      id: existing.id,
+      label,
+      sub: existing.designation,
+      fields: fieldChanges,
+    });
 
     await prisma.$transaction(async (tx) => {
       await tx.clientSpoc.update({ where: { id: existing!.id }, data });
@@ -233,6 +262,7 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
       } as Prisma.ClientSpocUncheckedCreateInput,
       select: { id: true },
     });
+    ctx.changes.push({ kind: "spocs", change: "added", id: created.id, label, sub: s.designation ?? null });
     await logClientActivity(tx, {
       clientId: ctx.clientId,
       spocId: created.id,
@@ -247,6 +277,20 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
 
 // ── per kind ─────────────────────────────────────────────────────────────────
 
+const FIN_FIELDS = ["obligationRs", "budgetRs", "spentRs", "unspentRs"] as const;
+const PROGRAM_FIELDS = [
+  "budgetRs",
+  "spentRs",
+  "unspentTransferredRs",
+  "sectorText",
+  "beneficiaries",
+  "duration",
+  "isOngoing",
+  "isLocalArea",
+  "locationNote",
+  "mode",
+] as const;
+
 const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["financials"], flagged: unknown[]) => {
   let saved = 0;
   let locked = 0;
@@ -259,6 +303,13 @@ const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["
     if (cur?.isLocked) {
       locked++;
       ctx.skipped.push({ kind: "financials", fy: f.fy, reason: "Figures are locked by a person" });
+      ctx.changes.push({
+        kind: "financials",
+        change: "locked",
+        id: cur.id,
+        label: `FY ${f.fy}`,
+        fields: diffFields(cur, f, FIN_FIELDS),
+      });
       continue;
     }
     const values = {
@@ -270,10 +321,19 @@ const saveFinancials = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["
       confidence: f.confidence === undefined || f.confidence === null ? null : Math.min(1, Math.max(0, f.confidence)),
       sourceRunId: ctx.runId,
     };
-    await prisma.clientCsrFinancial.upsert({
+    const row = await prisma.clientCsrFinancial.upsert({
       where: { clientId_fy: { clientId: ctx.clientId, fy: f.fy } },
       create: { clientId: ctx.clientId, fy: f.fy, ...values },
       update: values,
+      select: { id: true },
+    });
+    const fields = diffFields(cur, values, FIN_FIELDS);
+    ctx.changes.push({
+      kind: "financials",
+      change: !cur ? "added" : fields.length ? "updated" : "same",
+      id: row.id,
+      label: `FY ${f.fy}`,
+      fields: cur ? fields : [],
     });
     saved++;
   }
@@ -299,11 +359,12 @@ const savePrograms = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["pr
     const nameKey = csrNameKey(p.name);
     const cur = await prisma.clientCsrProgram.findUnique({
       where: { clientId_fy_nameKey: { clientId: ctx.clientId, fy: p.fy, nameKey } },
-      select: { id: true, isLocked: true },
+      select: { id: true, isLocked: true, ...Object.fromEntries(PROGRAM_FIELDS.map((f) => [f, true])) },
     });
     if (cur?.isLocked) {
       locked++;
       ctx.skipped.push({ kind: "programs", fy: p.fy, name: p.name, reason: "Programme is locked by a person" });
+      ctx.changes.push({ kind: "programs", change: "locked", id: cur.id, label: p.name, sub: `FY ${p.fy}` });
       continue;
     }
 
@@ -343,6 +404,15 @@ const savePrograms = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["pr
           data: { clientId: ctx.clientId, fy: p.fy, nameKey, ...values },
           select: { id: true },
         });
+    const fields = diffFields(cur as Record<string, unknown> | null, values, PROGRAM_FIELDS);
+    ctx.changes.push({
+      kind: "programs",
+      change: !cur ? "added" : fields.length ? "updated" : "same",
+      id: row.id,
+      label: p.name,
+      sub: `FY ${p.fy}`,
+      fields: cur ? fields : [],
+    });
     await replaceProgramLinks(prisma, row.id, {
       sectorIds,
       // structured places only when sent — free text alone keeps what's there
@@ -370,6 +440,10 @@ const saveDocuments = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["d
       ctx.skipped.push({ kind: "documents", type: d.type, fy: d.fy, reason: "Unknown document type" });
       continue;
     }
+    const cur = await prisma.clientDocument.findUnique({
+      where: { clientId_typeId_fy: { clientId: ctx.clientId, typeId, fy: d.fy } },
+      select: { fileKey: true, fileName: true, sha256: true },
+    });
     const values = {
       fileKey: d.fileKey,
       fileName: d.fileName ?? null,
@@ -377,10 +451,20 @@ const saveDocuments = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["d
       sha256: d.sha256 ?? null,
       sourceRunId: ctx.runId,
     };
-    await prisma.clientDocument.upsert({
+    const doc = await prisma.clientDocument.upsert({
       where: { clientId_typeId_fy: { clientId: ctx.clientId, typeId, fy: d.fy } },
       create: { clientId: ctx.clientId, typeId, fy: d.fy, ...values },
       update: values,
+      select: { id: true },
+    });
+    const sameFile = !!cur && (cur.fileKey === d.fileKey || (!!cur.sha256 && cur.sha256 === d.sha256));
+    ctx.changes.push({
+      kind: "documents",
+      change: !cur ? "added" : sameFile ? "same" : "updated",
+      id: doc.id,
+      label: d.type,
+      sub: `FY ${d.fy}`,
+      fields: cur && !sameFile ? [{ field: "file", from: cur.fileName, to: d.fileName ?? null }] : [],
     });
     saved++;
   }
@@ -429,6 +513,7 @@ const saveOutreach = async (ctx: Ctx, rows: NonNullable<ResultsBody["data"]>["ou
         meta: { runId: ctx.runId },
       });
     });
+    ctx.changes.push({ kind: "outreach", change: "added", id: spoc.id, label: nameOf(spoc), sub: `${o.messages.length} mails` });
     packs++;
   }
   return { packs };
@@ -485,6 +570,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     lookups: await loadLookups(),
     conflicts: [],
     skipped: [],
+    changes: [],
   };
   const data = body.data ?? {};
   const summary: Record<string, unknown> = {};
@@ -539,7 +625,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     }
     // offices from the client's website → its locations (ones it already has are skipped)
     if (allowed.has("locations") && data.locations?.length) {
-      summary.locations = await saveBranchOffices(ctx, data.locations);
+      summary.locations = await saveBranchOffices(ctx, data.locations, ctx.changes);
     }
   } catch (e) {
     // release the claim so the engine's retry (or the reconciler) can try again
@@ -562,6 +648,7 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
     conflicts: ctx.conflicts,
     skipped: ctx.skipped,
     flaggedFigures,
+    changes: ctx.changes.slice(0, MAX_CHANGES),
     ...(websiteFound && { website: websiteFound }),
     ...(body.viewData && { engine: body.viewData }),
   };

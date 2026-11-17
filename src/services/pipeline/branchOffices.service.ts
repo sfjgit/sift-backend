@@ -11,6 +11,7 @@ import { FINDER_LOCATION_TYPE } from "@/config/pipeline";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { normaliseLocation } from "@/services/geo.service";
 import type { ResultLocation } from "@/validators/svc.validators";
+import type { ChangeRow } from "./changes";
 
 const PIN = /(?<!\d)([1-9]\d{2}) ?(\d{3})(?! ?\d)/g;
 const IGNORE = new Set(["pin", "code", "pincode", "india", "no", "the", "of", "and", "at", "is", "office"]);
@@ -49,17 +50,20 @@ export const sameOffice = (
 export const saveBranchOffices = async (
   ctx: { runId: string; clientId: string; requestedById: string },
   rows: ResultLocation[],
+  changes: ChangeRow[] = [],
 ) => {
   const [existing, types, primaries] = await Promise.all([
     prisma.clientLocation.findMany({
       where: { clientId: ctx.clientId, isActive: true },
-      select: { addressLine: true, city: true, pincode: true },
+      select: { id: true, name: true, addressLine: true, city: true, pincode: true },
     }),
     prisma.lookup.findMany({ where: { type: "LOCATION_TYPE" }, select: { id: true, code: true } }),
     prisma.clientLocation.count({ where: { clientId: ctx.clientId, isActive: true, isPrimary: true } }),
   ]);
   const typeId = new Map(types.map((t) => [t.code, t.id]));
-  const known = existing.map((l) => ({
+  const known: { id: string; label: string; address: string; pincode: string | null }[] = existing.map((l) => ({
+    id: l.id,
+    label: l.name ?? l.city ?? "Office",
     address: [l.addressLine, l.city, l.pincode].filter(Boolean).join(", "),
     pincode: l.pincode ?? pinOf(l.addressLine),
   }));
@@ -68,17 +72,20 @@ export const saveBranchOffices = async (
 
   for (const r of rows) {
     const office = { address: r.address, pincode: r.pincode ?? pinOf(r.address) };
-    if (known.some((k) => sameOffice(k, office))) {
+    const match = known.find((k) => sameOffice(k, office));
+    if (match) {
       counts.alreadySaved++;
+      changes.push({ kind: "offices", change: "same", id: match.id, label: match.label, sub: match.address });
       continue;
     }
     const code = FINDER_LOCATION_TYPE[(r.type ?? "").toUpperCase()] ?? "OFFICE";
     const isPrimary = !hasPrimary && code === "HQ";
-    await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
       if (isPrimary) {
         await tx.clientLocation.updateMany({ where: { clientId: ctx.clientId, isPrimary: true }, data: { isPrimary: false } });
       }
-      await tx.clientLocation.create({
+      return tx.clientLocation.create({
+        select: { id: true },
         data: {
           ...normaliseLocation({ state: r.state ?? null, country: "India" }),
           clientId: ctx.clientId,
@@ -97,7 +104,8 @@ export const saveBranchOffices = async (
       });
     });
     if (isPrimary) hasPrimary = true;
-    known.push(office);
+    known.push({ ...office, id: created.id, label: r.label ?? "Office" });
+    changes.push({ kind: "offices", change: "added", id: created.id, label: r.label ?? r.district ?? "Office", sub: r.address });
     counts.saved++;
   }
 

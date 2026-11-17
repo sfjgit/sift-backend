@@ -26,6 +26,8 @@ import { computeClientStats } from "@/controller/client.controller";
 import { resolveCommand } from "@/services/ai/command.service";
 import { askThread, isExplainRequest, isNewThreadRequest, startPresetThread, type ThreadReply } from "@/services/ai/thread.service";
 import { logAi } from "@/services/ai/audit.service";
+import { extractEntities } from "@/services/ai/entities.service";
+import { definitionAsked } from "@/services/ai/glossary";
 import { ACTION_RE, planAction, type ActionProposal } from "@/services/ai/action.service";
 
 export interface PageContext {
@@ -346,6 +348,45 @@ const spocsReport = (clientId?: string): PresetBlock[] => {
   ];
 };
 
+/** one client: its row, CSR by year, its programmes' money, its SPOCs */
+const clientReport = (clientId: string): PresetBlock[] => [
+  { component: "table", query: "clients_list", params: { clientId, limit: 1 }, title: "Client", width: "full" },
+  { component: "kpi", query: "csr_total", params: { metric: "spent", clientId }, title: "CSR spent (latest year)", width: "third" },
+  { component: "kpi", query: "csr_total", params: { metric: "obligation", clientId }, title: "CSR obligation (latest year)", width: "third" },
+  { component: "kpi", query: "spocs_count", params: { clientId }, title: "SPOCs", width: "third" },
+  { component: "bar", query: "csr_by_fy", params: { clientId }, title: "CSR by financial year", width: "half" },
+  { component: "bar", query: "spocs_by", params: { by: "sales_status", clientId }, title: "SPOCs by sales status", width: "half" },
+  { component: "table", query: "spocs_list", params: { clientId, limit: 100 }, title: "SPOCs of this client", width: "full" },
+];
+
+// ── a client named on its own ────────────────────────────────────────────────
+// "open Infosys" → its page; "Infosys details", "3FIVE8 … report of this client
+// alone" → a report on that client only. Read from the names in the CRM, no AI.
+
+const OPEN_VERB = /\b(open|go to|goto|take me to|navigate to|jump to|visit)\b/i;
+const CLIENT_REPORT_WORD = /\b(report|reports|details?|detailed|summary|overview|profile|info|information|data|everything|canvas)\b/i;
+const FILLER_WORDS = new Set(
+  ("please pls kindly can could would you me i want to see show open go goto take navigate jump visit get give bring pull up " +
+    "the a an of about for on this that client company account alone only just generate make create build prepare full complete " +
+    "detailed detail details report reports summary overview profile info information data everything page canvas all its it " +
+    "with and in here now quickly").split(" "),
+);
+
+const namedClient = async (text: string) => {
+  const ex = await extractEntities(text);
+  const clients = ex.entities.filter((e) => e.kind === "client");
+  if (clients.length !== 1 || ex.entities.length !== 1) return null;
+  const rest = ex.masked
+    .replace(clients[0]!.ph, " ")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!rest.every((w) => FILLER_WORDS.has(w))) return null;
+  const words = rest.join(" ");
+  return { id: clients[0]!.value!, label: clients[0]!.label, open: OPEN_VERB.test(words) && !CLIENT_REPORT_WORD.test(words), report: CLIENT_REPORT_WORD.test(words) };
+};
+
 const presetFor = (page: Page, filters: Record<string, string>): { title: string; blocks: PresetBlock[]; note: string } | null => {
   if (page.kind === "clients") {
     const cf = clientFilterParams(filters);
@@ -359,7 +400,7 @@ const presetFor = (page: Page, filters: Record<string, string>): { title: string
   }
   if (page.kind === "spocs")
     return { title: "SPOCs report", blocks: spocsReport(), note: `Built a SPOCs report.${filterCount(filters) ? " Note: it covers all your SPOCs — the page filters aren't applied to reports yet." : ""}` };
-  if (page.kind === "client") return { title: "Client report", blocks: spocsReport(page.id), note: "Built a report of this client's SPOCs." };
+  if (page.kind === "client") return { title: "Client report", blocks: clientReport(page.id), note: "Built a report of this client: CSR by year and its SPOCs." };
   if (page.kind === "spoc") return null;
   return {
     title: "CRM overview",
@@ -521,6 +562,26 @@ export const assist = async (
     return local("clarify", inCanvasOf(body) ? "Say “go back” or “previous canvas” and I'll open your earlier report." : "Say “go back” and I'll take you to the previous screen.");
 
   const inCanvas = !!body.page.inCanvas;
+
+  // 0. "what is CSR obligation?" off the canvas — the meaning, free (the canvas adds its own figures)
+  const term = !inCanvas && !body.page.canvasShown ? definitionAsked(said) : null;
+  if (term) return free("glossary", local("explain", `**${term.term}** is ${term.text}`));
+
+  // 0. a client by name: "open X" → its page, "X details / report" → a report on X alone (free)
+  const named = await namedClient(said);
+  if (named && perms["clients.read"]) {
+    const url = `/clients/${named.id}`;
+    if (named.open || (!named.report && !inCanvas))
+      return free("open_client", local("canvas", `Opening ${named.label}.`, { type: "navigate", url, samePage: page.path === url }));
+    const r = await startPresetThread(user, perms, {
+      prompt,
+      page: body.page.path,
+      title: named.label,
+      message: `${named.label}: its details, CSR by year and SPOCs. Say “open ${named.label}” to go to its page.`,
+      blocks: clientReport(named.id),
+    });
+    if (r) return free("client_report", r);
+  }
 
   // 1. clear filters — on the page, free (inside the canvas it means the report's filters)
   if (CLEAR_RE.test(prompt) && !inCanvas && (page.kind === "spocs" || page.kind === "clients")) {

@@ -24,7 +24,10 @@ export type EntityKind =
   | "user"
   | "client"
   | "date_range"
-  | "fy";
+  | "fy"
+  /** a place as the user said it ("Bangalore") — reports match its other spellings */
+  | "city"
+  | "state";
 
 export interface Entity {
   /** placeholder as it appears in the masked text, e.g. "{industry_1}" */
@@ -63,6 +66,15 @@ const COMMON_WORDS = new Set([
   "pending", "april", "may", "june", "july", "august", "summer", "grace", "hope", "joy", "will",
   "mark", "bill", "faith", "dawn", "rose", "victor", "sunny", "honey", "lucky", "happy", "prince",
 ]);
+// names people say that the stored addresses may spell differently
+const PLACE_OTHER_NAMES: [string, "city" | "state"][] = [
+  ["Bangalore", "city"], ["Bengaluru", "city"], ["Bombay", "city"], ["Mumbai", "city"], ["Madras", "city"], ["Chennai", "city"],
+  ["Calcutta", "city"], ["Kolkata", "city"], ["Gurgaon", "city"], ["Gurugram", "city"], ["Pune", "city"], ["Hyderabad", "city"],
+  ["Delhi", "city"], ["New Delhi", "city"], ["Noida", "city"], ["Mysore", "city"], ["Mysuru", "city"], ["Mangalore", "city"],
+  ["Karnataka", "state"], ["Maharashtra", "state"], ["Tamil Nadu", "state"], ["Telangana", "state"], ["Kerala", "state"],
+  ["Gujarat", "state"], ["Haryana", "state"], ["Uttar Pradesh", "state"], ["West Bengal", "state"], ["Odisha", "state"],
+];
+
 // legal suffixes dropped to make a second, shorter alias ("Infosys Limited" → "infosys")
 const SUFFIX_RE =
   /\s+(limited|ltd\.?|private|pvt\.?|pvt\.? ltd\.?|private limited|llp|inc\.?|corp\.?|corporation|company|co\.?)$/i;
@@ -87,7 +99,7 @@ const put = (dict: Map<string, DictEntry>, label: string, e: Omit<DictEntry, "ca
 
 const buildDictionary = async (): Promise<Map<string, DictEntry>> => {
   const db = aiDb();
-  const [lookups, bus, sls, depts, users, clients] = await Promise.all([
+  const [lookups, bus, sls, depts, users, clients, places] = await Promise.all([
     db.lookup.findMany({ where: { isActive: true }, select: { id: true, type: true, label: true } }),
     db.businessUnit.findMany({ where: { isActive: true }, select: { id: true, name: true, code: true } }),
     db.serviceLine.findMany({ where: { isActive: true }, select: { id: true, name: true, code: true } }),
@@ -97,6 +109,12 @@ const buildDictionary = async (): Promise<Map<string, DictEntry>> => {
       select: { id: true, firstName: true, lastName: true, displayName: true },
     }),
     db.client.findMany({ where: { deletedAt: null }, select: { id: true, name: true, shortName: true }, take: 50_000 }),
+    db.clientLocation.findMany({
+      where: { isActive: true },
+      distinct: ["city", "district", "state"],
+      select: { city: true, district: true, state: true },
+      take: 20_000,
+    }),
   ]);
 
   // priority = insertion order: people, org units, pick-lists, then clients
@@ -122,11 +140,39 @@ const buildDictionary = async (): Promise<Map<string, DictEntry>> => {
   }
   for (const d of depts) put(dict, d.name, { kind: "department", value: d.id });
   for (const l of lookups) put(dict, l.label, { kind: `lookup:${l.type}`, value: l.id });
+  // places from the clients' offices (+ old names people still say), before client names
+  const placeOk = (p: string | null) => !!p && p.trim().length >= 4 && !COMMON_WORDS.has(p.trim().toLowerCase());
+  for (const pl of places) {
+    if (placeOk(pl.state)) put(dict, pl.state!, { kind: "state", value: pl.state!.trim() });
+    for (const c of [pl.city, pl.district]) if (placeOk(c)) put(dict, c!.replace(/\s+(urban|rural)$/i, ""), { kind: "city", value: c!.replace(/\s+(urban|rural)$/i, "").trim() });
+  }
+  for (const alt of PLACE_OTHER_NAMES) put(dict, alt[0], { kind: alt[1], value: alt[0] });
+  // leading words of a client's name, 2+ words, when only that client starts that way
+  const prefixOwners = new Map<string, Set<string>>();
+  const words = (name: string) => name.replace(SUFFIX_RE, "").replace(SUFFIX_RE, "").toLowerCase().replace(/[^\p{L}\p{N}&]+/gu, " ").trim().split(" ");
+  for (const c of clients) {
+    const w = words(c.name);
+    for (let n = 2; n < w.length; n++) {
+      const k = w.slice(0, n).join(" ");
+      if (!prefixOwners.has(k)) prefixOwners.set(k, new Set());
+      prefixOwners.get(k)!.add(c.id);
+    }
+  }
   for (const c of clients) {
     put(dict, c.name, { kind: "client", value: c.id });
     const short = c.name.replace(SUFFIX_RE, "").trim();
     if (short.length >= 4 && short !== c.name) put(dict, short, { kind: "client", value: c.id });
     if (c.shortName && c.shortName.length >= 3) put(dict, c.shortName, { kind: "client", value: c.id });
+  }
+  const nameById = new Map(clients.map((c) => [c.id, c.name]));
+  for (const [k, owners] of prefixOwners) {
+    if (owners.size !== 1 || k.length < 6) continue;
+    const id = [...owners][0]!;
+    const name = nameById.get(id)!;
+    put(dict, k, { kind: "client", value: id });
+    // shown as the real name, not the words typed
+    const e = dict.get(k);
+    if (e && e.value === id) e.label = name;
   }
   return dict;
 };
@@ -163,7 +209,60 @@ const addDays = (d: Date, n: number) => {
   x.setDate(x.getDate() + n);
   return x;
 };
-const fyLabel = (startYear: number) => `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+/** the FY as CSR figures store it: 2025 → "2025-2026" */
+const fyLabel = (startYear: number) => `${startYear}-${startYear + 1}`;
+/** the FY that is running now (April–March) */
+const currentFyStart = (n: Date) => (n.getMonth() >= 3 ? n.getFullYear() : n.getFullYear() - 1);
+/** "2025" + "26" / "2026" → the second year really follows the first */
+const follows = (a: number, b: string) => (b.length === 2 ? Number(b) === (a + 1) % 100 : Number(b) === a + 1);
+
+// the request is about CSR money → "this year" means a financial year, not the calendar
+const CSR_CONTEXT = /\b(csr|spent|spend|spends|spending|budget|budgets|obligation|unspent|programmes?|programs?|financials?|figures?)\b/i;
+
+// "CSR spent / budget / programmes" — here CSR is the money, not a service line or lookup called "CSR"
+const CSR_MONEY = /\b(spent|spend|spends|spending|budget|budgets|obligation|unspent|programmes?|programs?|financials?|figures?|activities|activity|projects?)\b/i;
+
+// financial years — read before the calendar patterns
+const FY_PATTERNS: { re: RegExp; csrOnly?: boolean; make: (m: RegExpMatchArray, now: Date) => { fy: string; label: string } | null }[] = [
+  {
+    re: /\b(?:this|current|running) (?:fy|financial year)\b/i,
+    make: (_, n) => ({ fy: fyLabel(currentFyStart(n)), label: `FY ${currentFyStart(n)}-${String((currentFyStart(n) + 1) % 100).padStart(2, "0")} (current)` }),
+  },
+  {
+    re: /\b(?:last|previous|prev|past) (?:fy|financial year)\b/i,
+    make: (_, n) => ({ fy: fyLabel(currentFyStart(n) - 1), label: `FY ${currentFyStart(n) - 1}-${String(currentFyStart(n) % 100).padStart(2, "0")}` }),
+  },
+  // CSR is reported after the year ends: "CSR spent this year" = the latest FULL year (2025-26 in Nov 2026),
+  // "last year" = the one before. The running year is asked for as "this FY" / "current financial year".
+  {
+    re: /\b(?:this|current) year\b/i,
+    csrOnly: true,
+    make: (_, n) => {
+      const y = currentFyStart(n) - 1;
+      return { fy: fyLabel(y), label: `FY ${y}-${String((y + 1) % 100).padStart(2, "0")} (latest full year)` };
+    },
+  },
+  {
+    re: /\b(?:last|previous) year\b/i,
+    csrOnly: true,
+    make: (_, n) => {
+      const y = currentFyStart(n) - 2;
+      return { fy: fyLabel(y), label: `FY ${y}-${String((y + 1) % 100).padStart(2, "0")}` };
+    },
+  },
+  // "2025-26", "2025 26", "2025-2026", "2025 to 2026"
+  {
+    re: /\b(20\d{2})\s*(?:-|\/|–|to|\s)\s*(20\d{2}|\d{2})\b(?![-/]\d)/i,
+    make: (m) => (follows(Number(m[1]), m[2]!) ? { fy: fyLabel(Number(m[1])), label: `FY ${m[1]}-${m[2]!.slice(-2)}` } : null),
+  },
+  // "25-26" — only when the talk is about CSR money
+  {
+    re: /\b(\d{2})\s?[-/]\s?(\d{2})\b(?![-/]\d)/,
+    csrOnly: true,
+    make: (m) => (follows(2000 + Number(m[1]), m[2]!) ? { fy: fyLabel(2000 + Number(m[1])), label: `FY ${m[1]}-${m[2]}` } : null),
+  },
+];
+
 
 const DATE_PATTERNS: DateHit[] = [
   { re: /\btoday\b/i, make: (_, n) => ({ from: iso(n), to: iso(n) }) },
@@ -194,7 +293,6 @@ const DATE_PATTERNS: DateHit[] = [
       return { fy: fyLabel(m[2] ? a : a - 1) };
     },
   },
-  { re: /\b(20\d{2})\s?[-/]\s?(\d{2})\b(?![-/]\d)/, make: (m) => ({ fy: fyLabel(Number(m[1])) }) },
   {
     re: new RegExp(`\\b(since|after|from|before|until|till|in|during) ${MON_RE}(?:,? (20\\d{2}))?\\b`, "i"),
     make: (m, n) => {
@@ -221,7 +319,8 @@ const DATE_PATTERNS: DateHit[] = [
 
 // ── extraction ───────────────────────────────────────────────────────────────
 
-export const extractEntities = async (input: string, now = new Date()): Promise<Extraction> => {
+/** places = read city / state names too (the report canvas, whose queries filter by them) */
+export const extractEntities = async (input: string, now = new Date(), opts: { places?: boolean } = {}): Promise<Extraction> => {
   const entities: Entity[] = [];
   const counters = new Map<string, number>();
   const next = (kind: EntityKind) => {
@@ -231,8 +330,27 @@ export const extractEntities = async (input: string, now = new Date()): Promise<
     return `{${s}_${n}}`;
   };
 
-  // 1. dates first (they contain ordinary words like "may")
+  // 1. dates first (they contain ordinary words like "may") — financial years before calendar ones
   let text = input.replace(/\s+/g, " ").trim().replace(/[{}]/g, "");
+  const csr = CSR_CONTEXT.test(text);
+  for (const p of FY_PATTERNS) {
+    if (p.csrOnly && !csr) continue;
+    let from = 0;
+    for (;;) {
+      const m = text.slice(from).match(p.re);
+      if (!m || m.index === undefined) break;
+      const at = from + m.index;
+      const made = p.make(m, now);
+      if (!made) {
+        from = at + m[0].length; // "2025 30" is not a year pair — look further on
+        continue;
+      }
+      const ph = next("fy");
+      entities.push({ ph, kind: "fy", value: made.fy, label: made.label });
+      text = `${text.slice(0, at)}${ph}${text.slice(at + m[0].length)}`;
+      from = at + ph.length;
+    }
+  }
   for (const p of DATE_PATTERNS) {
     for (;;) {
       const m = text.match(p.re);
@@ -250,6 +368,7 @@ export const extractEntities = async (input: string, now = new Date()): Promise<
 
   // 2. dictionary entities, longest n-gram first
   const dict = await dictionary();
+  const moneyTalk = CSR_MONEY.test(text);
   const tokens = text.split(" ");
   const out: string[] = [];
   const seen = new Map<string, string>(); // kind:value → placeholder (same thing twice = same ph)
@@ -261,6 +380,8 @@ export const extractEntities = async (input: string, now = new Date()): Promise<
       if (!trimmed || trimmed.startsWith("{")) continue;
       const hit = dict.get(trimmed.toLowerCase());
       if (!hit || (hit.caseSensitive && trimmed !== hit.label)) continue;
+      if (trimmed.toLowerCase() === "csr" && moneyTalk) continue;
+      if ((hit.kind === "city" || hit.kind === "state") && !opts.places) continue;
       const key = `${hit.kind}:${hit.value}`;
       let ph = seen.get(key);
       if (!ph) {

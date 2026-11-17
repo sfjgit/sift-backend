@@ -87,12 +87,28 @@ export interface QueryDef<P extends z.ZodTypeAny = z.ZodTypeAny> {
 const id = z.string().uuid();
 const ids = z.union([id, z.array(id).max(20)]).transform((v) => (Array.isArray(v) ? v : [v]));
 const range = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict();
-const fy = z.string().regex(/^\d{4}-\d{2}$/);
+/**
+ * CSR figures are stored as "2025-2026". The assistant may say "2025-26",
+ * "2025 26" or "2025-2026" — all mean the same year. "latest" = the newest
+ * year that has figures (same as leaving fy out).
+ */
+export const toDbFy = (v: string): string | undefined => {
+  const t = v.trim().toLowerCase();
+  if (t === "latest") return undefined;
+  const m = t.match(/^(?:fy\s*)?(20\d{2})\s*(?:-|\/|–|to|\s)\s*(?:20)?\d{2}$/);
+  return m ? `${m[1]}-${Number(m[1]) + 1}` : t;
+};
+const fy = z
+  .string()
+  .transform(toDbFy)
+  .pipe(z.string().regex(/^\d{4}-\d{4}$/).optional());
 const top = z.number().int().min(1).max(50);
 /** a place name as the user said it ("Bengaluru", "Maharashtra") — matched with its other spellings */
 const place = z.string().trim().min(2).max(60);
 
 const clientFilter = {
+  /** one or a few named clients ("open Infosys", "this client alone") */
+  clientId: ids.optional(),
   status: z.enum(Object.values($Enums.ClientStatus) as [string, ...string[]]).optional(),
   industryId: ids.optional(),
   categoryId: ids.optional(),
@@ -106,7 +122,7 @@ const clientFilter = {
   city: place.optional(),
 };
 const CLIENT_FILTER_DOC =
-  "status (PENDING|ACTIVE|INACTIVE), industryId ({industry_N}), categoryId ({client_category_N}), businessUnitId ({business_unit_N}), entityType (COMPANY|GOVERNMENT|INSTITUTION), added ({date_range_N}), owner (me = assigned to me | team = me and my team), assignedToId ({user_N}), state (office state, as the user said it), city (office city, as the user said it)";
+  "clientId ({client_N} — the named client(s) only), status (PENDING|ACTIVE|INACTIVE), industryId ({industry_N}), categoryId ({client_category_N}), businessUnitId ({business_unit_N}), entityType (COMPANY|GOVERNMENT|INSTITUTION), added ({date_range_N}), owner (me = assigned to me | team = me and my team), assignedToId ({user_N}), state (office state, as the user said it), city (office city, as the user said it)";
 
 type ClientFilter = { [K in keyof typeof clientFilter]?: z.infer<(typeof clientFilter)[K]> };
 
@@ -169,6 +185,7 @@ const clientWhere = async (ctx: QueryCtx, f: ClientFilter): Promise<Prisma.Clien
     AND: [
       scope,
       { deletedAt: null },
+      f.clientId ? { id: { in: f.clientId } } : {},
       f.status ? { status: f.status as $Enums.ClientStatus } : {},
       f.industryId ? { industryId: { in: f.industryId } } : {},
       f.categoryId ? { categoryId: { in: f.categoryId } } : {},
@@ -454,7 +471,12 @@ const BUSINESS = [
         take: 100_000,
       });
       const by = new Map<string, { obligation: number; budget: number; spent: number }>();
+      // a figure no client has (obligation is often missing) is left out, not drawn as ₹0
+      const has = { obligation: false, budget: false, spent: false };
       for (const r of rows) {
+        if (r.obligationRs !== null) has.obligation = true;
+        if (r.budgetRs !== null) has.budget = true;
+        if (r.spentRs !== null) has.spent = true;
         const b = by.get(r.fy) ?? { obligation: 0, budget: 0, spent: 0 };
         b.obligation += num(r.obligationRs) ?? 0;
         b.budget += num(r.budgetRs) ?? 0;
@@ -464,12 +486,16 @@ const BUSINESS = [
       return {
         kind: "series",
         format: "money",
-        series: [
-          { key: "obligation", label: "Obligation" },
-          { key: "budget", label: "Budget" },
-          { key: "spent", label: "Spent" },
-        ],
-        points: [...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, v]) => ({ label, ...v })),
+        series: (
+          [
+            { key: "obligation", label: "Obligation" },
+            { key: "budget", label: "Budget" },
+            { key: "spent", label: "Spent" },
+          ] as const
+        ).filter((x) => has[x.key]).map((x) => ({ ...x })),
+        points: [...by.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([label, v]) => ({ label, ...Object.fromEntries(Object.entries(v).filter(([k]) => has[k as keyof typeof has])) })),
       };
     },
   }),
@@ -513,6 +539,70 @@ const BUSINESS = [
     },
   }),
   q({
+    name: "csr_by",
+    label: "CSR money grouped",
+    description: "A CSR figure (default spent) summed per industry / category / business unit / office state, for one financial year (default: latest). Use for \"CSR spent by industry\".",
+    permission: "client_financials.read",
+    returns: "series",
+    params: z
+      .object({
+        by: z.enum(["industry", "category", "business_unit", "state"]),
+        metric: z.enum(["spent", "budget", "obligation", "unspent"]).optional(),
+        fy: fy.optional(),
+        top: top.optional(),
+        ...clientFilter,
+      })
+      .strict(),
+    paramDoc: `by (required: industry|category|business_unit|state), metric (spent|budget|obligation|unspent, default spent), fy ({fy_N}), top (1-50), ${CLIENT_FILTER_DOC}`,
+    llm: true,
+    run: async (ctx, p) => {
+      const client = await clientWhere(ctx, p);
+      const year = p.fy ?? (await latestFy(ctx, client));
+      const field = `${p.metric ?? "spent"}Rs` as "spentRs" | "budgetRs" | "obligationRs" | "unspentRs";
+      if (!year) return { kind: "series", format: "money", series: [{ key: "value", label: "CSR" }], points: [] };
+      const rows = await ctx.db.clientCsrFinancial.findMany({
+        where: { client, fy: year, [field]: { not: null } },
+        select: {
+          [field]: true,
+          client: {
+            select: {
+              industryId: true,
+              categoryId: true,
+              businessUnitId: true,
+              locations: { where: { isActive: true }, orderBy: { isPrimary: "desc" }, take: 1, select: { state: true } },
+            },
+          },
+        },
+        take: 50_000,
+      });
+      const keyOf = (c: { industryId: string | null; categoryId: string | null; businessUnitId: string | null; locations: { state: string | null }[] }) =>
+        p.by === "industry" ? c.industryId : p.by === "category" ? c.categoryId : p.by === "business_unit" ? c.businessUnitId : (c.locations[0]?.state ?? null);
+      const sums = new Map<string, number>();
+      for (const r of rows as unknown as Record<string, unknown>[]) {
+        const k = keyOf(r.client as never) ?? "";
+        sums.set(k, (sums.get(k) ?? 0) + (num(r[field]) ?? 0));
+      }
+      const keys = [...sums.keys()].filter(Boolean);
+      const labels =
+        p.by === "state"
+          ? new Map(keys.map((k) => [k, k]))
+          : p.by === "business_unit"
+            ? new Map((await ctx.db.businessUnit.findMany({ where: { id: { in: keys } }, select: { id: true, name: true } })).map((b) => [b.id, b.name]))
+            : await lookupLabels(ctx.db)(keys);
+      const points = [...sums.entries()]
+        .map(([k, value]) => ({ label: k ? (labels.get(k) ?? k) : "Not set", value }))
+        .sort((a, b) => b.value - a.value);
+      const topN = p.top ?? 15;
+      const rest = points.slice(topN).reduce((n, x) => n + x.value, 0);
+      return {
+        kind: "series",
+        format: "money",
+        series: [{ key: "value", label: `CSR ${p.metric ?? "spent"} · FY ${year}` }],
+        points: [...points.slice(0, topN), ...(rest ? [{ label: "Others", value: rest }] : [])],
+      };
+    },
+  }),
+  q({
     name: "csr_total",
     label: "CSR total",
     description: "One CSR total (spent / budget / obligation / unspent) for a financial year (default: latest FY).",
@@ -527,17 +617,28 @@ const BUSINESS = [
       if (!year) return { kind: "single", format: "money", value: null, hint: "No CSR figures yet" };
       const field = `${p.metric}Rs` as "spentRs" | "budgetRs" | "obligationRs" | "unspentRs";
       const agg = await ctx.db.clientCsrFinancial.aggregate({ where: { client, fy: year }, _sum: { [field]: true } });
-      return { kind: "single", format: "money", value: num((agg._sum as Record<string, unknown>)[field]) ?? 0, hint: `FY ${year}` };
+      // no client has this figure for the year → "not recorded", never ₹0
+      const total = num((agg._sum as Record<string, unknown>)[field]);
+      return { kind: "single", format: "money", value: total, hint: total === null ? `Not recorded for FY ${year}` : `FY ${year}` };
     },
   }),
   q({
     name: "top_clients_by_csr",
     label: "Top clients by CSR",
-    description: "Clients ranked by a CSR figure for a financial year (default: latest FY, top 10).",
+    description: "Clients ranked by a CSR figure for a financial year (default: latest FY, top 10). minRs / maxRs keep only clients whose figure is in that range (rupees: 1 crore = 10000000, 1 lakh = 100000).",
     permission: "client_financials.read",
     returns: "rows",
-    params: z.object({ metric: z.enum(["spent", "budget", "obligation", "unspent"]).optional(), fy: fy.optional(), top: top.optional(), ...clientFilter }).strict(),
-    paramDoc: `metric (spent|budget|obligation|unspent, default spent), fy ({fy_N}), top (1-50), ${CLIENT_FILTER_DOC}`,
+    params: z
+      .object({
+        metric: z.enum(["spent", "budget", "obligation", "unspent"]).optional(),
+        fy: fy.optional(),
+        top: top.optional(),
+        minRs: z.number().nonnegative().optional(),
+        maxRs: z.number().nonnegative().optional(),
+        ...clientFilter,
+      })
+      .strict(),
+    paramDoc: `metric (spent|budget|obligation|unspent, default spent), fy ({fy_N}), top (1-50), minRs / maxRs (rupees, e.g. "more than 10 crore" = minRs 100000000), ${CLIENT_FILTER_DOC}`,
     llm: true,
     run: async (ctx, p) => {
       const client = await clientWhere(ctx, p);
@@ -545,7 +646,11 @@ const BUSINESS = [
       const field = `${p.metric ?? "spent"}Rs` as "spentRs" | "budgetRs" | "obligationRs" | "unspentRs";
       const rows = year
         ? await ctx.db.clientCsrFinancial.findMany({
-            where: { client, fy: year, [field]: { not: null } },
+            where: {
+              client,
+              fy: year,
+              [field]: { not: null, ...(p.minRs !== undefined && { gte: p.minRs }), ...(p.maxRs !== undefined && { lte: p.maxRs }) },
+            },
             orderBy: { [field]: "desc" },
             take: Math.min(p.top ?? 10, ctx.rowCap),
             select: { fy: true, obligationRs: true, budgetRs: true, spentRs: true, unspentRs: true, client: { select: { name: true } } },
@@ -569,6 +674,251 @@ const BUSINESS = [
           budget: num(r.budgetRs),
           spent: num(r.spentRs),
           unspent: num(r.unspentRs),
+        })),
+      };
+    },
+  }),
+  // ── one client's own records (offices, people, programmes, activity) ──────
+  q({
+    name: "client_locations",
+    label: "Client offices",
+    description: "A table of the filtered clients' office addresses — head office, branches, factories (use clientId for \"this client\"). kind: head_office | branches | factories | all.",
+    permission: "clients.read",
+    returns: "rows",
+    params: z.object({
+      // the model says it many ways: "branch", "Branch offices", "HQ", "plant"
+      kind: z
+        .preprocess((v) => {
+          const t = String(v ?? "").toLowerCase();
+          if (!t) return undefined;
+          if (/^[0-9a-f-]{36}$/.test(t)) return t; // a {location_type_N} pick-list value — read below
+          if (/head|hq|registered|main|corporate/.test(t)) return "head_office";
+          if (/factor|plant|manufactur|works/.test(t)) return "factories";
+          if (/branch|regional|zonal|other|office/.test(t) && !/all/.test(t)) return "branches";
+          return "all";
+        }, z.union([z.enum(["head_office", "branches", "factories", "all"]), z.string().uuid()]))
+        .optional(),
+      limit: z.number().int().min(1).max(2000).optional(), ...clientFilter }).strict(),
+    paramDoc: `kind (head_office|branches|factories|all, default all), limit, ${CLIENT_FILTER_DOC}`,
+    llm: true,
+    run: async (ctx, p) => {
+      const HEAD = ["HQ", "REGISTERED_OFFICE"];
+      // "Branch" etc. matched the LOCATION_TYPE pick-list: read it as the kind of office meant
+      if (p.kind && !["head_office", "branches", "factories", "all"].includes(p.kind)) {
+        const code = (await ctx.db.lookup.findFirst({ where: { id: p.kind }, select: { code: true } }))?.code ?? "";
+        p = { ...p, kind: HEAD.includes(code) ? "head_office" : code === "PLANT" ? "factories" : code ? "branches" : "all" };
+      }
+      const where: Prisma.ClientLocationWhereInput = {
+        AND: [
+          { isActive: true, client: await clientWhere(ctx, { ...p, state: undefined, city: undefined }) },
+          p.kind === "head_office" ? { OR: [{ isPrimary: true }, { type: { code: { in: HEAD } } }] } : {},
+          p.kind === "branches" ? { isPrimary: false, OR: [{ typeId: null }, { type: { code: { notIn: [...HEAD, "PLANT"] } } }] } : {},
+          p.kind === "factories" ? { type: { code: "PLANT" } } : {},
+          p.state ? { OR: placeMatch("state", p.state) } : {},
+          p.city ? { OR: [...placeMatch("city", p.city), ...placeMatch("district", p.city)] } : {},
+        ],
+      };
+      const [total, rows] = await Promise.all([
+        ctx.db.clientLocation.count({ where }),
+        ctx.db.clientLocation.findMany({
+          where,
+          take: Math.min(p.limit ?? ctx.rowCap, ctx.rowCap),
+          orderBy: [{ client: { name: "asc" } }, { isPrimary: "desc" }, { state: "asc" }, { city: "asc" }],
+          select: {
+            name: true,
+            addressLine: true,
+            city: true,
+            state: true,
+            pincode: true,
+            isPrimary: true,
+            sourceRunId: true,
+            createdAt: true,
+            type: { select: { label: true } },
+            client: { select: { name: true } },
+          },
+        }),
+      ]);
+      return {
+        kind: "rows",
+        total,
+        columns: [
+          { key: "client", label: "Client", type: "text" },
+          { key: "office", label: "Office", type: "text" },
+          { key: "type", label: "Type", type: "text" },
+          { key: "address", label: "Address", type: "text" },
+          { key: "city", label: "City", type: "text" },
+          { key: "state", label: "State", type: "text" },
+          { key: "source", label: "Found by", type: "text" },
+          { key: "addedOn", label: "Added on", type: "date" },
+        ],
+        rows: rows.map((r) => ({
+          client: r.client.name,
+          office: r.name ?? (r.isPrimary ? "Head office" : "Office"),
+          type: r.isPrimary ? `${r.type?.label ?? "Office"} (main)` : (r.type?.label ?? "Office"),
+          address: [r.addressLine, r.pincode].filter(Boolean).join(", ") || null,
+          city: r.city,
+          state: r.state,
+          source: r.sourceRunId ? "Office finder" : "A person",
+          addedOn: r.createdAt.toISOString(),
+        })),
+      };
+    },
+  }),
+  q({
+    name: "client_team",
+    label: "Who works on the client",
+    description: "The people working on the filtered clients (use clientId for \"this client\"): who it is assigned to, who handles its SPOCs, who acted on it lately — with their role, manager, team lead and business unit. Answers \"which team / who is working on this\".",
+    permission: "clients.read",
+    returns: "rows",
+    params: z.object(clientFilter).strict(),
+    paramDoc: CLIENT_FILTER_DOC,
+    llm: true,
+    run: async (ctx, p) => {
+      const clientIds = (await ctx.db.client.findMany({ where: await clientWhere(ctx, p), select: { id: true }, take: 5_000 })).map((c) => c.id);
+      if (!clientIds.length) return { kind: "rows", total: 0, columns: [], rows: [] };
+      const [assigned, handlers, acts] = await Promise.all([
+        ctx.db.clientAssignment.findMany({ where: { clientId: { in: clientIds }, endedAt: null }, select: { userId: true, clientId: true } }),
+        ctx.db.clientSpoc.groupBy({ by: ["handlerId"], where: { AND: [await spocWhere(ctx), { clientId: { in: clientIds }, isActive: true }] }, _count: { _all: true } }),
+        ctx.db.clientActivity.groupBy({ by: ["actorId"], where: { clientId: { in: clientIds }, actorId: { not: null } }, _count: { _all: true }, _max: { createdAt: true } }),
+      ]);
+      const ids = [...new Set([...assigned.map((a) => a.userId), ...handlers.map((h) => h.handlerId), ...acts.map((a) => a.actorId!).filter(Boolean)])];
+      const users = await ctx.db.user.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          isActive: true,
+          role: { select: { name: true } },
+          reportingTo: { select: { firstName: true, lastName: true } },
+          teamLead: { select: { firstName: true, lastName: true } },
+          businessUnits: { select: { businessUnit: { select: { name: true } } } },
+        },
+      });
+      const nm = (u: { firstName: string; lastName: string | null } | null) => (u ? `${u.firstName} ${u.lastName ?? ""}`.trim() : null);
+      const rows = users
+        .map((u) => {
+          const clients = assigned.filter((a) => a.userId === u.id).length;
+          const spocs = handlers.find((h) => h.handlerId === u.id)?._count._all ?? 0;
+          const act = acts.find((a) => a.actorId === u.id);
+          const how = [
+            clients ? (clientIds.length === 1 ? "Assigned" : `Assigned ${clients} client${clients === 1 ? "" : "s"}`) : null,
+            spocs ? `Handles ${spocs} SPOC${spocs === 1 ? "" : "s"}` : null,
+            act ? `${act._count._all} action${act._count._all === 1 ? "" : "s"}` : null,
+          ].filter(Boolean);
+          return {
+            person: `${nm(u)}${u.isActive ? "" : " (left)"}`,
+            role: u.role?.name ?? null,
+            how: how.join(" · "),
+            reportsTo: nm(u.reportingTo),
+            teamLead: nm(u.teamLead),
+            businessUnit: u.businessUnits.map((b) => b.businessUnit.name).join(", ") || null,
+            lastActive: act?._max.createdAt?.toISOString() ?? null,
+            weight: clients * 100 + spocs * 10 + (act?._count._all ?? 0),
+          };
+        })
+        .sort((a, b) => b.weight - a.weight)
+        .map(({ weight: _w, ...r }) => r);
+      return {
+        kind: "rows",
+        total: rows.length,
+        columns: [
+          { key: "person", label: "Person", type: "text" },
+          { key: "how", label: "Works on it as", type: "text" },
+          { key: "role", label: "Role", type: "text" },
+          { key: "reportsTo", label: "Reports to", type: "text" },
+          { key: "teamLead", label: "Team lead", type: "text" },
+          { key: "businessUnit", label: "Business unit", type: "text" },
+          { key: "lastActive", label: "Last action", type: "date" },
+        ],
+        rows: rows.slice(0, ctx.rowCap),
+      };
+    },
+  }),
+  q({
+    name: "client_programs",
+    label: "CSR programmes",
+    description: "A table of the filtered clients' CSR programmes: FY, programme, sector, budget, spent, implementing agency, where (use clientId for \"this client\").",
+    permission: "client_programs.read",
+    returns: "rows",
+    params: z.object({ fy: fy.optional(), limit: z.number().int().min(1).max(2000).optional(), ...clientFilter }).strict(),
+    paramDoc: `fy ({fy_N}, default all years), limit, ${CLIENT_FILTER_DOC}`,
+    llm: true,
+    run: async (ctx, p) => {
+      const where: Prisma.ClientCsrProgramWhereInput = { client: await clientWhere(ctx, p), ...(p.fy && { fy: p.fy }) };
+      const [total, rows] = await Promise.all([
+        ctx.db.clientCsrProgram.count({ where }),
+        ctx.db.clientCsrProgram.findMany({
+          where,
+          take: Math.min(p.limit ?? ctx.rowCap, ctx.rowCap),
+          orderBy: [{ fy: "desc" }, { spentRs: { sort: "desc", nulls: "last" } }],
+          select: { fy: true, name: true, sectorText: true, budgetRs: true, spentRs: true, locationNote: true, agency: { select: { name: true } }, client: { select: { name: true } } },
+        }),
+      ]);
+      return {
+        kind: "rows",
+        total,
+        columns: [
+          { key: "client", label: "Client", type: "text" },
+          { key: "fy", label: "FY", type: "text" },
+          { key: "programme", label: "Programme", type: "text" },
+          { key: "sector", label: "Sector", type: "text" },
+          { key: "budget", label: "Budget", type: "money" },
+          { key: "spent", label: "Spent", type: "money" },
+          { key: "agency", label: "Implementing agency", type: "text" },
+          { key: "where", label: "Where", type: "text" },
+        ],
+        rows: rows.map((r) => ({
+          client: r.client.name,
+          fy: r.fy,
+          programme: r.name,
+          sector: r.sectorText,
+          budget: num(r.budgetRs),
+          spent: num(r.spentRs),
+          agency: r.agency?.name ?? null,
+          where: r.locationNote,
+        })),
+      };
+    },
+  }),
+  q({
+    name: "client_activity",
+    label: "Recent activity",
+    description: "What was done on the filtered clients lately — notes, calls, status changes, SPOCs added, pipeline runs — newest first, with who did it (use clientId for \"this client\"). people_only hides the pipeline's own entries.",
+    permission: "clients.read",
+    returns: "rows",
+    params: z.object({ period: range.optional(), people_only: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional(), ...clientFilter }).strict(),
+    paramDoc: `period ({date_range_N}), people_only (true = hide pipeline entries), limit (default 30), ${CLIENT_FILTER_DOC}`,
+    llm: true,
+    run: async (ctx, p) => {
+      const where: Prisma.ClientActivityWhereInput = {
+        client: await clientWhere(ctx, p),
+        ...(p.period && { createdAt: { gte: day(p.period.from), lte: day(p.period.to, true) } }),
+        ...(p.people_only && { actorId: { not: null } }),
+      };
+      const [total, rows] = await Promise.all([
+        ctx.db.clientActivity.count({ where }),
+        ctx.db.clientActivity.findMany({
+          where,
+          take: Math.min(p.limit ?? 30, ctx.rowCap),
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true, summary: true, type: true, actor: { select: { firstName: true, lastName: true } }, client: { select: { name: true } } },
+        }),
+      ]);
+      return {
+        kind: "rows",
+        total,
+        columns: [
+          { key: "when", label: "When", type: "date" },
+          { key: "who", label: "Who", type: "text" },
+          { key: "what", label: "What", type: "text" },
+          { key: "client", label: "Client", type: "text" },
+        ],
+        rows: rows.map((r) => ({
+          when: r.createdAt.toISOString(),
+          who: r.actor ? `${r.actor.firstName} ${r.actor.lastName ?? ""}`.trim() : "Pipeline",
+          what: r.summary,
+          client: r.client.name,
         })),
       };
     },

@@ -30,7 +30,8 @@ import { AI_DEFAULTS } from "@/config/aiDefaults";
 import { checkDestructiveIntent, READ_ONLY_MESSAGE } from "@/config/aiGuardrails";
 import { queryDef, type QueryResult } from "@/config/queryRegistry";
 import { catalogFor, COMPONENTS, runSpec, SpecInvalid, unmaskText, validateSpec, WIDTHS, type RenderedBlock, type ValidSpec } from "@/services/ai/canvas.service";
-import { entityHints, extractEntities } from "@/services/ai/entities.service";
+import { entityHints, extractEntities, type Extraction } from "@/services/ai/entities.service";
+import { definitionAsked, termIn, type Term } from "@/services/ai/glossary";
 import { bindPlaceholders, checkSql, FreeSqlError, schemaForModel } from "@/services/ai/sql.service";
 import { LlmError, llm, REJECT_TOOL, type LlmTool } from "@/services/ai/llm.service";
 import { logAi, type AiOutcome, type AiTier } from "@/services/ai/audit.service";
@@ -56,7 +57,7 @@ export const isExplainRequest = (text: string) => {
 // ── {keep_N}: the current canvas without its filter values ───────────────────
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FY = /^\d{4}-\d{2}$/;
+const FY = /^\d{4}-(\d{2}|\d{4})$/;
 const KEEP = /^\{keep_\d+\}$/;
 const isRange = (v: unknown): v is { from: string; to: string } =>
   !!v && typeof v === "object" && !Array.isArray(v) && "from" in (v as object) && "to" in (v as object);
@@ -122,12 +123,15 @@ Widths: full | half | third (kpis usually third, charts half, tables full).
 
 Follow-ups: when "Current canvas" is given, decide what the new request is.
 - It asks about a different subject than the canvas shows (people / users / team instead of clients, SPOCs instead of CSR, "take this out and give me X") → relation "new_topic" and build the new canvas straight away. Never ask about this.
+- "Show / add / give me X" about the same client(s) or filters as the canvas ("show the branch offices of this client", "add who works on it", "show its programmes") → relation "follow_up": ADD a block for X and keep every block already there.
 - It refines, extends, filters, restyles or corrects the current canvas ("make it a pie", "only top 5", "add SPOCs by status", "no, I meant last year", "remove the table") → relation "follow_up": start from the current canvas and change only what was asked. Keep every other block and every {keep_N} value exactly as it is.
 - It is about something unrelated to the current canvas → relation "new_topic": build a fresh canvas and ignore the current one.
 With no current canvas, relation is "new_topic".
 "summary": one short sentence telling the user what you built or changed (no numbers — you cannot see data).
 
 Values: names in the request are masked as {placeholders}; put them into params exactly as given (e.g. "industryId": "{industry_1}", "added": "{date_range_1}", "fy": "{fy_1}"). {keep_N} are filter values already on the canvas — reuse or drop them, never alter them. Never invent ids or values. Only use params listed for that query.
+
+Questions: if the new request ASKS something ("what is …", "how much …", "how many …", "which …", "who …", "is there …", "does …") call answer_question — never compose_canvas. Pick the 1-3 catalog queries whose numbers answer it; the server reads the numbers and answers in words, and the canvas stays as it is. When the question is about what is on screen ("this client", "here", "its obligation"), reuse the {keep_N} values of the current canvas.
 
 Unclear requests: if you are not sure what is meant, call ask_clarification with one short question that starts with "Do you mean" and 2-4 options; each option is a complete request the user could have typed. If the user then corrects you, apply the correction to the current canvas.
 If the request asks to change, create, delete, assign, send, run or modify CRM records, call reject_request. If it can't be answered with these queries, call ask_clarification and say what you can show instead.
@@ -162,6 +166,34 @@ const COMPOSE_TOOL: LlmTool = {
       },
     },
     required: ["relation", "summary", "title", "blocks"],
+    additionalProperties: false,
+  },
+};
+
+const ANSWER_TOOL: LlmTool = {
+  name: "answer_question",
+  description: "The user asked a question: pick 1-3 catalog queries whose numbers answer it. The server answers in words; the canvas is not changed.",
+  input_schema: {
+    type: "object",
+    properties: {
+      blocks: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            component: { type: "string", enum: [...COMPONENTS] },
+            query: { type: "string" },
+            params: { type: "object" },
+            title: { type: "string", description: "what this number is, e.g. \"CSR obligation of {client_1}\"" },
+          },
+          required: ["component", "query", "title"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["blocks"],
     additionalProperties: false,
   },
 };
@@ -300,9 +332,79 @@ export const explainCanvas = (spec: ValidSpec, blocks: RenderedBlock[]): string 
   return out.join("\n").trim();
 };
 
+// ── answering a question in words (from live numbers; the LLM never sees them) ─
+
+/** answers read in crore ("₹948.87 crore"), counts as they are */
+const said = (v: unknown, format: string) => {
+  if (v === null || v === undefined || v === "") return "not recorded";
+  const x = Number(v);
+  if (format === "money" && Number.isFinite(x) && Math.abs(x) >= 1e7) return `₹${(x / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 2 })} crore`;
+  if (format === "money" && Number.isFinite(x) && Math.abs(x) >= 1e5) return `₹${(x / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 2 })} lakh`;
+  return fmt(v, format);
+};
+
+/** short lines answering from these blocks; a term keeps only its own series ("obligation" of a CSR chart) */
+const answerLines = (blocks: RenderedBlock[], term?: Term | null): string[] => {
+  const out: string[] = [];
+  for (const b of blocks) {
+    const r = b.result;
+    if (!r) {
+      out.push(`- **${b.title}**: ${b.error ?? "couldn't be read"}`);
+      continue;
+    }
+    if (r.kind === "single") {
+      const missing = r.value === null || r.value === undefined;
+      out.push(`- **${b.title}**: ${missing && r.hint?.startsWith("Not recorded") ? `n${r.hint.slice(1)}` : `${said(r.value, r.format)}${r.hint ? ` (${r.hint})` : ""}`}`);
+    } else if (r.kind === "rows") {
+      if (!r.total) {
+        out.push(`- **${b.title}**: none`);
+        continue;
+      }
+      // the figure asked about first; the client column only when the rows are about several clients
+      const oneClient = new Set(r.rows.map((x) => x.client)).size <= 1;
+      const cols = r.columns.filter((c) => !(c.key === "client" && oneClient));
+      const nums = cols.filter((c) => (c.type === "money" || c.type === "number") && (!term?.figure || term.figure.test(c.label)));
+      const val = nums[0];
+      const shown = [...cols.filter((c) => c.type !== "money" && c.type !== "number").slice(0, 4), ...(val ? [val] : [])];
+      out.push(`- **${b.title}**: ${inr.format(r.total)} ${r.total === 1 ? "match" : "matches"}${r.total > 5 ? " — the first 5:" : ":"}`);
+      for (const row of r.rows.slice(0, 5)) {
+        const bits = shown
+          .map((c, i) => {
+            const v = row[c.key];
+            if (v === null || v === undefined || v === "") return null;
+            if (c.type === "date") return new Date(String(v)).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+            if (c.type === "money" || c.type === "number") return `${c.label.toLowerCase()} ${said(v, c.type)}`;
+            return i === 0 ? `**${String(v)}**` : c.key === "fy" ? `FY ${v}` : String(v);
+          })
+          .filter(Boolean);
+        out.push(`  - ${bits.join(" · ")}`);
+      }
+    } else if (r.kind === "series") {
+      const series = term?.figure ? r.series.filter((x) => term.figure!.test(x.label)) : r.series;
+      if (!r.points.length || !series.length) {
+        out.push(`- **${b.title}**: ${term && r.series.length ? `no ${term.term} recorded` : "nothing recorded"}`);
+        continue;
+      }
+      if (r.points.length <= 8) {
+        for (const x of series) {
+          const vals = r.points.map((p) => `${p.label}: ${said(p[x.key], r.format)}`).join(", ");
+          out.push(`- **${b.title}${series.length > 1 || r.series.length > 1 ? ` — ${x.label}` : ""}**: ${vals}`);
+        }
+      } else for (const l of explainResult(b, r)) out.push(`- **${b.title}**: ${l}`);
+    } else for (const l of explainResult(b, r)) out.push(`- **${b.title}**: ${l}`);
+  }
+  return out;
+};
+
+/** the canvas blocks that show this term's figure */
+const blocksShowing = (blocks: RenderedBlock[], term: Term) =>
+  term.figure
+    ? blocks.filter((b) => term.figure!.test(b.title) || (b.result?.kind === "series" && b.result.series.some((x) => term.figure!.test(x.label))) || (b.result?.kind === "rows" && b.result.columns.some((c) => term.figure!.test(c.label))))
+    : [];
+
 // ── a detail table under the charts (the CEO checks the numbers row by row) ───
 
-const CLIENT_QUERIES = new Set(["clients_count", "clients_missing", "clients_by", "clients_added_trend", "csr_by_fy", "csr_same_clients", "csr_total", "top_clients_by_csr", "outreach_by_status"]);
+const CLIENT_QUERIES = new Set(["clients_count", "clients_missing", "clients_by", "clients_added_trend", "csr_by_fy", "csr_by", "csr_same_clients", "csr_total", "top_clients_by_csr", "outreach_by_status"]);
 const SPOC_QUERIES = new Set(["spocs_count", "spocs_by"]);
 const USER_QUERIES = new Set(["users_count", "users_by", "users_load_by", "org_tree"]);
 
@@ -318,6 +420,17 @@ export const withDetailTable = (raw: unknown): unknown => {
   if (blocks.some((b) => b.query === "clients_list" || b.query === "spocs_list" || b.query === "users_workload")) return raw;
   const first = blocks.find((b) => b.query && (CLIENT_QUERIES.has(b.query) || SPOC_QUERIES.has(b.query) || USER_QUERIES.has(b.query)));
   if (!first?.query) return raw;
+  // the report already is a table of rows ("top clients by CSR") — a second, looser list only confuses
+  if (first.component === "table" || blocks.some((b) => b.query === "top_clients_by_csr")) return raw;
+  // "clients with no SPOC": the list can't say "no SPOC", so it would show the wrong clients
+  if (first.query === "clients_missing") return raw;
+  // CSR money → the clients behind the figure, for the same year
+  if (first.query === "csr_total" || first.query === "csr_by_fy" || first.query === "csr_by") {
+    const p = { ...(first.params ?? {}) };
+    const params: Record<string, unknown> = { top: 50 };
+    for (const k of ["fy", "metric", ...Object.keys(p).filter((k) => !["by", "top", "what", "years", "limit", "sort"].includes(k))]) if (p[k] !== undefined) params[k] = p[k];
+    return { ...spec, blocks: [...blocks, { component: "table", query: "top_clients_by_csr", params, title: "Clients behind these figures", width: "full" }] };
+  }
   const list = CLIENT_QUERIES.has(first.query) ? "clients_list" : SPOC_QUERIES.has(first.query) ? "spocs_list" : "users_workload";
   const def = queryDef(list);
   if (!def) return raw;
@@ -329,6 +442,84 @@ export const withDetailTable = (raw: unknown): unknown => {
     if (probe.success || (typeof v === "string" && /^\{[a-z_]+_\d+\}$/.test(v))) params[k] = v;
   }
   return { ...spec, blocks: [...blocks, { component: "table", query: list, params, title: list === "clients_list" ? "Clients in this report" : list === "spocs_list" ? "SPOCs in this report" : "People in this report", width: "full" }] };
+};
+
+// ── what the user named, the report uses ──────────────────────────────────────
+
+const takesParam = (query: string | undefined, key: string) => {
+  const p = query ? (queryDef(query)?.params as unknown) : null;
+  return p instanceof z.ZodObject && key in p.shape;
+};
+
+/**
+ * The request named one client or one financial year: every block that can be
+ * filtered by it is. ("3FIVE8 — a report of this client alone" must not show
+ * every client; "CSR spent 2025-26" must not show the latest year.)
+ */
+export const focusOnNamed = (raw: unknown, ex: Extraction): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const clients = ex.entities.filter((e) => e.kind === "client");
+  const fys = ex.entities.filter((e) => e.kind === "fy");
+  const cities = ex.entities.filter((e) => e.kind === "city");
+  const states = ex.entities.filter((e) => e.kind === "state");
+  if (clients.length !== 1 && fys.length !== 1 && cities.length !== 1 && states.length !== 1) return raw;
+  const spec = raw as { blocks?: { query?: string; params?: Record<string, unknown> }[] };
+  if (!Array.isArray(spec.blocks)) return raw;
+  return {
+    ...spec,
+    blocks: spec.blocks.map((b) => {
+      const params = { ...(b.params ?? {}) };
+      if (clients.length === 1 && params.clientId === undefined && takesParam(b.query, "clientId")) params.clientId = clients[0]!.ph;
+      if (fys.length === 1 && params.fy === undefined && takesParam(b.query, "fy")) params.fy = fys[0]!.ph;
+      if (cities.length === 1 && params.city === undefined && takesParam(b.query, "city")) params.city = cities[0]!.ph;
+      if (states.length === 1 && params.state === undefined && takesParam(b.query, "state")) params.state = states[0]!.ph;
+      return { ...b, params };
+    }),
+  };
+};
+
+// ── ask or show? decided here, not by the model ──────────────────────────────
+// "which team is working on this?" → an answer in words, canvas untouched
+// "show the branch offices"        → a block added to the canvas
+
+const LEAD_IN = /^\s*((please|pls|kindly|hey|hi|ok|okay|so|now|and|jarvis|can you|could you|would you|will you|i want to|i want|i need|i'd like to|let me|tell me)[\s,]+)+/i;
+const ASKS = /^(which|who|whom|whose|what|whats|what's|how (many|much|long|often|is|are|did|does)|is|are|was|were|does|do|did|has|have|had|when|where|why|any|is there|are there)\b/i;
+const SHOWS = /^(show|add|give|list|display|make|build|create|generate|put|plot|draw|chart|open|get|bring|include|also|compare|break|split|graph|tabulate|turn|change|remove|drop|replace|sort|filter)\b/i;
+export type Intent = "ask" | "show" | "either";
+export const intentOf = (prompt: string): Intent => {
+  const t = prompt.replace(LEAD_IN, "").trim();
+  if (SHOWS.test(t)) return "show";
+  if (ASKS.test(t) || /\?\s*$/.test(t)) return "ask";
+  return "either";
+};
+
+// ── "this client" = the client the canvas is about ────────────────────────────
+
+const THIS_CLIENT = /\b(this|that|the same|current|same) (client|company|account|organi[sz]ation|customer)\b/i;
+const PRONOUN = /\b(its|it|their|they|them|this one|here)\b/i;
+
+/** the one client every client-filtered block of the canvas is about, if any */
+const canvasClient = (spec: ValidSpec | null): string | null => {
+  if (!spec) return null;
+  const ids = new Set<string>();
+  for (const b of spec.blocks) {
+    const v = b.params.clientId;
+    for (const id of Array.isArray(v) ? v : v ? [v] : []) if (typeof id === "string") ids.add(id);
+  }
+  return ids.size === 1 ? [...ids][0]! : null;
+};
+
+/** "show the offices of this client" on a client's canvas → {client_N} = that client, for every path (report, answer, free query) */
+const bindThisClient = async (ex: Extraction, current: ValidSpec | null) => {
+  const id = canvasClient(current);
+  if (!id || ex.entities.some((e) => e.kind === "client")) return;
+  const named = THIS_CLIENT.test(ex.masked);
+  if (!named && !PRONOUN.test(ex.masked)) return;
+  const c = await prisma.client.findFirst({ where: { id, deletedAt: null }, select: { name: true } });
+  if (!c) return;
+  const ph = "{client_1}";
+  ex.entities.push({ ph, kind: "client", value: id, label: c.name });
+  ex.masked = named ? ex.masked.replace(THIS_CLIENT, ph) : `${ex.masked} (about ${ph})`;
 };
 
 // ── storage ──────────────────────────────────────────────────────────────────
@@ -449,8 +640,24 @@ export const askThread = async (
       return done({ kind: "explain", message: explainCanvas(current, blocks), canvas: { spec: current, blocks }, turn: null, turnTier: "local" });
     }
 
+    // 2b. "what is CSR obligation?" — the meaning, plus the figure on screen (free, no LLM)
+    const asked = definitionAsked(prompt);
+    if (asked) {
+      tier = "local";
+      action = "glossary";
+      outcome = "success";
+      let onScreen: string[] = [];
+      if (current) {
+        const shown = blocksShowing(await runSpec(user, perms, current, 10), asked);
+        onScreen = answerLines(shown, asked);
+      }
+      const message = [`**${asked.term}** is ${asked.text}`, ...(onScreen.length ? ["", `**On this canvas (${current!.title})**`, ...onScreen] : [])].join("\n");
+      return done({ kind: "explain", message, turn: null, turnTier: "local", save: !!thread });
+    }
+
     // 3. mask + guard
-    const ex = await extractEntities(prompt);
+    const ex = await extractEntities(prompt, new Date(), { places: true });
+    await bindThisClient(ex, current);
     // a conversation about a report: "remove the chart", "replace it with users" edit the report, never data
     const guard = checkDestructiveIntent(ex.masked, { canvas: true });
     if (!guard.ok) {
@@ -469,7 +676,8 @@ export const askThread = async (
     const base = current ? tokeniseSpec(current) : null;
     const free = !!user.isSuperAdmin;
     // a super admin's answers (they may be free queries) are remembered apart from everyone else's
-    const key = sha([norm(ex.masked), base ? JSON.stringify(base.template) : "", sha(catalog), free ? "sa" : ""].join("|"));
+    const intent = intentOf(prompt);
+    const key = sha([norm(ex.masked), base ? JSON.stringify(base.template) : "", sha(catalog), free ? "sa" : "", intent].join("|"));
     const tenantId = tenantIdOrThrow();
     const remembered = await prisma.aiAnswerMemory.findUnique({ where: { tenantId_key: { tenantId, key } } });
 
@@ -493,7 +701,7 @@ export const askThread = async (
         : [];
       const lines: string[] = [];
       for (const h of history.reverse()) {
-        const m = (await extractEntities(h.input)).masked.replace(/\{([a-z_:A-Z]+)_\d+\}/g, "<$1>");
+        const m = (await extractEntities(h.input, new Date(), { places: true })).masked.replace(/\{([a-z_:A-Z]+)_\d+\}/g, "<$1>");
         const said = h.kind === "explain" ? "(explained the canvas)" : h.kind === "edit" ? "(the user edited the layout by hand)" : clip(h.message ?? h.kind, 200);
         lines.push(`- user: ${clip(m, 200)}\n  assistant [${h.kind}]: ${said}`);
       }
@@ -509,7 +717,7 @@ export const askThread = async (
           ]
             .filter(Boolean)
             .join("\n\n");
-        const res = await llm().call({ system: SYSTEM(catalog) + (free ? FREE_SYSTEM() : ""), user: llmUser, tools: [COMPOSE_TOOL, CLARIFY_TOOL, REJECT_TOOL, ...(free ? [FREE_TOOL] : [])] });
+        const res = await llm().call({ system: SYSTEM(catalog) + (free ? FREE_SYSTEM() : ""), user: llmUser, tools: [...(intent === "ask" ? [ANSWER_TOOL] : intent === "show" ? [COMPOSE_TOOL] : [COMPOSE_TOOL, ANSWER_TOOL]), CLARIFY_TOOL, REJECT_TOOL, ...(free ? [FREE_TOOL] : [])] });
         usage = res.usage;
         model = res.model;
         answer = { tool: res.tool, input: res.input };
@@ -553,6 +761,44 @@ export const askThread = async (
       counts = !fromMemory;
       await remember();
       return done({ kind: "clarify", message: unmaskText(tidyQuestion(q.data.question), ex), options: (q.data.options ?? []).map((o) => unmaskText(o, ex)), turn: null, turnTier });
+    }
+
+    // a question: answer it in words from live numbers; the canvas stays as it is
+    if (answer.tool === "answer_question") {
+      const a = (answer.input ?? {}) as { blocks?: unknown };
+      let spec: ValidSpec;
+      try {
+        // in words the chart type doesn't matter — use one that fits what the query returns
+        const fit = { single: "kpi", series: "bar", rows: "table", tree: "org" } as Record<string, string>;
+        const blocks = Array.isArray(a.blocks)
+          ? a.blocks.map((b: Record<string, unknown>) => {
+              const def = queryDef(String(b.query ?? ""));
+              return { ...b, width: "full", ...(def && { component: fit[def.returns] ?? b.component }) };
+            })
+          : a.blocks;
+        spec = validateSpec(focusOnNamed(restoreKeep({ title: "Answer", blocks }, base?.keep ?? {}), ex), perms, { ex, llmOnly: true });
+      } catch (e) {
+        outcome = "invalid";
+        if (fromMemory) await prisma.aiAnswerMemory.delete({ where: { id: remembered!.id } }).catch(() => undefined);
+        return done({ kind: "error", message: "I couldn't work out how to answer that from the CRM data. Try asking it another way.", turn: null, turnTier, save: !!thread });
+      }
+      const rendered = await runSpec(user, perms, spec, 10);
+      // the meaning only when asked "what is …" — not for "how much did they spend"
+      const named = termIn(prompt); // the figure asked about picks the column / series
+      const term = /^\s*(what|whats|what's|define|meaning)\b/i.test(prompt) ? named : null;
+      const lines = answerLines(rendered, named);
+      const nothing = rendered.every((b) => !b.result || (b.result.kind === "rows" && !b.result.total) || (b.result.kind === "series" && !b.result.points.length) || (b.result.kind === "single" && (b.result.value === null || b.result.value === undefined)));
+      outcome = nothing ? "empty" : "success";
+      action = "thread_answer";
+      counts = !fromMemory;
+      params = spec;
+      if (nothing) {
+        if (fromMemory) await prisma.aiAnswerMemory.delete({ where: { id: remembered!.id } }).catch(() => undefined);
+      } else await remember();
+      const message = [term ? `**${term.term}** is ${term.text}` : null, term ? "" : null, ...lines, ...(nothing && !lines.some((l) => l.includes("not recorded")) ? ["", "Nothing is recorded for this yet in the CRM."] : [])]
+        .filter((x) => x !== null)
+        .join("\n");
+      return done({ kind: "explain", message, turn: null, turnTier });
     }
 
     // free hand: the super admin's own query, as one block (added to the canvas, or a new one)
@@ -628,7 +874,7 @@ export const askThread = async (
     let spec: ValidSpec;
     const build = (input: unknown) => {
       const { relation: _r, summary: _s, ...rest } = (input ?? {}) as Record<string, unknown>;
-      return validateSpec(withDetailTable(restoreKeep(rest, base?.keep ?? {})), perms, { ex, llmOnly: true, ...(free && { allow: ["free_sql"] }) });
+      return validateSpec(withDetailTable(focusOnNamed(restoreKeep(rest, base?.keep ?? {}), ex)), perms, { ex, llmOnly: true, ...(free && { allow: ["free_sql"] }) });
     };
     try {
       try {
@@ -677,13 +923,18 @@ export const askThread = async (
     }
 
     const blocks = await runSpec(user, perms, spec, AI_DEFAULTS.canvasTableRows);
-    outcome = "success";
+    // say it plainly when nothing matches, instead of empty boxes
+    const empty = blocks.every((b) => !b.result || (b.result.kind === "rows" && b.result.total === 0) || (b.result.kind === "series" && !b.result.points.length) || (b.result.kind === "single" && !b.result.value));
+    // an answer that shows nothing is logged as such, and never remembered (it may be a misunderstanding)
+    outcome = empty ? "empty" : "success";
     counts = !fromMemory;
     params = spec;
-    await remember();
+    if (empty) {
+      if (fromMemory) await prisma.aiAnswerMemory.delete({ where: { id: remembered!.id } }).catch(() => undefined);
+    } else await remember();
     // learned: the words that made me ask a question now lead straight here next time
-    if (body.learnFrom && body.learnFrom.trim() && body.learnFrom.trim() !== prompt) {
-      const original = await extractEntities(body.learnFrom.trim());
+    if (!empty && body.learnFrom && body.learnFrom.trim() && body.learnFrom.trim() !== prompt) {
+      const original = await extractEntities(body.learnFrom.trim(), new Date(), { places: true });
       const learnKey = sha([norm(original.masked), base ? JSON.stringify(base.template) : "", sha(catalog)].join("|"));
       await prisma.aiAnswerMemory
         .upsert({
@@ -700,8 +951,6 @@ export const askThread = async (
       thread = null;
       startedNew = true;
     }
-    // say it plainly when nothing matches, instead of empty boxes
-    const empty = blocks.every((b) => !b.result || (b.result.kind === "rows" && b.result.total === 0) || (b.result.kind === "series" && !b.result.points.length) || (b.result.kind === "single" && !b.result.value));
     const who = ex.entities.filter((e) => e.kind === "user").map((e) => e.label);
     const emptyNote = empty ? ` Nothing matches right now${who.length ? ` — ${who.join(" and ")} ${who.length > 1 ? "have" : "has"} none of these personally (their team may; try “… of ${who[0]}'s team”)` : " — try fewer filters"}.` : "";
     return done({

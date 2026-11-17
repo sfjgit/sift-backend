@@ -20,6 +20,8 @@ export type AiOutcome =
   | "rejected_quota"
   | "budget_exhausted"
   | "invalid"
+  /** answered, but every block came back empty — usually a misunderstanding */
+  | "empty"
   | "error";
 
 /** local = answered in the browser (page names, repeats) — free, logged for the maturity curve */

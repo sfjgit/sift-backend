@@ -220,7 +220,7 @@ export const generateCanvas = async (user: AuthUser, perms: PermissionMap, promp
   };
 
   try {
-    const ex = await extractEntities(prompt);
+    const ex = await extractEntities(prompt, new Date(), { places: true });
     const guard = checkDestructiveIntent(ex.masked);
     if (!guard.ok) {
       tier = "guard";

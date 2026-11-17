@@ -130,7 +130,7 @@ export const listClientsQuery = z.object({
   ...paginationQuery,
   // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
   // default: last updated first — a run starting / ending counts as an update
-  sortBy: z.enum(["name", "createdAt", "updatedAt", "status", "csrSpentRs", "employeeCount"]).catch("updatedAt"),
+  sortBy: z.enum(["name", "createdAt", "updatedAt", "status", "csrSpentRs", "csrFy", "employeeCount"]).catch("updatedAt"),
   sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
 
