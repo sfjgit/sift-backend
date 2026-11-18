@@ -61,7 +61,12 @@ const issueTokens = async (res: Response, userId: string) => {
   });
 
   setTokenCookies(res, accessToken, refreshToken);
+  return { accessToken, refreshToken };
 };
+
+// the phone app (X-Client: mobile) has no browser cookies: it gets the pair in the body,
+// keeps it in the phone's secure storage and sends "Authorization: Bearer …"
+const isMobile = (req: Request) => req.get("x-client") === "mobile";
 
 // ── POST /auth/login
 export const login = async (req: Request, res: Response) => {
@@ -84,19 +89,21 @@ export const login = async (req: Request, res: Response) => {
     throw ApiError(403, "Your company's CRM access is suspended. Contact your administrator.", "TENANT_SUSPENDED");
   }
 
-  await issueTokens(res, user.id);
+  const tokens = await issueTokens(res, user.id);
   await logAuthEvent(user.id, "LOGIN", req);
 
   res.json({
     success: true,
     message: "Login successful",
     data: await sessionPayload(user.id),
+    ...(isMobile(req) && { tokens }),
   });
 };
 
-// ── POST /auth/refresh — token comes from httpOnly cookie
+// ── POST /auth/refresh — token comes from httpOnly cookie (phone app: body.refreshToken)
 export const refresh = async (req: Request, res: Response) => {
-  const refreshToken = req.cookies?.refreshToken;
+  const refreshToken =
+    req.cookies?.refreshToken || (isMobile(req) ? (req.body?.refreshToken as string | undefined) : undefined);
   if (!refreshToken) throw ApiError(401, "Refresh token required", "NO_TOKEN");
 
   try {
@@ -123,13 +130,14 @@ export const refresh = async (req: Request, res: Response) => {
 
   // rotate — delete old, issue new pair
   await prisma.refreshToken.delete({ where: { token: refreshToken } });
-  await issueTokens(res, stored.userId);
+  const tokens = await issueTokens(res, stored.userId);
   await logAuthEvent(stored.userId, "REFRESH", req);
 
   res.json({
     success: true,
     message: "Token refreshed successfully",
     data: await sessionPayload(stored.userId),
+    ...(isMobile(req) && { tokens }),
   });
 };
 

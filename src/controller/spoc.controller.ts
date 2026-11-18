@@ -4,7 +4,7 @@
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { isUserInScope, spocScopeWhere } from "@/services/scope.service";
+import { getReportingLineIds, isUserInScope, spocScopeWhere } from "@/services/scope.service";
 import { assertLookupIds, assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { toNameKey } from "@/utils/names";
@@ -209,6 +209,9 @@ const spocListWhere = async (req: Asker, q: ListSpocsQuery): Promise<Prisma.Clie
         client: { deletedAt: null },
         ...(q.clientId && { clientId: q.clientId }),
         ...(q.handlerId?.length && { handlerId: { in: q.handlerId } }),
+        // phone app's Mine / My team
+        ...(q.handledBy === "me" && { handlerId: req.user.id }),
+        ...(q.handledBy === "team" && { handlerId: { in: [req.user.id, ...(await getReportingLineIds(req.user.id))] } }),
         ...(q.businessUnitId?.length && { businessUnitId: { in: q.businessUnitId } }),
         ...(q.serviceLineId?.length && { serviceLineId: { in: q.serviceLineId } }),
         ...(q.salesStatusId?.length && { salesStatusId: { in: q.salesStatusId } }),

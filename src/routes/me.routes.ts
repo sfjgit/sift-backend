@@ -5,6 +5,7 @@ import { Router } from "express";
 import { authenticateUser } from "@/middleware/auth";
 import { getMyPermissions } from "@/controller/permission.controller";
 import { getMyRunSlots } from "@/controller/runQuota.controller";
+import { listMyWork } from "@/controller/clientWork.controller";
 import { validate } from "@/validators/validator";
 import { mySlotsQuery } from "@/validators/runQuota.validators";
 
@@ -16,5 +17,7 @@ router.use(authenticateUser);
 router.get("/permissions", getMyPermissions);
 // pipeline run slots left this day / week / month
 router.get("/run-slots", validate.query(mySlotsQuery), getMyRunSlots);
+// my follow-ups / calls / meetings across all clients (phone app Today + Meetings)
+router.get("/work", listMyWork);
 
 export default router;

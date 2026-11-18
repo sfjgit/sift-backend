@@ -97,8 +97,8 @@ export const listClientsQuery = z.object({
   // matched through the client's active SPOCs
   handlerId: ids,
   createdById: ids,
-  // "me", "none" (nobody assigned) or a user id
-  assignedTo: z.union([z.literal("me"), z.literal("none"), z.string().uuid()]).optional(),
+  // "me", "team" (me + everyone reporting to me), "none" (nobody assigned) or a user id
+  assignedTo: z.union([z.literal("me"), z.literal("team"), z.literal("none"), z.string().uuid()]).optional(),
   assignedToId: ids,
   assignedById: ids,
   // data gaps (all picked must be missing) / pipeline coverage
@@ -316,6 +316,8 @@ export const listSpocsQuery = z.object({
   search: z.string().trim().optional(),
   clientId: z.string().uuid().optional(),
   handlerId: csvIds,
+  // "me" = I handle them, "team" = me + everyone reporting to me (phone app)
+  handledBy: z.enum(["me", "team"]).optional(),
   businessUnitId: csvIds,
   serviceLineId: csvIds,
   salesStatusId: csvIds,

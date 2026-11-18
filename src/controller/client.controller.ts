@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { Request, Response } from "express";
 import { ClientActivityType, Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
-import { clientScopeWhere, spocTaggedVisibleTo, spocWhereForUserId } from "@/services/scope.service";
+import { clientScopeWhere, getReportingLineIds, spocTaggedVisibleTo, spocWhereForUserId } from "@/services/scope.service";
 import { assertLookupIds, assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers } from "@/services/notification.service";
@@ -327,7 +327,11 @@ const range = (from?: string, to?: string) =>
 // Each filter is its own AND clause, so two filters on one relation never
 // overwrite each other. Multi values match any of them, except "missing" and
 // "steps done" (every picked one must hold).
-const clientFilterWhere = (q: ListClientsQuery, me: string): Prisma.ClientWhereInput[] => {
+const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prisma.ClientWhereInput[]> => {
+  // "team" = assigned to me or to anyone below me in the reporting line (mobile app's My team)
+  if (q.assignedTo === "team") {
+    q = { ...q, assignedTo: undefined, assignedToId: [...(q.assignedToId ?? []), me, ...(await getReportingLineIds(me))] };
+  }
   const and: Prisma.ClientWhereInput[] = [];
   const any = <T,>(v: T[] | undefined) => (v?.length ? v : undefined);
 
@@ -453,7 +457,7 @@ export const listClients = async (req: Request, res: Response) => {
 
   const where: Prisma.ClientWhereInput = {
     deletedAt: null,
-    AND: [await clientScopeWhere(req.user, req.scope!), ...clientFilterWhere(q, req.user.id)],
+    AND: [await clientScopeWhere(req.user, req.scope!), ...(await clientFilterWhere(q, req.user.id))],
   };
 
   const [total, rows] = await Promise.all([
@@ -1305,7 +1309,7 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
   }
   const where: Prisma.ClientWhereInput = {
     deletedAt: null,
-    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...clientFilterWhere(q, who.user.id)],
+    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...(await clientFilterWhere(q, who.user.id))],
   };
   const rows = await prisma.client.findMany({
     where,
@@ -1379,7 +1383,7 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
 export const clientIdsFor = async (who: ClientAsker, q: ListClientsQuery, cap: number) => {
   const where: Prisma.ClientWhereInput = {
     deletedAt: null,
-    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...clientFilterWhere(q, who.user.id)],
+    AND: [who.scope === true || who.scope == null ? {} : await clientScopeWhere(who.user, who.scope), ...(await clientFilterWhere(q, who.user.id))],
   };
   const [total, rows] = await Promise.all([
     prisma.client.count({ where }),

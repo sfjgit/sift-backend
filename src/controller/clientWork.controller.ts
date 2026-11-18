@@ -7,6 +7,7 @@
 // Everything also lands on the client timeline, tagged with the SPOC when there is one.
 
 import { Request, Response } from "express";
+import { z } from "zod";
 import { Prisma, WorkTaskKind, WorkTaskStatus } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
 import { ApiError, notFound } from "@/utils/httpError";
@@ -63,6 +64,33 @@ export const listClientTasks = async (req: Request, res: Response) => {
     take: 200,
   });
 
+  res.json({ success: true, data: tasks });
+};
+
+// ── GET /me/work?kind=MEETING&done=false&from=&to= — my follow-ups / calls / meetings
+// across every client (phone app: Today + Meetings). Only work assigned to me.
+export const myWorkQuery = z.object({
+  kind: z.nativeEnum(WorkTaskKind).optional(),
+  done: z.enum(["true", "false"]).transform((v) => v === "true").default(false),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+export const listMyWork = async (req: Request, res: Response) => {
+  const q = myWorkQuery.parse(req.query);
+  const tasks = await prisma.workTask.findMany({
+    where: {
+      assigneeId: req.user.id,
+      client: { deletedAt: null },
+      ...(q.kind && { kind: q.kind }),
+      status: q.done ? "DONE" : { not: "DONE" },
+      ...((q.from || q.to) && { dueAt: { ...(q.from && { gte: q.from }), ...(q.to && { lt: q.to }) } }),
+    },
+    select: { ...TASK_SELECT, client: { select: { id: true, name: true } } },
+    orderBy: q.done ? [{ closedAt: "desc" }] : [{ dueAt: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
+    take: q.limit,
+  });
   res.json({ success: true, data: tasks });
 };
 

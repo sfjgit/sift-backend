@@ -52,12 +52,12 @@ export const visibleUserIds = async (user: AuthUser, perms: PermissionMap): Prom
   return [user.id, ...(await getReportingLineIds(user.id))];
 };
 
-type U = { id: string; firstName: string; lastName: string | null; isActive: boolean; roleId: string | null; departmentId: string | null; designationId: string | null; reportingToId: string | null; teamLeadId: string | null };
+type U = { id: string; firstName: string; lastName: string | null; isActive: boolean; isSuperAdmin: boolean; roleId: string | null; departmentId: string | null; designationId: string | null; reportingToId: string | null; teamLeadId: string | null };
 
 export const buildOrgTree = async (db: Db, opts: { visible: string[] | null; rootId?: string | null; includeInactive?: boolean }) => {
   const users = (await db.user.findMany({
     where: { ...(opts.visible && { id: { in: opts.visible } }), ...(!opts.includeInactive && { isActive: true }) },
-    select: { id: true, firstName: true, lastName: true, isActive: true, roleId: true, departmentId: true, designationId: true, reportingToId: true, teamLeadId: true },
+    select: { id: true, firstName: true, lastName: true, isActive: true, isSuperAdmin: true, roleId: true, departmentId: true, designationId: true, reportingToId: true, teamLeadId: true },
     take: 5_000,
   })) as U[];
   const ids = users.map((u) => u.id);
@@ -95,10 +95,17 @@ export const buildOrgTree = async (db: Db, opts: { visible: string[] | null; roo
       },
     ]),
   );
+  // the super admin heads the company: anyone with no manager (in view) reports to them.
+  // Several active super admins → no single head, keep the "Organisation" top.
+  const heads = users.filter((u) => u.isSuperAdmin && u.isActive && !u.reportingToId);
+  const head = heads.length === 1 ? heads[0]!.id : null;
   // link to the manager (reporting line); someone whose manager is out of view becomes a top
   const tops: OrgTreeNode[] = [];
   for (const n of nodes.values()) {
-    const boss = n.reportingToId && n.reportingToId !== n.id ? nodes.get(n.reportingToId) : undefined;
+    // manager out of view (inactive, hidden) or none → under the head
+    const boss =
+      (n.reportingToId && n.reportingToId !== n.id ? nodes.get(n.reportingToId) : undefined) ??
+      (head && n.id !== head ? nodes.get(head) : undefined);
     if (boss) boss.children.push(n);
     else tops.push(n);
   }
