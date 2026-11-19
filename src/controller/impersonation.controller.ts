@@ -14,9 +14,11 @@ export const startImpersonation = async (req: Request, res: Response) => {
   try {
     const admin = req.user; // super admin — enforced on the route
     const { id: targetUserId } = req.validatedParams;
+    // phone app: it keeps the admin's own session on the device, so no cookie to park
+    const mobile = req.get("x-client") === "mobile";
     const adminRefreshToken = req.cookies?.refreshToken;
 
-    if (!adminRefreshToken) {
+    if (!adminRefreshToken && !mobile) {
       return res
         .status(400)
         .json({ success: false, message: "Session missing, please re-login" });
@@ -74,6 +76,18 @@ export const startImpersonation = async (req: Request, res: Response) => {
       },
     });
 
+    const name =
+      target.displayName || `${target.firstName} ${target.lastName}`.trim();
+    if (mobile) {
+      return res.status(200).json({
+        success: true,
+        message: "Logged in as user",
+        tokens: { accessToken, refreshToken },
+        impersonation: { id: target.id, name, email: target.email, logId: log.id },
+      });
+    }
+
+
     const base = cookieBase();
 
     // Park admin session
@@ -92,8 +106,6 @@ export const startImpersonation = async (req: Request, res: Response) => {
     setTokenCookies(res, accessToken, refreshToken);
 
     // Banner info (readable by frontend)
-    const name =
-      target.displayName || `${target.firstName} ${target.lastName}`.trim();
     res.cookie(
       "impersonatingAs",
       JSON.stringify({
@@ -119,6 +131,14 @@ export const startImpersonation = async (req: Request, res: Response) => {
 // POST /api/admin/impersonation/stop  (no auth — works even if token expired)
 export const stopImpersonation = async (req: Request, res: Response) => {
   try {
+    // phone app: ends the log and drops the target's session; it restores the admin itself
+    if (req.get("x-client") === "mobile") {
+      const { logId, refreshToken } = (req.body ?? {}) as { logId?: string; refreshToken?: string };
+      if (logId) await prisma.impersonationLog.updateMany({ where: { id: logId, endedAt: null }, data: { endedAt: new Date() } });
+      if (refreshToken) await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
+      return res.status(200).json({ success: true, message: "Back to your account" });
+    }
+
     const adminRefreshToken = req.cookies?.impersonatorRefreshToken;
     const targetRefreshToken = req.cookies?.refreshToken;
     const logId = req.cookies?.impersonationLogId;

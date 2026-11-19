@@ -32,7 +32,10 @@ export const impersonationAudit = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const logId = req.cookies?.impersonationLogId;
+  // web: cookie; phone app: header (the log must still match the signed-in user below)
+  const logId =
+    req.cookies?.impersonationLogId ||
+    (req.get("x-client") === "mobile" ? req.get("x-impersonation-log") : undefined);
 
   // Normal users: no cookie → untouched
   if (!logId || SAFE_METHODS.has(req.method)) return next();
