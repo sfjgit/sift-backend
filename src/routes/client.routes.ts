@@ -84,6 +84,20 @@ import {
   logClientInteraction,
 } from "@/controller/clientWork.controller";
 
+import {
+  decideMeeting,
+  deleteMeetingFile,
+  getMeeting,
+  meetingApprovalBody,
+  meetingBody,
+  meetingFileBody,
+  meetingFileParams,
+  meetingFileUrl,
+  meetingParams,
+  saveMeeting,
+  uploadMeetingFile,
+} from "@/controller/meeting.controller";
+
 const router = Router();
 const read = authorize("clients.read");
 
@@ -243,6 +257,14 @@ router.post("/:id/tasks", work, validate.request({ params: idParams, body: creat
 router.patch("/:id/tasks/:taskId", work, validate.request({ params: taskParams, body: updateTaskBody }), updateClientTask);
 router.delete("/:id/tasks/:taskId", work, validate.params(taskParams), deleteClientTask);
 router.post("/:id/interactions", work, validate.request({ params: idParams, body: interactionBody }), logClientInteraction);
+
+// the full meeting behind a MEETING task (CASPA meeting form) + files + lead approval
+router.get("/:id/tasks/:taskId/meeting", read, validate.params(meetingParams), getMeeting);
+router.put("/:id/tasks/:taskId/meeting", work, validate.request({ params: meetingParams, body: meetingBody }), saveMeeting);
+router.post("/:id/tasks/:taskId/meeting/files", work, singleFile, validate.request({ params: meetingParams, body: meetingFileBody }), uploadMeetingFile);
+router.get("/:id/tasks/:taskId/meeting/files/:fileId/url", read, validate.params(meetingFileParams), meetingFileUrl);
+router.delete("/:id/tasks/:taskId/meeting/files/:fileId", work, validate.params(meetingFileParams), deleteMeetingFile);
+router.post("/:id/tasks/:taskId/meeting/approval", read, validate.request({ params: meetingParams, body: meetingApprovalBody }), decideMeeting);
 
 // locations + technologies
 router.post(

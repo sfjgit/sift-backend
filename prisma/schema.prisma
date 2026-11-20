@@ -449,6 +449,9 @@ model User {
   outreachSent     OutreachMessage[] @relation("OutreachMessageSentBy")
   outreachEdited   OutreachMessage[] @relation("OutreachMessageEditedBy")
   auditLogs        AuditLog[]        @relation("AuditLogActor")
+  meetingsApproved MeetingDetail[]   @relation("MeetingApprovedBy")
+  meetingsAsSales  MeetingDetail[]   @relation("MeetingSalesUser")
+  meetingFiles     MeetingFile[]     @relation("MeetingFileUploadedBy")
 
   savedViews  SavedView[] @relation("UserSavedViews")
   faqsCreated Faq[]       @relation("FaqCreatedBy")
@@ -996,9 +999,87 @@ model WorkTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /** kind = MEETING: everything the CASPA meeting form held */
+  meeting MeetingDetail?
+
   @@index([tenantId, assigneeId, status])
   @@index([clientId])
   @@index([spocId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEETINGS — CASPA tbl_spoc_meeting, one per WorkTask of kind MEETING
+// (the task keeps title, date, SPOC, owner, minutes-done; this keeps the rest)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MeetingDetail {
+  id       String   @id @default(uuid())
+  taskId   String   @unique
+  task     WorkTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  mode                 String? // virtual | offline
+  link                 String?
+  revenueGenerated     String?
+  attendeeCount        Int?
+  /** our people in the meeting (user ids) */
+  sfjAttendeeIds       String[] @default([])
+  clientAttendeeNames  String?
+  clientAttendeeEmails String?
+  /** CASPA "Minutes Of Meeting 1–4" */
+  minutes              String[] @default([])
+  /** Meeting Scheduled | Completed | Cancelled */
+  meetingStatus        String?
+  /** PENDING when marked Completed → the lead approves (CASPA approval_status) */
+  approvalStatus       String?
+  approvedById         String?
+  approvedBy           User?     @relation("MeetingApprovedBy", fields: [approvedById], references: [id])
+  approvedAt           DateTime?
+  proposalStatus       String?
+  proposalDate         DateTime? @db.Date
+  proposalAmountRs     Decimal?  @db.Decimal(16, 2)
+  tentativeDate        DateTime? @db.Date
+  /** "Current Sales SPOC" — our salesperson */
+  salesUserId          String?
+  salesUser            User?     @relation("MeetingSalesUser", fields: [salesUserId], references: [id])
+  category             String?
+  notes                String?
+  mouShared            Boolean?
+  creditSignedDate     DateTime? @db.Date
+  // MOU programme
+  mouStartDate         DateTime? @db.Date
+  mouEndDate           DateTime? @db.Date
+  semesters            String[]  @default([])
+  credits              String[]  @default([])
+  studentCount         Int?
+  courses              String[]  @default([])
+  // client visit check-in
+  visitAddress         String?
+  visitPincode         String?
+  visitLat             Decimal?  @db.Decimal(9, 6)
+  visitLng             Decimal?  @db.Decimal(9, 6)
+  visitAt              DateTime?
+
+  files MeetingFile[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([approvalStatus])
+}
+
+/** MOM, RFP/EOI/tender, proposal, signed MOU, credit letter, sales pitch, visit photo */
+model MeetingFile {
+  id           String        @id @default(uuid())
+  meetingId    String
+  meeting      MeetingDetail @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  kind         String // MOM | RFP | PROPOSAL | MOU | CREDIT_LETTER | SALES_PITCH | VISIT_PHOTO
+  fileKey      String
+  fileName     String
+  uploadedById String
+  uploadedBy   User          @relation("MeetingFileUploadedBy", fields: [uploadedById], references: [id])
+  createdAt    DateTime      @default(now())
+
+  @@index([meetingId])
 }
 
 enum WorkTaskKind {
