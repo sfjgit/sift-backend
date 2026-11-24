@@ -30,7 +30,7 @@ export const globalSearch = async (req: Request, res: Response) => {
         deletedAt: null,
         AND: [
           await clientScopeWhere(req.user, clientScope),
-          { OR: [{ name: contains(q) }, { shortName: contains(q) }, { cin: contains(q) }] },
+          { OR: [{ name: contains(q) }, { shortName: contains(q) }, { registration: { cin: contains(q) } }] },
         ],
       },
       select: {

@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 import {
+  ClientOwnership,
+  GovtLevel,
   ClientActivityType,
   ClientEntityType,
   ClientStatus,
@@ -51,17 +53,44 @@ export const createClientBody = z.object({
   employeeCount: z.number().int().min(0).max(10_000_000).nullable().optional(),
   employeeSizeId: optionalId,
   businessUnitId: optionalId,
-  // replaces the whole set when sent
-  serviceLineIds: z.array(z.string().uuid()).max(20).optional(),
-  csrEligible: z.boolean().nullable().optional(),
+  // service lines are not sent: they follow the client's SPOCs (src/services/clientServiceLines.service.ts)
   projectIds,
-  // CASPA ICP facts
-  foundationName: optionalText(300),
-  foundationWebsite: optionalUrl,
+  // company group (Adani Group, Tata Group …)
+  groupName: optionalText(150),
+  linkedinEmployees: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  // ── add-on: registration (ClientRegistration)
+  ownership: z.nativeEnum(ClientOwnership).nullable().optional(),
+  companyClass: optionalText(150),
+  yearOfIncorporation: z.number().int().min(1800).max(2100).nullable().optional(),
   isListed: z.boolean().nullable().optional(),
   subCategory: optionalText(200),
-  linkedinEmployees: z.number().int().min(0).max(10_000_000).nullable().optional(),
   marketCapRs: z.number().min(0).max(1e17).nullable().optional(),
+  // ── add-on: CSR (ClientCsr)
+  csrRoleId: optionalId,
+  csrEligible: z.boolean().nullable().optional(),
+  foundationName: optionalText(300),
+  foundationWebsite: optionalUrl,
+  // ── add-on: government body (ClientGovt) — only the fields sent are saved
+  govt: z
+    .object({
+      level: z.nativeEnum(GovtLevel).nullable().optional(),
+      orgTypeId: optionalId,
+      parentClientId: optionalId,
+      nodalMinistryId: optionalId,
+      ministryName: optionalText(300),
+      departmentName: optionalText(300),
+      stateSkillBody: optionalText(300),
+      sector: optionalText(200),
+      skillFamily: optionalText(50),
+      isNational: z.boolean().nullable().optional(),
+      schemeType: optionalText(100),
+      estimatedBudget: optionalText(200),
+      tenderPortal: optionalText(300),
+      tenderAuthority: optionalText(300),
+      priority: z.enum(["H", "M", "L"]).nullable().optional(),
+      digitalMaturity: optionalText(100),
+    })
+    .optional(),
 });
 
 export const updateClientBody = createClientBody.partial();
@@ -76,9 +105,37 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").optional()
 export const CLIENT_GAPS = ["website", "reports", "spocs", "approved", "figures", "outreach"] as const;
 export const STEP_KEYS = ["reports", "report_spocs", "figures", "enrich", "apollo", "validate", "emails"] as const;
 
+/** latest-FY figures the list can sort and range-filter by: list key → [table, column] */
+export const CLIENT_FIGURES = {
+  csrObligation: ["ClientCsrFinancial", "obligationRs"],
+  csrFund: ["ClientCsrFinancial", "budgetRs"],
+  csrUnspent: ["ClientCsrFinancial", "unspentRs"],
+  revenue: ["ClientCorporateFinancial", "revenueRs"],
+  netProfit: ["ClientCorporateFinancial", "netProfitRs"],
+  netWorth: ["ClientCorporateFinancial", "netWorthRs"],
+  paidUpCapital: ["ClientCorporateFinancial", "paidUpCapitalRs"],
+  authorisedCapital: ["ClientCorporateFinancial", "authorisedCapitalRs"],
+} as const;
+export type ClientFigure = keyof typeof CLIENT_FIGURES;
+const FIGURE_KEYS = Object.keys(CLIENT_FIGURES) as [ClientFigure, ...ClientFigure[]];
+
 export const listClientsQuery = z.object({
   search: z.string().trim().max(200).optional(),
-  status: z.nativeEnum(ClientStatus).optional(),
+  // several = any of them ("ACTIVE,PENDING")
+  status: csv(z.nativeEnum(ClientStatus)),
+  // column searches (contains, any case) — the clients table's column headers
+  name: z.string().trim().max(200).optional(),
+  shortName: z.string().trim().max(200).optional(),
+  cin: z.string().trim().max(50).optional(),
+  website: z.string().trim().max(200).optional(),
+  // add-ons + company group; several = any of them
+  groupName: csv(z.string().trim().min(1).max(150)),
+  ownership: csv(z.nativeEnum(ClientOwnership)),
+  csrRoleId: ids,
+  govtLevel: csv(z.nativeEnum(GovtLevel)),
+  govtOrgTypeId: ids,
+  // latest CSR year ("2024-25"); several = any of them
+  csrFy: csv(z.string().trim().regex(/^\d{4}-\d{2}(\d{2})?$/, "Use 2024-2025")),
   entityType: csv(z.nativeEnum(ClientEntityType)),
   industryId: ids,
   categoryId: ids,
@@ -86,6 +143,18 @@ export const listClientsQuery = z.object({
   // latest CSR spend (client snapshot), ₹ crore
   csrSpentMinCr: z.coerce.number().min(0).optional(),
   csrSpentMaxCr: z.coerce.number().min(0).optional(),
+  // latest-FY figures, ₹ crore: <figure>MinCr / <figure>MaxCr (figure = a key of CLIENT_FIGURES); profit can be negative
+  ...Object.fromEntries(
+    Object.keys(CLIENT_FIGURES).flatMap((k) => [
+      [`${k}MinCr`, z.coerce.number().optional()],
+      [`${k}MaxCr`, z.coerce.number().optional()],
+    ]),
+  ) as Record<`${ClientFigure}${"Min" | "Max"}Cr`, z.ZodOptional<z.ZodCoercedNumber>>,
+  employeeMin: z.coerce.number().int().min(0).optional(),
+  employeeMax: z.coerce.number().int().min(0).optional(),
+  // contains, any case — matched on the client's active offices
+  address: z.string().trim().max(200).optional(),
+  pincode: z.string().trim().max(10).optional(),
   // has an active location of type BRANCH
   hasBranches: z
     .enum(["true", "false"])
@@ -130,9 +199,17 @@ export const listClientsQuery = z.object({
   ...paginationQuery,
   // .catch: an unknown sort from an old link or saved view falls back to the default, not a 400
   // default: last updated first — a run starting / ending counts as an update
-  sortBy: z.enum(["name", "createdAt", "updatedAt", "status", "csrSpentRs", "csrFy", "employeeCount"]).catch("updatedAt"),
+  sortBy: z
+    .enum(["name", "createdAt", "updatedAt", "status", "csrSpentRs", "csrFy", "employeeCount", "shortName", "cin", "entityType", "industry", "category", "businessUnit", "employeeSize", ...FIGURE_KEYS])
+    .catch("updatedAt"),
   sortDir: z.enum(["asc", "desc"]).catch("desc"),
 });
+
+// GET /clients/facets — the values of one column with how many clients have each (other filters applied)
+export const CLIENT_FACETS = ["groupName", "ownership", "csrRoleId", "govtLevel", "govtOrgTypeId", "status", "entityType", "industryId", "categoryId", "employeeSizeId", "businessUnitId", "serviceLineId", "csrFy", "createdById", "assignedToId", "projectId", "country", "state", "city"] as const;
+// q = only values whose label contains it
+export const clientFacetsQuery = listClientsQuery.extend({ field: z.enum(CLIENT_FACETS), q: z.string().trim().max(100).optional() });
+export type ClientFacetsQuery = z.infer<typeof clientFacetsQuery>;
 
 export const clientActivitiesQuery = z.object({
   ...paginationQuery,

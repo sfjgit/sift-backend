@@ -21,7 +21,9 @@
     "seed:pipeline": "tsx src/scripts/pipeline.seed.ts",
     "geo:normalise": "tsx src/scripts/geo.normalise.ts",
     "test:ai": "DATABASE_URL=postgresql://none:none@127.0.0.1:1/none DIRECT_URL=postgresql://none:none@127.0.0.1:1/none DATABASE_URL_AI_READONLY= ANTHROPIC_API_KEY= node --import tsx --test src/tests/*.test.ts",
-    "seed:ai": "tsx src/scripts/ai.seed.ts"
+    "seed:ai": "tsx src/scripts/ai.seed.ts",
+    "docs:api": "tsx src/scripts/apiDocs.ts && npm run docs:schema",
+    "docs:schema": "tsx src/scripts/schemaHistory.ts"
   },
   "prisma": {
     "seed": "tsx src/seed.ts"

@@ -28,12 +28,14 @@ import integrationRoutes from "./integration.routes";
 import alertRoutes from "./alert.routes";
 import runQuotaRoutes from "./runQuota.routes";
 import geoRoutes from "./geo.routes";
+import schemaRoutes from "./schema.routes";
 import svcRoutes from "./svc.routes";
 import platformRoutes from "./platform.routes";
 import websiteRoutes from "./website.routes";
 import aiRoutes from "./ai.routes";
 import recycleRoutes from "./recycle.routes";
 import ticketRoutes from "./ticket.routes";
+import { docsEnabled, docsRouter } from "@/docs/docs.routes";
 
 const router = Router();
 
@@ -53,6 +55,8 @@ router.use("/lookups", lookupRoutes);
 router.use("/auth-logs", authLogRoutes);
 router.use("/audit-logs", auditLogRoutes);
 router.use("/admin", impersonationRoutes);
+// Admin › Data map — the database structure, explained, with its history (super admins)
+router.use("/schema-map", schemaRoutes);
 
 // CRM
 router.use("/clients", clientRoutes);
@@ -83,5 +87,8 @@ router.use("/svc", svcRoutes);
 router.use("/views", viewRoutes);
 router.use("/column-access", columnAccessRoutes);
 router.use("/faqs", faqRoutes);
+
+// generated API docs (off on the public deploy unless API_DOCS=on) — keep last
+if (docsEnabled()) router.use("/docs", docsRouter(router as unknown as Parameters<typeof docsRouter>[0]));
 
 export default router;

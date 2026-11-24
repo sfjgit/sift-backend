@@ -25,6 +25,9 @@ export const LOOKUP_TYPES = [
   "DECISION_AUTHORITY",
   "ORG_TYPE",
   "REVENUE_BAND",
+  // client add-ons (21 Nov 2026)
+  "CSR_ROLE",
+  "GOVT_ORG_TYPE",
 ] as const;
 
 export type LookupType = (typeof LOOKUP_TYPES)[number];
@@ -52,6 +55,34 @@ export const SYSTEM_LOOKUPS: Partial<Record<LookupType, DefaultLookup[]>> = {
 };
 
 export const DEFAULT_LOOKUPS: Partial<Record<LookupType, DefaultLookup[]>> = {
+  // a client's part in CSR (ClientCsr.csrRoleId)
+  CSR_ROLE: [
+    { code: "DONOR", label: "Donor" },
+    { code: "IMPLEMENTING_AGENCY", label: "Implementing agency" },
+    { code: "FOUNDATION", label: "Foundation" },
+  ],
+  // government body types (ClientGovt.orgTypeId) — the B2G register's org_type codes
+  GOVT_ORG_TYPE: [
+    { code: "MINISTRY", label: "Ministry" },
+    { code: "CENT_DEPT", label: "Central department" },
+    { code: "CENT_BODY", label: "Central body / council" },
+    { code: "CPSU", label: "Central PSU" },
+    { code: "STATE_DEPT", label: "State department" },
+    { code: "STATE_DIR", label: "State directorate" },
+    { code: "SPSU", label: "State PSU" },
+    { code: "STATE_MISSION", label: "State skill mission" },
+    { code: "SSC", label: "Sector skill council" },
+    { code: "DEV_AUTHORITY", label: "Development authority" },
+    { code: "URBAN_TRANSPORT", label: "Urban / transport body" },
+    { code: "WATER_BOARD", label: "Water / sewerage board" },
+    { code: "DIST_ADMIN", label: "District administration" },
+    { code: "DIST_OFFICE", label: "District office" },
+    { code: "ULB", label: "Urban local body / municipal" },
+    { code: "PRI", label: "Panchayati Raj institution" },
+    { code: "COMMISSION", label: "Commission" },
+    { code: "ACADEMIC", label: "Academic body" },
+    { code: "OTHER", label: "Other government body" },
+  ],
   SPOC_ROLE: [
     { code: "FINAL_DECISION_MAKER", label: "Final Decision Maker" },
     { code: "KEY_INFLUENCER", label: "Key Influencer" },

@@ -1,0 +1,17 @@
+# A Cloudflare quick tunnel: a public https://….trycloudflare.com address that
+# reaches crm-core-service on this PC (port 5005). No Cloudflare account needed.
+# While it runs, the PC does not go to sleep (idle or lid closed) — a sleeping
+# PC cannot answer. Stop it and sleep works again.
+# The address changes each time the tunnel restarts: ./url.sh prints it.
+[Unit]
+Description=SFJBS CRM dev tunnel (Cloudflare quick tunnel to port 5005)
+After=network-online.target crm-core.service
+Wants=crm-core.service
+
+[Service]
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle:handle-lid-switch --who=crm-dev-tunnel --why="Frontend devs use this PC's CRM backend" --mode=block %h/.local/bin/cloudflared tunnel --no-autoupdate --url http://localhost:5005
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
+import { assertSuperAdmin } from "@/services/editLock.service";
 import { assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
 import {
@@ -112,6 +113,7 @@ export const createCsrProgram = async (req: Request, res: Response) => {
 
 // ── PATCH /clients/:id/csr-programs/:programId
 export const updateCsrProgram = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "edit a CSR programme");
   const { id, programId } = req.validatedParams;
   const b = req.validatedBody as UpdateCsrProgramInput;
   await findClientInScope(req, id);
@@ -162,6 +164,7 @@ export const updateCsrProgram = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/csr-programs/:programId
 export const removeCsrProgram = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a CSR programme");
   const { id, programId } = req.validatedParams;
   await findClientInScope(req, id);
 

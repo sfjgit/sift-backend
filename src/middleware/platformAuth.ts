@@ -11,6 +11,7 @@ import jwt from "jsonwebtoken";
 import prisma from "@/utils/prisma/client";
 import { runAsPlatform } from "@/utils/prisma/tenant";
 import type { JWTPayLoad } from "@/utils/jwt";
+import { tag } from "@/docs/meta";
 
 export const PLATFORM_COOKIE = "platformToken";
 
@@ -56,3 +57,5 @@ export const authenticatePlatform = async (req: Request, res: Response, next: Ne
   req.user = authUser;
   runAsPlatform(next);
 };
+
+tag(authenticatePlatform, { auth: true, platform: true });

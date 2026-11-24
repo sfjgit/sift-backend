@@ -1,0 +1,3634 @@
+[
+ {
+  "ref": "working copy",
+  "at": "2026-11-23T13:06:42.571Z",
+  "author": "uncommitted",
+  "message": "not committed yet — latest migration 20261123120000_client_office_contact",
+  "hash": "1a0adac236",
+  "tables": 65,
+  "addedModels": [
+   "ClientRegistration",
+   "ClientCsr",
+   "ClientGovt",
+   "Person"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Lookup",
+    "added": [
+     "csrByRole",
+     "govtByOrgType"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "groupName",
+     "email",
+     "phone",
+     "registration",
+     "csr",
+     "govt",
+     "govtChildren",
+     "govtNodalOf"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "personId",
+     "person"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "ClientOwnership",
+   "GovtLevel"
+  ]
+ },
+ {
+  "ref": "a742609",
+  "at": "2026-11-20T11:38:04+05:30",
+  "author": "sfjgit",
+  "message": "maining",
+  "hash": "61d082b932",
+  "tables": 61,
+  "addedModels": [
+   "MeetingDetail",
+   "MeetingFile"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "meetingsApproved",
+     "meetingsAsSales",
+     "meetingFiles"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "WorkTask",
+    "added": [
+     "meeting"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "df24f42",
+  "at": "2026-11-16T17:17:56+05:30",
+  "author": "sfjgit",
+  "message": "rahul-crm",
+  "hash": "4631118071",
+  "tables": 59,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Client",
+    "added": [
+     "foundationName",
+     "foundationWebsite",
+     "isListed",
+     "subCategory",
+     "linkedinEmployees",
+     "marketCapRs"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ClientNote",
+    "added": [
+     "section"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ClientCsrProgram",
+    "added": [
+     "sdgs"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "9543703",
+  "at": "2026-11-16T11:31:13+05:30",
+  "author": "sfjgit",
+  "message": "main",
+  "hash": "274c6eb4f5",
+  "tables": 59,
+  "addedModels": [
+   "AiThread",
+   "AiTurn",
+   "AiAnswerMemory",
+   "ChangeLog",
+   "Ticket",
+   "TicketAttachment",
+   "TicketEvent"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "ticketsReported",
+     "ticketsAssigned",
+     "ticketEvents"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "NotificationType",
+   "NotificationReferenceType",
+   "ChangeOp",
+   "TicketKind"
+  ]
+ },
+ {
+  "ref": "c31bf91",
+  "at": "2026-11-13T16:09:40+05:30",
+  "author": "sfjgit",
+  "message": "UI and uix updated before jarvis",
+  "hash": "dd29e3c7db",
+  "tables": 52,
+  "addedModels": [
+   "ClientKeyAccount",
+   "WorkTask"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Tenant",
+    "added": [
+     "workTasks"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Lookup",
+    "added": [
+     "spocsByRoleCategory",
+     "spocsByDecision",
+     "spocsByOrgType",
+     "spocsByRevenueBand"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "keyAccountClients",
+     "keyAccountSpocs",
+     "spocDataFlagsSet",
+     "spocProjectsSet",
+     "clientProjectsSet",
+     "tasksAssigned",
+     "tasksCreated",
+     "tasksClosed"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "csrEligible",
+     "projectIds",
+     "projectSetById",
+     "projectSetBy",
+     "projectSetAt",
+     "keyAccounts",
+     "tasks"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "phone2",
+     "phone3",
+     "state",
+     "district",
+     "city",
+     "pincode",
+     "address",
+     "latitude",
+     "longitude",
+     "distanceKm",
+     "callConnected",
+     "roleCategoryId",
+     "roleCategory",
+     "decisionAuthorityId",
+     "decisionAuthority",
+     "orgTypeId",
+     "orgType",
+     "revenueBandId",
+     "revenueBand",
+     "notesList",
+     "tasks",
+     "erp",
+     "dataFlag",
+     "dataFlagById",
+     "dataFlagBy",
+     "dataFlagAt",
+     "keyAccountUserId",
+     "keyAccountUser",
+     "projectIds",
+     "projectSetById",
+     "projectSetBy",
+     "projectSetAt"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientNote",
+    "added": [
+     "spocId",
+     "spoc",
+     "editedAt"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "SpocDataFlag",
+   "ClientActivityType",
+   "WorkTaskKind",
+   "WorkTaskStatus"
+  ]
+ },
+ {
+  "ref": "8694352",
+  "at": "2026-11-12T16:52:32+05:30",
+  "author": "sfjgit",
+  "message": "core-service",
+  "hash": "47e169be01",
+  "tables": 50,
+  "addedModels": [
+   "AiModeSetting",
+   "AiUserPreference",
+   "AiQuotaPolicy",
+   "AiUserQuotaOverride",
+   "AiModelPricing",
+   "CommandTemplate",
+   "ReportTemplate",
+   "AiAuditLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "AiMode",
+   "AiUsageMode",
+   "AiQuotaPeriod"
+  ]
+ },
+ {
+  "ref": "c092ed8",
+  "at": "2026-11-05T19:30:11+05:30",
+  "author": "sfjgit",
+  "message": "just confirming",
+  "hash": "0c239cd784",
+  "tables": 42,
+  "addedModels": [
+   "Tenant",
+   "ClientCsrFinancial",
+   "ClientCorporateFinancial",
+   "ClientCsrProgram",
+   "ClientCsrProgramSector",
+   "ClientCsrProgramLocation",
+   "CsrAgency"
+  ],
+  "removedModels": [
+   "ClientFinancial",
+   "ClientProgram"
+  ],
+  "fieldChanges": [
+   {
+    "model": "Lookup",
+    "added": [
+     "tenantId",
+     "tenant",
+     "clientsByEmployeeSize",
+     "csrProgramSectors"
+    ],
+    "removed": [
+     "programsBySector"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "name",
+     "code",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ServiceLine",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "name",
+     "code",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Department",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "name",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Designation",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "name",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "User",
+    "added": [
+     "tenantId",
+     "tenant",
+     "isPlatformAdmin"
+    ],
+    "removed": [],
+    "changed": [
+     "employeeId",
+     "legacyCaspaId",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Role",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "name",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Client",
+    "added": [
+     "tenantId",
+     "tenant",
+     "entityType",
+     "employeeCount",
+     "employeeSizeId",
+     "employeeSize",
+     "csrFy",
+     "csrSpentRs",
+     "csrFinancials",
+     "corporateFinancials",
+     "csrPrograms"
+    ],
+    "removed": [
+     "financials",
+     "programs"
+    ],
+    "changed": [
+     "cin",
+     "legacyCaspaId",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "email",
+     "legacyCaspaId",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "StepRun",
+    "added": [
+     "tenantId",
+     "tenant",
+     "csrFinancials",
+     "csrPrograms"
+    ],
+    "removed": [
+     "financials",
+     "programs"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RunQuota",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "SystemAlert",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "AuditLog",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "SavedView",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Faq",
+    "added": [
+     "tenantId",
+     "tenant"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "ClientActivityType",
+   "TenantStatus",
+   "CsrImplementationMode",
+   "ClientEntityType"
+  ]
+ },
+ {
+  "ref": "ceff055",
+  "at": "2026-10-28T15:41:21+05:30",
+  "author": "sfjgit",
+  "message": "major stuff done",
+  "hash": "1bd1f5c31f",
+  "tables": 37,
+  "addedModels": [
+   "ClientAssignment",
+   "ClientServiceLine",
+   "RunQuota",
+   "SystemAlert"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "clients"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ServiceLine",
+    "added": [
+     "clients"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "clientAssignments",
+     "clientAssignmentsGiven",
+     "runQuotas",
+     "runQuotasCreated",
+     "alertsResolved",
+     "outreachReviewed",
+     "outreachUpdated",
+     "outreachSent",
+     "outreachEdited"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Role",
+    "added": [
+     "runQuotas"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "businessUnitId",
+     "businessUnit",
+     "serviceLines",
+     "assignments"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientLocation",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "OutreachPack",
+    "added": [
+     "status",
+     "reviewedById",
+     "reviewedBy",
+     "reviewedAt",
+     "outcomeNote",
+     "repliedAt",
+     "statusById",
+     "statusBy",
+     "statusAt"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "OutreachMessage",
+    "added": [
+     "editedById",
+     "editedBy",
+     "editedAt",
+     "sentAt",
+     "sentById",
+     "sentBy"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "PipelineStep",
+    "added": [
+     "rerunAfterDays",
+     "quotas"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "StepRun",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Notification",
+    "added": [
+     "severity",
+     "link"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "ClientActivityType",
+   "OutreachStatus",
+   "NotificationType",
+   "NotificationReferenceType",
+   "QuotaPeriod",
+   "NotificationSeverity"
+  ]
+ },
+ {
+  "ref": "9f6cee6",
+  "at": "2026-10-26T19:34:59+05:30",
+  "author": "sfjgit",
+  "message": "main",
+  "hash": "d5145cfb0a",
+  "tables": 33,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "spocsApproved"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "fieldSources",
+     "reviewFlag",
+     "reviewReason",
+     "approvalStatus",
+     "approvedById",
+     "approvedBy",
+     "approvedAt",
+     "approvalNote"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "SpocApprovalStatus",
+   "ClientActivityType"
+  ]
+ },
+ {
+  "ref": "446e3f0",
+  "at": "2026-10-26T14:38:52+05:30",
+  "author": "sfjgit",
+  "message": "hehe",
+  "hash": "ce0bb712a0",
+  "tables": 33,
+  "addedModels": [
+   "ClientLocation",
+   "ClientTechnology",
+   "SavedView",
+   "Faq"
+  ],
+  "removedModels": [
+   "BusinessUnitServiceLine"
+  ],
+  "fieldChanges": [
+   {
+    "model": "Lookup",
+    "added": [
+     "locationsByType",
+     "technologiesByCategory"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "BusinessUnit",
+    "added": [],
+    "removed": [
+     "parentBUId",
+     "parentBU",
+     "childBUs",
+     "ancestorIds",
+     "serviceLines"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ServiceLine",
+    "added": [],
+    "removed": [
+     "businessUnits"
+    ],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "legacyCaspaId",
+     "locationsAdded",
+     "technologiesAdded",
+     "savedViews",
+     "faqsCreated"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "locations",
+     "technologies"
+    ],
+    "removed": [
+     "country",
+     "state",
+     "district",
+     "city",
+     "pincode",
+     "address",
+     "parentClientId",
+     "parentClient",
+     "childClients"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "locationId",
+     "location"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "StepRun",
+    "added": [
+     "locations",
+     "technologies"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "ClientActivityType"
+  ]
+ },
+ {
+  "ref": "aee1d2b",
+  "at": "2026-10-24T15:09:43+05:30",
+  "author": "sfjgit",
+  "message": "first step of sales and marketing",
+  "hash": "4df8cdcc6f",
+  "tables": 30,
+  "addedModels": [
+   "Lookup",
+   "BusinessUnitServiceLine",
+   "Designation",
+   "UserBusinessUnit",
+   "UserServiceLine",
+   "ClientSpocAssignment",
+   "ClientActivity",
+   "ClientDocument",
+   "ClientFinancial",
+   "ClientProgram",
+   "OutreachPack",
+   "OutreachMessage",
+   "ExternalService",
+   "PipelineStep",
+   "StepRun",
+   "StepRunEvent"
+  ],
+  "removedModels": [
+   "ImpersonationActionLog",
+   "PortalRecruitLog",
+   "UserAssignableTo",
+   "UserAppCredential",
+   "Module",
+   "ClientSpocDM",
+   "Requirement",
+   "ParsedJDLibrary",
+   "RequirementAssignment",
+   "RequirementStatusHistory",
+   "RequirementActivity",
+   "RequirementNote",
+   "RequirementDocument",
+   "CandidateIndex",
+   "CandidateSnapshot",
+   "RequirementCandidatePipeline",
+   "CandidatePipelineStageLog",
+   "CandidateInterviewSchedule",
+   "PipelineStage",
+   "MigrationStaging",
+   "RequirementCategory",
+   "NaukriRecruiterDaily",
+   "NaukriMessage",
+   "NaukriRecruiterStreak",
+   "MemeAsset",
+   "Ticket",
+   "TicketCategory",
+   "TicketAttachment",
+   "TicketComment",
+   "TicketCommentAttachment",
+   "TicketNotification",
+   "Band",
+   "SavedSearch",
+   "SearchActivityLog",
+   "SourcingActivityLog"
+  ],
+  "fieldChanges": [
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "serviceLines"
+    ],
+    "removed": [
+     "clients",
+     "requirementsBU",
+     "assignmentsBU"
+    ],
+    "changed": [
+     "users"
+    ]
+   },
+   {
+    "model": "ServiceLine",
+    "added": [
+     "businessUnits"
+    ],
+    "removed": [
+     "requirements",
+     "pipelineStages"
+    ],
+    "changed": [
+     "users"
+    ]
+   },
+   {
+    "model": "Department",
+    "added": [],
+    "removed": [
+     "assignments"
+    ],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "designationId",
+     "designation",
+     "businessUnits",
+     "serviceLines",
+     "clientNotes",
+     "spocAssignmentsReceived",
+     "spocAssignmentsGiven",
+     "clientActivities",
+     "stepRuns"
+    ],
+    "removed": [
+     "retrievalPassword",
+     "clientNotesAuthored",
+     "requirementsCreated",
+     "requirementsApproved",
+     "requirementsClosed",
+     "requirementStatusChanges",
+     "requirementActivities",
+     "requirementNotesAuthored",
+     "requirementDocsRaised",
+     "requirementDocsResolved",
+     "assignmentsGiven",
+     "assignmentsReceived",
+     "pipelinesHandling",
+     "pipelinesStageUpdate",
+     "pipelinesSubmitted",
+     "pipelinesOffered",
+     "pipelinesRejected",
+     "pipelineStageChanges",
+     "candidateSnapshotsCreated",
+     "SpocDM",
+     "userAppCredentials",
+     "jdsParsed",
+     "canAssignTo",
+     "assignableBy",
+     "assignableAdded",
+     "buId",
+     "bu",
+     "servicelineId",
+     "serviceline",
+     "createdInterviews",
+     "savedSearches",
+     "searchActivityLogs",
+     "sourcingActivityLogs",
+     "portalRecruitLogs"
+    ],
+    "changed": [
+     "email",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "AuthLogs",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ImpersonationLog",
+    "added": [],
+    "removed": [
+     "actions"
+    ],
+    "changed": []
+   },
+   {
+    "model": "Role",
+    "added": [],
+    "removed": [
+     "canonical"
+    ],
+    "changed": []
+   },
+   {
+    "model": "RolePermission",
+    "added": [
+     "permissionKey",
+     "scope",
+     "createdAt"
+    ],
+    "removed": [
+     "module",
+     "moduleId",
+     "modules",
+     "canView",
+     "canAdd",
+     "canEdit",
+     "canDelete",
+     "canViewScope",
+     "canAddScope",
+     "canEditScope",
+     "canDeleteScope"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Client",
+    "added": [
+     "shortName",
+     "cin",
+     "linkedinUrl",
+     "district",
+     "pincode",
+     "industryId",
+     "categoryId",
+     "category",
+     "legacyCaspaId",
+     "activities",
+     "documents",
+     "financials",
+     "programs",
+     "outreachPacks",
+     "stepRuns"
+    ],
+    "removed": [
+     "vmsName",
+     "businessUnitId",
+     "businessUnit",
+     "requirements",
+     "assignments",
+     "agreementType",
+     "percentageValue",
+     "bands"
+    ],
+    "changed": [
+     "industry",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "nameKey",
+     "linkedinUrl",
+     "seniority",
+     "totalExpYears",
+     "currentOrgExpYears",
+     "sourceId",
+     "source",
+     "emailSourceId",
+     "emailSource",
+     "salesStatusId",
+     "salesStatus",
+     "emailStatus",
+     "validationScore",
+     "validationBand",
+     "validationChecks",
+     "validatedAt",
+     "legacyCaspaId",
+     "sourceRunId",
+     "sourceRun",
+     "assignments",
+     "activities",
+     "outreachPacks",
+     "stepRuns"
+    ],
+    "removed": [
+     "requirements",
+     "clientSpocDms"
+    ],
+    "changed": [
+     "lastName",
+     "email",
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "AuthLogType",
+   "EmailStatus",
+   "ValidationBand",
+   "StepTarget",
+   "StepRunStatus",
+   "ClientActivityType",
+   "NotificationType",
+   "NotificationReferenceType"
+  ]
+ },
+ {
+  "ref": "a844fc6",
+  "at": "2026-10-23T17:25:04+05:30",
+  "author": "swathisfjbs",
+  "message": "added login as user for super admin",
+  "hash": "3841047dc9",
+  "tables": 49,
+  "addedModels": [
+   "ImpersonationActionLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "ImpersonationLog",
+    "added": [
+     "actions"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "ba0d8c1",
+  "at": "2026-10-23T11:50:21+05:30",
+  "author": "sfjgit",
+  "message": "impersonate_user table added",
+  "hash": "9fd069635a",
+  "tables": 48,
+  "addedModels": [
+   "ImpersonationLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "impersonationsDone",
+     "impersonationsReceived"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "0d60564",
+  "at": "2026-10-15T16:11:28+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "ad72ce7cb4",
+  "tables": 47,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "noticePeriodDays"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "6c7e847",
+  "at": "2026-10-14T15:56:51+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "75b36f85e7",
+  "tables": 47,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "ActivityType"
+  ]
+ },
+ {
+  "ref": "0911fa6",
+  "at": "2026-09-28T12:00:19+05:30",
+  "author": "sfjgit",
+  "message": "testtest",
+  "hash": "d1ed4b9c44",
+  "tables": 47,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Requirement",
+    "added": [
+     "perOpeningValue",
+     "saleValueBasis",
+     "saleValueRate",
+     "saleValueFrozenAt"
+    ],
+    "removed": [],
+    "changed": [
+     "saleValue"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "SaleValueBasis",
+   "AchievementStatus"
+  ]
+ },
+ {
+  "ref": "c190ffa",
+  "at": "2026-09-23T11:45:16+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "b95f98bb4a",
+  "tables": 47,
+  "addedModels": [
+   "PortalRecruitLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "portalRecruitLogs"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "cf05504",
+  "at": "2026-09-18T16:30:25+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "9947176c9f",
+  "tables": 46,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "5cb0995",
+  "at": "2026-09-08T12:01:14+05:30",
+  "author": "swathisfjbs",
+  "message": "added transfer of candidates",
+  "hash": "367c675110",
+  "tables": 46,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "isTransferred",
+     "transferredAt"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "d124df7",
+  "at": "2026-09-03T16:06:28+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "2e2d6e8f08",
+  "tables": 46,
+  "addedModels": [
+   "SavedSearch",
+   "SearchActivityLog",
+   "SourcingActivityLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "savedSearches",
+     "searchActivityLogs",
+     "sourcingActivityLogs"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "CandidateSnapshot",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "298703c",
+  "at": "2026-09-01T13:00:06+05:30",
+  "author": "sfjgit",
+  "message": "completed reports",
+  "hash": "3fcc92e19e",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "email"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "22279cc",
+  "at": "2026-08-20T11:46:46+05:30",
+  "author": "sfjgit",
+  "message": "----reports-controller",
+  "hash": "a4b0e33e81",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateSnapshot",
+    "added": [
+     "candidateCode"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "PipelineStage",
+    "added": [
+     "isSourced",
+     "isNearTerminal"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "1babe20",
+  "at": "2026-08-18T10:51:12+05:30",
+  "author": "sfjgit",
+  "message": "heheh",
+  "hash": "460c872f9f",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "AgreementType"
+  ]
+ },
+ {
+  "ref": "4bfc4a2",
+  "at": "2026-08-12T17:09:04+05:30",
+  "author": "sfjgit",
+  "message": "reports updated",
+  "hash": "88104b0e76",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Requirement",
+    "added": [
+     "bandId",
+     "band",
+     "saleValue"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Band",
+    "added": [
+     "requirements"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "36fbe76",
+  "at": "2026-08-10T18:27:40+05:30",
+  "author": "sfjgit",
+  "message": "shhhh",
+  "hash": "f4869e727b",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "PipelineStage",
+    "added": [
+     "pipeline"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "b90d6ce",
+  "at": "2026-08-08T15:48:49+05:30",
+  "author": "sfjgit",
+  "message": "hehehe",
+  "hash": "c38f210f80",
+  "tables": 43,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateSnapshot",
+    "added": [
+     "type"
+    ],
+    "removed": [],
+    "changed": [
+     "createdById",
+     "createdBy",
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "CandidateSnapshotType"
+  ]
+ },
+ {
+  "ref": "b379a8a",
+  "at": "2026-08-06T18:00:12+05:30",
+  "author": "sfjgit",
+  "message": "pushy",
+  "hash": "3df1dca236",
+  "tables": 43,
+  "addedModels": [
+   "TicketCommentAttachment",
+   "TicketNotification"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Ticket",
+    "added": [
+     "raisedByName",
+     "assignedToName",
+     "lastActivityAt",
+     "notifications"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "TicketComment",
+    "added": [
+     "kind",
+     "authorName",
+     "authorRole",
+     "statusAtPost",
+     "fromStatus",
+     "toStatus",
+     "attachments"
+    ],
+    "removed": [],
+    "changed": [
+     "body"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "TicketEventKind"
+  ]
+ },
+ {
+  "ref": "1b49a8c",
+  "at": "2026-08-06T10:14:21+05:30",
+  "author": "sfjgit",
+  "message": "Merge branch 'rahul' of github.com:SFJ-ATS/ats-core-service-test into rahul",
+  "hash": "33107134bc",
+  "tables": 41,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "8a2af62",
+  "at": "2026-08-06T10:14:05+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "b27f55ef36",
+  "tables": 41,
+  "addedModels": [
+   "TicketComment"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   },
+   {
+    "model": "Ticket",
+    "added": [
+     "comments"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "a43d548",
+  "at": "2026-08-04T12:43:35+05:30",
+  "author": "swathisfjbs",
+  "message": "Merge branch 'rahul' of github.com:SFJ-ATS/ats-core-service-test into swathi",
+  "hash": "16f1ca834e",
+  "tables": 40,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "6ce6aad",
+  "at": "2026-08-04T12:40:42+05:30",
+  "author": "sfjgit",
+  "message": "commit",
+  "hash": "23412c66f8",
+  "tables": 40,
+  "addedModels": [
+   "Ticket",
+   "TicketCategory",
+   "TicketAttachment"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType",
+   "TicketStatus",
+   "TicketPriority"
+  ]
+ },
+ {
+  "ref": "4488f6a",
+  "at": "2026-08-04T12:28:30+05:30",
+  "author": "swathisfjbs",
+  "message": "merge branch rahul",
+  "hash": "0bfe06038b",
+  "tables": 37,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "e828b65",
+  "at": "2026-07-31T17:41:35+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "fb68e63bfd",
+  "tables": 37,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "retrievalPassword"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "a86b888",
+  "at": "2026-07-29T10:56:40+05:30",
+  "author": "sfjgit",
+  "message": "reports_fixing",
+  "hash": "d35bef5c4f",
+  "tables": 37,
+  "addedModels": [
+   "NaukriRecruiterDaily",
+   "NaukriMessage",
+   "NaukriRecruiterStreak",
+   "MemeAsset"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType",
+   "NaukriPromiseStatus",
+   "MemeCategory",
+   "NaukriMsgAuthor"
+  ]
+ },
+ {
+  "ref": "1173e9d",
+  "at": "2026-07-27T18:59:32+05:30",
+  "author": "swathisfjbs",
+  "message": "added interview notification",
+  "hash": "d1aeab8495",
+  "tables": 33,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "b3f6651",
+  "at": "2026-07-27T15:00:58+05:30",
+  "author": "swathisfjbs",
+  "message": "updated schema",
+  "hash": "6da7ca1200",
+  "tables": 33,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "roundNumber",
+     "scheduledAt",
+     "durationMins"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "c4e06c3",
+  "at": "2026-07-27T12:17:42+05:30",
+  "author": "sfjgit",
+  "message": "to-swathi",
+  "hash": "b295751930",
+  "tables": 33,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateInterviewSchedule",
+    "added": [],
+    "removed": [
+     "status"
+    ],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "c430d63",
+  "at": "2026-07-27T10:49:41+05:30",
+  "author": "sfjgit",
+  "message": "role-controller",
+  "hash": "ff137d402a",
+  "tables": 33,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Role",
+    "added": [
+     "canonical"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "RoleCanonical"
+  ]
+ },
+ {
+  "ref": "7527327",
+  "at": "2026-07-26T16:53:29+05:30",
+  "author": "Binta-SFJ",
+  "message": "added requirement category",
+  "hash": "c68c44f344",
+  "tables": 33,
+  "addedModels": [
+   "RequirementCategory"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Requirement",
+    "added": [
+     "requirementCategoryId",
+     "requirementCategory"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "fe19fa6",
+  "at": "2026-07-25T14:52:04+05:30",
+  "author": "swathisfjbs",
+  "message": "added schema",
+  "hash": "066c47329f",
+  "tables": 32,
+  "addedModels": [
+   "CandidateInterviewSchedule"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "createdInterviews"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "interviewSchedules"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "PipelineStage",
+    "added": [
+     "interviewSchedules"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "NotificationType",
+   "NotificationReferenceType",
+   "InterviewMode"
+  ]
+ },
+ {
+  "ref": "5d5e2fa",
+  "at": "2026-07-24T15:59:24+05:30",
+  "author": "sfjgit",
+  "message": "auth_logs added to prisma",
+  "hash": "3e3d05983e",
+  "tables": 31,
+  "addedModels": [
+   "AuthLogs"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "authLogs"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "AuthLogType"
+  ]
+ },
+ {
+  "ref": "4c18622",
+  "at": "2026-07-24T15:36:34+05:30",
+  "author": "sfjgit",
+  "message": "pull it",
+  "hash": "833efb1ddc",
+  "tables": 30,
+  "addedModels": [
+   "CandidateIndex"
+  ],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": []
+ },
+ {
+  "ref": "9222229",
+  "at": "2026-07-24T12:33:32+05:30",
+  "author": "sfjgit",
+  "message": "jnnu",
+  "hash": "c5520e3a52",
+  "tables": 29,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "CanonicalStage"
+  ]
+ },
+ {
+  "ref": "30995b0",
+  "at": "2026-07-22T15:46:56+05:30",
+  "author": "sfjgit",
+  "message": "migrated-done",
+  "hash": "46c972353f",
+  "tables": 29,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "CanonicalStage"
+  ]
+ },
+ {
+  "ref": "6d49eae",
+  "at": "2026-07-21T15:36:24+05:30",
+  "author": "sfjgit",
+  "message": "added fixed multiple issues around this",
+  "hash": "9eb534b62b",
+  "tables": 29,
+  "addedModels": [
+   "Band"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "Client",
+    "added": [
+     "agreementType",
+     "percentageValue",
+     "bands"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "noticePeriod"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "PipelineStage",
+    "added": [
+     "isStandard"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "AgreementType"
+  ]
+ },
+ {
+  "ref": "34b3968",
+  "at": "2026-07-14T10:39:16+05:30",
+  "author": "sfjgit",
+  "message": "done and dusted",
+  "hash": "9d105221c4",
+  "tables": 28,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "MigrationStagingType"
+  ]
+ },
+ {
+  "ref": "1a7c0ad",
+  "at": "2026-07-10T08:59:25+05:30",
+  "author": "sfjgit",
+  "message": "chnages-and-updated",
+  "hash": "cbea8087b7",
+  "tables": 28,
+  "addedModels": [
+   "MigrationStaging"
+  ],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "MigrationStagingType",
+   "MigrationStagingStatus"
+  ]
+ },
+ {
+  "ref": "080a51c",
+  "at": "2026-07-07T18:51:21+05:30",
+  "author": "Binta-SFJ",
+  "message": "many changes done",
+  "hash": "6b7c148348",
+  "tables": 27,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "resetPasswordToken",
+     "resetPasswordExpires"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "6b49100",
+  "at": "2026-07-06T12:27:03+05:30",
+  "author": "swathisfjbs",
+  "message": "added sourced feild",
+  "hash": "809284312a",
+  "tables": 27,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "CandidateSnapshot",
+    "added": [
+     "sourced"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "0f56801",
+  "at": "2026-07-04T18:32:39+05:30",
+  "author": "swathisfjbs",
+  "message": "updated departments and added fields in user",
+  "hash": "f36a0c49fd",
+  "tables": 27,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "users"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ServiceLine",
+    "added": [
+     "users"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "buId",
+     "bu",
+     "servicelineId",
+     "serviceline"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "e3cd21d",
+  "at": "2026-06-27T16:23:09+05:30",
+  "author": "sfjgit",
+  "message": "reports-added",
+  "hash": "550719d6f7",
+  "tables": 27,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "currentCtc",
+     "expectedCtc",
+     "negotiatedCtc",
+     "ctcNotes",
+     "lastWorkingDate",
+     "monthOfJoining",
+     "remainingDaysToJoin"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "e09a5fe",
+  "at": "2026-06-15T16:38:33+05:30",
+  "author": "sfjgit",
+  "message": "added-stuff",
+  "hash": "0179a76703",
+  "tables": 27,
+  "addedModels": [
+   "UserAssignableTo"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "canAssignTo",
+     "assignableBy",
+     "assignableAdded"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "56a6d0e",
+  "at": "2026-06-11T17:23:47+05:30",
+  "author": "sfjgit",
+  "message": "hehehe",
+  "hash": "2c7034cf90",
+  "tables": 26,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [],
+    "removed": [
+     "currentCanonicalStage"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "CanonicalStage"
+  ]
+ },
+ {
+  "ref": "0cc442c",
+  "at": "2026-06-10T19:22:55+05:30",
+  "author": "sfjgit",
+  "message": "hahahah this not the end",
+  "hash": "be537e0a53",
+  "tables": 26,
+  "addedModels": [
+   "ClientSpocDM"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "SpocDM"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "clientSpocDms"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "PipelineStage",
+    "added": [
+     "serviceLine",
+     "serviceLineId"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "PermissionScope"
+  ]
+ },
+ {
+  "ref": "28f49bd",
+  "at": "2026-06-05T19:28:32+05:30",
+  "author": "sfjgit",
+  "message": "core-service",
+  "hash": "046802bc51",
+  "tables": 25,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "PipelineStage",
+    "added": [
+     "createdAt"
+    ],
+    "removed": [
+     "serviceLineId",
+     "serviceLine"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "CanonicalStage"
+  ]
+ },
+ {
+  "ref": "0724554",
+  "at": "2026-06-05T18:32:15+05:30",
+  "author": "sfjgit",
+  "message": "piplinestage",
+  "hash": "5db3f7c6c2",
+  "tables": 25,
+  "addedModels": [
+   "ParsedJDLibrary"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "jdsParsed"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "jobOpenFor",
+     "primarySkills",
+     "keySkills",
+     "city",
+     "state",
+     "salaryCurrency",
+     "bonusAmount",
+     "hideSalaryFromCandidate",
+     "showMedianSalary",
+     "education",
+     "functionalArea",
+     "shift",
+     "targetCompanies",
+     "noPoachCompanies",
+     "jdParsedAt",
+     "jdParseStatus",
+     "jdParsedFields",
+     "targetDate",
+     "closureReason",
+     "parsedJDId",
+     "parsedJD"
+    ],
+    "removed": [
+     "location",
+     "skills",
+     "filledOpenings",
+     "activeApplications",
+     "interviewsScheduled",
+     "offersRolledOut",
+     "endDate"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "PipelineStage",
+    "added": [
+     "canonicalStage"
+    ],
+    "removed": [],
+    "changed": [
+     "code",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementCandidatePipeline",
+    "added": [
+     "currentCanonicalStage",
+     "disposition",
+     "dispositionAt",
+     "dropReason",
+     "dropNote"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "CandidatePipelineStageLog",
+    "added": [
+     "fromCanonicalStage",
+     "toCanonicalStage"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "AssignmentStatus",
+   "JobOpenFor",
+   "ClosureReason",
+   "JDParseStatus",
+   "CandidateDisposition",
+   "DropReason",
+   "CanonicalStage"
+  ]
+ },
+ {
+  "ref": "6da9994",
+  "at": "2026-05-16T17:21:15+05:30",
+  "author": "sfjgit",
+  "message": "core-test",
+  "hash": "7b0a3f21cb",
+  "tables": 24,
+  "addedModels": [
+   "Module"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "RolePermission",
+    "added": [
+     "moduleId",
+     "modules"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "PermissionScope"
+  ]
+ },
+ {
+  "ref": "40944ea",
+  "at": "2026-05-11T16:00:51+05:30",
+  "author": "sfjgit",
+  "message": "core-service-test",
+  "hash": "697e067be5",
+  "tables": 23,
+  "addedModels": [
+   "UserAppCredential"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "userAppCredentials"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "55b8ad4",
+  "at": "2026-05-09T17:55:14+05:30",
+  "author": "sfjgit",
+  "message": "pppp",
+  "hash": "eae571d2a0",
+  "tables": 22,
+  "addedModels": [
+   "PipelineStage",
+   "CandidateSnapshot",
+   "RequirementCandidatePipeline",
+   "CandidatePipelineStageLog"
+  ],
+  "removedModels": [
+   "RequirementCandidate"
+  ],
+  "fieldChanges": [
+   {
+    "model": "ServiceLine",
+    "added": [
+     "pipelineStages"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "User",
+    "added": [
+     "pipelinesHandling",
+     "pipelinesStageUpdate",
+     "pipelinesSubmitted",
+     "pipelinesOffered",
+     "pipelinesRejected",
+     "pipelineStageChanges",
+     "candidateSnapshotsCreated"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "candidateSnapshots",
+     "pipelines"
+    ],
+    "removed": [
+     "candidates"
+    ],
+    "changed": []
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "pipelines"
+    ],
+    "removed": [
+     "candidates"
+    ],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "OfferStatus"
+  ]
+ },
+ {
+  "ref": "87d6437",
+  "at": "2026-05-07T10:45:44+05:30",
+  "author": "sfjgit",
+  "message": "rahul-y-jjj",
+  "hash": "8765f9a826",
+  "tables": 19,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "spocsHandled",
+     "spocsAdded"
+    ],
+    "removed": [
+     "clientSpocs",
+     "clientSpocsAssigned"
+    ],
+    "changed": []
+   },
+   {
+    "model": "ClientSpoc",
+    "added": [
+     "firstName",
+     "lastName",
+     "email",
+     "phone",
+     "designation",
+     "department",
+     "handlerId",
+     "handler",
+     "addedById",
+     "addedBy",
+     "createdAt",
+     "updatedAt"
+    ],
+    "removed": [
+     "userId",
+     "user",
+     "assignedById",
+     "assignedBy",
+     "assignedAt",
+     "removedAt"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "5cf2272",
+  "at": "2026-05-05T15:03:26+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "efd953fd2e",
+  "tables": 19,
+  "addedModels": [
+   "ServiceLine",
+   "Department",
+   "ClientSpoc",
+   "RequirementCandidate"
+  ],
+  "removedModels": [
+   "TeamArc",
+   "Team",
+   "TeamEdge",
+   "TeamMember",
+   "TeamMemberHistory",
+   "TeamVisibilityConfig",
+   "TeamUnlinkHistory",
+   "ClientHandler",
+   "ClientTeamAssignment",
+   "ClientContact",
+   "Skill",
+   "RequirementJD",
+   "RequirementSkill"
+  ],
+  "fieldChanges": [
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "code",
+     "ancestorIds",
+     "clientSpocs",
+     "requirementsBU",
+     "assignmentsBU"
+    ],
+    "removed": [
+     "teams",
+     "teamArcs",
+     "users",
+     "requirements"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "User",
+    "added": [
+     "teamLeadId",
+     "teamLead",
+     "teamMembers",
+     "departmentId",
+     "department",
+     "clientSpocs",
+     "clientSpocsAssigned",
+     "assignmentsGiven",
+     "assignmentsReceived"
+    ],
+    "removed": [
+     "nickName",
+     "businessUnitId",
+     "businessUnit",
+     "teamMemberships",
+     "jdUploads",
+     "requirementAssignmentsGiven",
+     "requirementAssignmentsAsRecruiter",
+     "clientHandlerEntries",
+     "clientHandlersAssigned",
+     "clientContactsOwned",
+     "clientTeamAssignmentsAssigned",
+     "teamMembersDeactivated",
+     "teamMembersReplaced",
+     "teamMemberHistoriesAsUser",
+     "teamMemberHistoriesPerformed",
+     "teamUnlinksDone"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RolePermission",
+    "added": [
+     "canViewScope",
+     "canAddScope",
+     "canEditScope",
+     "canDeleteScope"
+    ],
+    "removed": [
+     "scope"
+    ],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "spocs",
+     "assignments"
+    ],
+    "removed": [
+     "category",
+     "contacts",
+     "handlers",
+     "teamAssignments"
+    ],
+    "changed": []
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "jdFileKey",
+     "jdFileName",
+     "jdFileType",
+     "jdUploadedAt",
+     "clientSpocId",
+     "clientSpoc",
+     "serviceLineId",
+     "serviceLine",
+     "candidates"
+    ],
+    "removed": [
+     "clientContactId",
+     "clientContact",
+     "jd"
+    ],
+    "changed": [
+     "skills",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "assignedToId",
+     "assignedTo",
+     "assigneeDepartmentId",
+     "assigneeDepartment",
+     "assigneeBUId",
+     "assigneeBU",
+     "clientId",
+     "client",
+     "depth",
+     "candidates"
+    ],
+    "removed": [
+     "assignmentType",
+     "recruiterId",
+     "recruiter",
+     "teamId",
+     "team",
+     "teamMemberId",
+     "teamMember",
+     "isAutoRouted",
+     "isSystemAssigned"
+    ],
+    "changed": [
+     "assignedById",
+     "assignedBy",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementStatusHistory",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementDocument",
+    "added": [],
+    "removed": [
+     "type"
+    ],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "PermissionScope",
+   "ActivityType",
+   "NotificationType",
+   "CandidateStageStatus"
+  ]
+ },
+ {
+  "ref": "3097b10",
+  "at": "2026-04-28T19:26:50+05:30",
+  "author": "sfjgit",
+  "message": "rahulcreatedmany fucntionalities",
+  "hash": "e3f507d01b",
+  "tables": 28,
+  "addedModels": [
+   "TeamArc"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "BusinessUnit",
+    "added": [
+     "teamArcs"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Team",
+    "added": [
+     "teamArcId",
+     "teamArc"
+    ],
+    "removed": [
+     "parentTeamId",
+     "parentTeam",
+     "childTeams"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "TeamMember",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "dafaf9e",
+  "at": "2026-04-27T12:04:44+05:30",
+  "author": "sfjgit",
+  "message": "changing-arcs",
+  "hash": "a0dadaf8da",
+  "tables": 27,
+  "addedModels": [
+   "TeamEdge",
+   "TeamMemberHistory",
+   "TeamVisibilityConfig",
+   "TeamUnlinkHistory",
+   "Client",
+   "Skill"
+  ],
+  "removedModels": [
+   "ClientClient",
+   "OrgFlow"
+  ],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "clientContactsOwned",
+     "teamMemberHistoriesAsUser",
+     "teamMemberHistoriesPerformed",
+     "teamUnlinksDone"
+    ],
+    "removed": [
+     "passwordPlain",
+     "orgFlowsCreated",
+     "orgFlowsUpdated"
+    ],
+    "changed": [
+     "clientsCreated",
+     "clientsApproved",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "BusinessUnit",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "clients"
+    ]
+   },
+   {
+    "model": "Team",
+    "added": [
+     "nodeType",
+     "visibilityConfig",
+     "parentEdges",
+     "childEdges",
+     "memberHistories",
+     "unlinkHistory",
+     "unlinkedFromHistory"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "TeamMember",
+    "added": [
+     "assignments",
+     "history"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientHandler",
+    "added": [
+     "status",
+     "removedAt",
+     "removedReason"
+    ],
+    "removed": [],
+    "changed": [
+     "client",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientTeamAssignment",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "client"
+    ]
+   },
+   {
+    "model": "ClientContact",
+    "added": [
+     "status",
+     "ownerId",
+     "owner"
+    ],
+    "removed": [
+     "isActive"
+    ],
+    "changed": [
+     "client",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientNote",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "client"
+    ]
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "deletedAt"
+    ],
+    "removed": [],
+    "changed": [
+     "client",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementJD",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementSkill",
+    "added": [
+     "skillId"
+    ],
+    "removed": [],
+    "changed": [
+     "skill",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementDocument",
+    "added": [
+     "fileKey"
+    ],
+    "removed": [
+     "fileUrl"
+    ],
+    "changed": []
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "teamMemberId",
+     "teamMember"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NodeType",
+   "EdgeType",
+   "TeamMemberEvent",
+   "ClientHandlerStatus",
+   "ClientContactStatus"
+  ]
+ },
+ {
+  "ref": "6959543",
+  "at": "2026-04-23T16:22:27+05:30",
+  "author": "sfjgit",
+  "message": "jksjsk",
+  "hash": "9e4186ba59",
+  "tables": 23,
+  "addedModels": [
+   "RequirementJD",
+   "RequirementSkill"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "jdUploads"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Team",
+    "added": [],
+    "removed": [
+     "dataPolicy"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientClient",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "experienceMin",
+     "experienceMax",
+     "isRespondByBreached",
+     "isTurnaroundBreached",
+     "jd",
+     "skills"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "deadline",
+     "deadlineMet",
+     "breachedAt",
+     "reminderSentAt"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "NotificationType"
+  ]
+ },
+ {
+  "ref": "805eff3",
+  "at": "2026-04-21T19:48:16+05:30",
+  "author": "sfjgit",
+  "message": "rahul",
+  "hash": "b0e795fce9",
+  "tables": 21,
+  "addedModels": [
+   "ClientClient",
+   "RequirementActivity",
+   "Notification"
+  ],
+  "removedModels": [
+   "Client",
+   "ContactHandler"
+  ],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "notifications",
+     "requirementActivities",
+     "requirementsClosed"
+    ],
+    "removed": [
+     "contactHandlerEntries",
+     "contactHandlersAssigned",
+     "requirementsAsDeliveryLead",
+     "requirementsAsTeamLead"
+    ],
+    "changed": [
+     "clientsCreated",
+     "clientsApproved"
+    ]
+   },
+   {
+    "model": "BusinessUnit",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "clients"
+    ]
+   },
+   {
+    "model": "Team",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "category"
+    ]
+   },
+   {
+    "model": "ClientHandler",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "client",
+     "role",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientTeamAssignment",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "client"
+    ]
+   },
+   {
+    "model": "ClientContact",
+    "added": [],
+    "removed": [
+     "handlers"
+    ],
+    "changed": [
+     "client"
+    ]
+   },
+   {
+    "model": "ClientNote",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "client"
+    ]
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "activeApplications",
+     "interviewsScheduled",
+     "offersRolledOut",
+     "closedById",
+     "closedBy",
+     "activities"
+    ],
+    "removed": [
+     "deliveryLeadId",
+     "deliveryLead",
+     "teamLeadId",
+     "teamLead"
+    ],
+    "changed": [
+     "client",
+     "salaryType"
+    ]
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "submissionsCount",
+     "interviewsCount",
+     "parentAssignmentId",
+     "parentAssignment",
+     "childAssignments"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "PermissionScope",
+   "TeamCategory",
+   "ClientHandlerRole",
+   "ClientCategory",
+   "AssignmentType",
+   "SalaryType",
+   "ActivityType",
+   "NotificationType",
+   "NotificationReferenceType"
+  ]
+ },
+ {
+  "ref": "bab317d",
+  "at": "2026-04-08T10:35:00+05:30",
+  "author": "sfjgit",
+  "message": "rahul y h",
+  "hash": "6a192dd2c4",
+  "tables": 20,
+  "addedModels": [],
+  "removedModels": [
+   "FileAsset",
+   "Candidate",
+   "CandidateTag",
+   "Application",
+   "ApplicationStatusHistory",
+   "Interview",
+   "InterviewPanelMember",
+   "InterviewFeedback",
+   "Offer",
+   "OfferStatusHistory",
+   "Onboarding",
+   "OnboardingTask",
+   "CommunicationLog"
+  ],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [],
+    "removed": [
+     "candidatesCreated",
+     "fileAssetsUploaded",
+     "applicationsOwned",
+     "appStatusChanges",
+     "interviewsCreated",
+     "interviewPanels",
+     "interviewFeedbacks",
+     "offersCreated",
+     "offersApproved",
+     "offerStatusChanges",
+     "onboardingsManaged",
+     "onboardingTasksDone",
+     "communicationsSent"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RefreshToken",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "BusinessUnit",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Team",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "TeamMember",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Client",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientContact",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientNote",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "Requirement",
+    "added": [],
+    "removed": [
+     "applications"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementDocument",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementNote",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementStatusHistory",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "OrgFlow",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "AuditLog",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "FlowNodeType"
+  ]
+ },
+ {
+  "ref": "0ab4b4c",
+  "at": "2026-03-27T12:51:43+05:30",
+  "author": "sfjgit",
+  "message": "migration towards next step of the app",
+  "hash": "7c3aa4d30f",
+  "tables": 33,
+  "addedModels": [
+   "FileAsset",
+   "Candidate",
+   "CandidateTag",
+   "Application",
+   "ApplicationStatusHistory",
+   "Interview",
+   "InterviewPanelMember",
+   "InterviewFeedback",
+   "Offer",
+   "OfferStatusHistory",
+   "Onboarding",
+   "OnboardingTask",
+   "CommunicationLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "candidatesCreated",
+     "fileAssetsUploaded",
+     "applicationsOwned",
+     "appStatusChanges",
+     "interviewsCreated",
+     "interviewPanels",
+     "interviewFeedbacks",
+     "offersCreated",
+     "offersApproved",
+     "offerStatusChanges",
+     "onboardingsManaged",
+     "onboardingTasksDone",
+     "communicationsSent"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "applications"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "AuditLog",
+    "added": [],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": [
+   "FlowNodeType",
+   "FileEntityType",
+   "FilePurpose",
+   "CandidateSource",
+   "ResumeParseStatus",
+   "ApplicationStatus",
+   "InterviewType",
+   "InterviewMode",
+   "InterviewStatus",
+   "FeedbackVerdict",
+   "OfferStatus",
+   "OnboardingStatus",
+   "OnboardingTaskCategory",
+   "CommunicationChannel",
+   "CommunicationDirection",
+   "CommStatus"
+  ]
+ },
+ {
+  "ref": "24f5c52",
+  "at": "2026-03-19T12:01:47+05:30",
+  "author": "sfjgit",
+  "message": "migrated files latest",
+  "hash": "85bb538890",
+  "tables": 20,
+  "addedModels": [],
+  "removedModels": [],
+  "fieldChanges": [
+   {
+    "model": "User",
+    "added": [
+     "createdById",
+     "createdByMe",
+     "clientsCreated",
+     "clientsApproved",
+     "clientHandlerEntries",
+     "clientHandlersAssigned",
+     "clientTeamAssignmentsAssigned",
+     "contactHandlerEntries",
+     "contactHandlersAssigned",
+     "clientNotesAuthored",
+     "requirementsCreated",
+     "requirementsApproved",
+     "requirementsAsDeliveryLead",
+     "requirementsAsTeamLead",
+     "requirementDocsRaised",
+     "requirementDocsResolved",
+     "requirementNotesAuthored",
+     "requirementStatusChanges",
+     "requirementAssignmentsGiven",
+     "requirementAssignmentsAsRecruiter",
+     "teamMembersDeactivated",
+     "teamMembersReplaced",
+     "orgFlowsCreated",
+     "orgFlowsUpdated",
+     "auditLogs"
+    ],
+    "removed": [],
+    "changed": [
+     "createdBy"
+    ]
+   },
+   {
+    "model": "TeamMember",
+    "added": [
+     "deactivatedAt",
+     "deactivatedById",
+     "deactivatedBy",
+     "deactivationReason",
+     "replacedByUserId",
+     "replacedByUser",
+     "replacedByMemberId",
+     "replacedByMember",
+     "replacedMembers"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "createdById",
+     "approvedById"
+    ],
+    "removed": [],
+    "changed": [
+     "createdBy",
+     "approvedBy"
+    ]
+   },
+   {
+    "model": "ClientHandler",
+    "added": [
+     "user",
+     "assignedById"
+    ],
+    "removed": [],
+    "changed": [
+     "assignedBy"
+    ]
+   },
+   {
+    "model": "ClientTeamAssignment",
+    "added": [
+     "assignedById"
+    ],
+    "removed": [],
+    "changed": [
+     "assignedBy"
+    ]
+   },
+   {
+    "model": "ContactHandler",
+    "added": [
+     "user",
+     "assignedById"
+    ],
+    "removed": [],
+    "changed": [
+     "assignedBy"
+    ]
+   },
+   {
+    "model": "ClientNote",
+    "added": [
+     "author"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "Requirement",
+    "added": [
+     "createdById",
+     "approvedById",
+     "deliveryLead",
+     "teamLead"
+    ],
+    "removed": [],
+    "changed": [
+     "createdBy",
+     "approvedBy"
+    ]
+   },
+   {
+    "model": "RequirementDocument",
+    "added": [
+     "resolvedById",
+     "raisedById"
+    ],
+    "removed": [],
+    "changed": [
+     "resolvedBy",
+     "raisedBy"
+    ]
+   },
+   {
+    "model": "RequirementAssignment",
+    "added": [
+     "status",
+     "recruiter",
+     "isSystemAssigned",
+     "assignedById",
+     "removedAt",
+     "removedReason"
+    ],
+    "removed": [],
+    "changed": [
+     "assignedBy",
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "RequirementNote",
+    "added": [
+     "author"
+    ],
+    "removed": [],
+    "changed": []
+   },
+   {
+    "model": "RequirementStatusHistory",
+    "added": [
+     "changedById"
+    ],
+    "removed": [],
+    "changed": [
+     "changedBy"
+    ]
+   },
+   {
+    "model": "OrgFlow",
+    "added": [
+     "createdById",
+     "updatedById"
+    ],
+    "removed": [],
+    "changed": [
+     "createdBy",
+     "updatedBy"
+    ]
+   },
+   {
+    "model": "AuditLog",
+    "added": [
+     "actor"
+    ],
+    "removed": [],
+    "changed": []
+   }
+  ],
+  "enumChanges": [
+   "AssignmentStatus"
+  ]
+ },
+ {
+  "ref": "0dbeac5",
+  "at": "2026-03-12T11:03:06+05:30",
+  "author": "sfjgit",
+  "message": "rahul pushing db schema",
+  "hash": "ec208ed8f5",
+  "tables": 20,
+  "addedModels": [
+   "User",
+   "RefreshToken",
+   "Role",
+   "RolePermission",
+   "Team",
+   "TeamMember",
+   "BusinessUnit",
+   "Client",
+   "ClientHandler",
+   "ClientTeamAssignment",
+   "ClientContact",
+   "ContactHandler",
+   "ClientNote",
+   "Requirement",
+   "RequirementDocument",
+   "RequirementAssignment",
+   "RequirementNote",
+   "RequirementStatusHistory",
+   "OrgFlow",
+   "AuditLog"
+  ],
+  "removedModels": [],
+  "fieldChanges": [],
+  "enumChanges": [
+   "PermissionScope",
+   "TeamRole",
+   "TeamDataPolicy",
+   "ClientStatus",
+   "DocumentEventType",
+   "AssignmentType",
+   "RequirementType",
+   "RemoteType",
+   "Priority",
+   "RequirementStatus",
+   "FlowNodeType"
+  ]
+ }
+]

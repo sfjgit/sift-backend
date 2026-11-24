@@ -220,7 +220,7 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
   const c = await prisma.client.findFirst({
     where: { id, deletedAt: null, ...(g === true || !g ? {} : await clientScopeWhere(user, g)) },
     select: {
-      name: true, status: true, website: true, cin: true, csrSpentRs: true, csrFy: true, csrEligible: true, employeeCount: true,
+      name: true, status: true, website: true, registration: { select: { cin: true } }, csrSpentRs: true, csrFy: true, csr: { select: { csrEligible: true } }, employeeCount: true,
       industry: { select: { label: true } }, category: { select: { label: true } },
       locations: { where: { isPrimary: true, isActive: true }, select: { city: true, state: true }, take: 1 },
       csrFinancials: { select: { fy: true, obligationRs: true, spentRs: true, unspentRs: true }, orderBy: { fy: "desc" }, take: 1 },
@@ -233,7 +233,7 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
   const hq = c.locations[0];
   const out = [`**${c.name}** — ${c.status.toLowerCase()} client${c.industry ? `, ${c.industry.label}` : ""}${c.category ? ` (${c.category.label})` : ""}${hq?.state ? `, head office in ${[hq.city, hq.state].filter(Boolean).join(", ")}` : ""}.`, ""];
   out.push("**Where it stands**");
-  out.push(`- Assigned to ${c.assignments.length ? c.assignments.map((a) => nameOf(a.user)).join(", ") : "nobody yet"}${c._count.keyAccounts ? `; a key account for ${c._count.keyAccounts}` : ""}${c.csrEligible === true ? "; marked CSR eligible" : c.csrEligible === false ? "; marked not CSR eligible" : ""}.`);
+  out.push(`- Assigned to ${c.assignments.length ? c.assignments.map((a) => nameOf(a.user)).join(", ") : "nobody yet"}${c._count.keyAccounts ? `; a key account for ${c._count.keyAccounts}` : ""}${c.csr?.csrEligible === true ? "; marked CSR eligible" : c.csr?.csrEligible === false ? "; marked not CSR eligible" : ""}.`);
   if (perms["spocs.read"]) {
     const approved = c.spocs.filter((s) => s.approvalStatus === "APPROVED").length;
     const status = new Map<string, number>();
@@ -254,7 +254,7 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
         : "- No CSR figures on record yet.",
     );
   }
-  const missing = [!c.website && "website", !c.cin && "CIN", !c.industry && "industry", !c._count.locations && "an office address", c.employeeCount === null && "employee count"].filter(Boolean);
+  const missing = [!c.website && "website", !c.registration?.cin && "CIN", !c.industry && "industry", !c._count.locations && "an office address", c.employeeCount === null && "employee count"].filter(Boolean);
   if (missing.length) out.push("", `**Missing:** ${missing.join(", ")}.`);
   return out.join("\n");
 };
@@ -421,7 +421,7 @@ const recordFacts = async (user: AuthUser, perms: PermissionMap, page: Page): Pr
     const c = await prisma.client.findFirst({
       where: { id: page.id, deletedAt: null, ...(g === true ? {} : await clientScopeWhere(user, g)) },
       select: {
-        name: true, status: true, website: true, cin: true, employeeCount: true, entityType: true,
+        name: true, status: true, website: true, registration: { select: { cin: true } }, employeeCount: true, entityType: true,
         industry: { select: { label: true } }, category: { select: { label: true } }, businessUnit: { select: { name: true } },
         locations: { where: { isActive: true }, select: { city: true, state: true, district: true, isPrimary: true }, take: 50 },
         assignments: { where: { endedAt: null }, select: { user: { select: { firstName: true, lastName: true } } } },
@@ -441,7 +441,7 @@ const recordFacts = async (user: AuthUser, perms: PermissionMap, page: Page): Pr
     for (const a of c.assignments) facts.push(["assigned to", nameOf(a.user)]);
     facts.push(["SPOCs", String(c._count.spocs)]);
     if (c.website) facts.push(["website", c.website]);
-    if (c.cin) facts.push(["CIN", c.cin]);
+    if (c.registration?.cin) facts.push(["CIN", c.registration.cin]);
     if (c.employeeCount !== null) facts.push(["employees", String(c.employeeCount)]);
     return { name: c.name, facts };
   }

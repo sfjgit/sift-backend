@@ -62,6 +62,9 @@ const TENANT_MODELS = new Set<string>([
   "ChangeLog",
   // support tickets
   "Ticket",
+  // a human behind one or more client SPOC roles; a client's company registration (CIN unique per tenant)
+  "Person",
+  "ClientRegistration",
 ]);
 
 // tenantId may be null = platform row every tenant reads (not writes)
@@ -79,6 +82,8 @@ const VIA_PARENT: Record<string, (t: string) => object> = {
   ImpersonationLog: (t) => ({ impersonator: { tenantId: t } }),
   ClientAssignment: byClient,
   ClientServiceLine: byClient,
+  ClientCsr: byClient,
+  ClientGovt: byClient,
   ClientLocation: byClient,
   ClientTechnology: byClient,
   ClientNote: byClient,

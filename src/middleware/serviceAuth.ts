@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import prisma from "@/utils/prisma/client";
 import { runInTenant } from "@/utils/prisma/tenant";
+import { tag } from "@/docs/meta";
 
 export const hashServiceKey = (key: string) =>
   crypto.createHash("sha256").update(key, "utf8").digest("hex");
@@ -62,3 +63,5 @@ export const runTenantOfStepRun = async (req: Request, res: Response, next: Next
   }
   runInTenant(run.tenantId, next);
 };
+
+tag(authenticateService, { service: true });

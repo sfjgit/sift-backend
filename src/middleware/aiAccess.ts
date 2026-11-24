@@ -18,6 +18,7 @@ import { AI_DEFAULTS } from "@/config/aiDefaults";
 import { resolveAccess } from "@/services/ai/settings.service";
 import { logAi, type AiOutcome } from "@/services/ai/audit.service";
 import { quotaMessage, quotaState } from "@/services/ai/quota.service";
+import { tag } from "@/docs/meta";
 
 type Mode = "COMMAND" | "CANVAS";
 
@@ -33,9 +34,8 @@ const reject = async (req: Request, res: Response, status: number, code: string,
 };
 
 /** G1 — the mode must be on for the org, granted to the role, and switched on by the user */
-export const aiAccess =
-  (mode: Mode, extra?: PermissionKey) =>
-  async (req: Request, res: Response, next: NextFunction) => {
+export const aiAccess = (mode: Mode, extra?: PermissionKey) =>
+  tag(async (req: Request, res: Response, next: NextFunction) => {
     const perms = await getUserPermissionMap(req.user);
     req.permissions = perms;
     const access = await resolveAccess(req.user, perms);
@@ -54,7 +54,7 @@ export const aiAccess =
     }
     if (extra && !perms[extra]) return reject(req, res, 403, "FORBIDDEN", `Missing permission: ${extra}`, "rejected_permission", mode, usageMode);
     next();
-  };
+  }, { ai: mode, ...(extra && { perm: extra }) });
 
 /** G2 — text input present and ≤ 500 characters */
 export const aiInputLimit = (field: "input" | "prompt") => async (req: Request, res: Response, next: NextFunction) => {

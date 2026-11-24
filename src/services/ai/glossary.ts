@@ -22,8 +22,8 @@ export const GLOSSARY: Term[] = [
     text: "the amount a company must spend on CSR in a financial year — 2% of its average net profit of the three years before (Companies Act 2013, section 135). It applies to companies with net worth of ₹500 crore or more, turnover of ₹1,000 crore or more, or net profit of ₹5 crore or more.",
   },
   {
-    term: "CSR budget",
-    re: /\b(csr )?(budget|allocation|allocated|outlay)\b/i,
+    term: "CSR fund",
+    re: /\b(csr )?(fund|budget|allocation|allocated|outlay)\b/i,
     figure: /budget/i,
     text: "what the company's board set aside for CSR that year. It can be more than the obligation; it is the plan, not what was spent.",
   },

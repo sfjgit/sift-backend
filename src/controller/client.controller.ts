@@ -22,11 +22,16 @@ import type {
   CreateLocationInput,
   UpdateLocationInput,
   ListClientsQuery,
+  ClientFacetsQuery,
+  ClientFigure,
   SaveCorporateFinancialInput,
   SaveCsrFinancialInput,
   UpdateClientInput,
   UploadDocumentInput,
 } from "@/validators/client.validators";
+import { CLIENT_FIGURES } from "@/validators/client.validators";
+import { assertFillOnly, assertSuperAdmin } from "@/services/editLock.service";
+import { ADDON_SELECT, clientValuesForLock, flattenClient, saveAddons, splitClientInput } from "@/services/clientAddons.service";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const NOTE_SELECT = {
@@ -56,9 +61,11 @@ const CLIENT_LIST_SELECT = {
   entityType: true,
   name: true,
   shortName: true,
-  cin: true,
   website: true,
   linkedinUrl: true,
+  // the organisation's own office contact
+  email: true,
+  phone: true,
   status: true,
   employeeCount: true,
   employeeSize: { select: LOOKUP },
@@ -69,7 +76,8 @@ const CLIENT_LIST_SELECT = {
   industry: { select: LOOKUP },
   category: { select: LOOKUP },
   businessUnit: { select: ORG },
-  serviceLines: { select: { serviceLine: { select: ORG } }, orderBy: { createdAt: "asc" } },
+  // the client's service lines = the lines of its active SPOCs (automatic; flattenClient → serviceLines)
+  spocs: { where: { isActive: true }, select: { serviceLine: { select: ORG } }, distinct: ["serviceLineId"] },
   createdBy: { select: PERSON },
   // who works the client (set by super admin / clients.assign)
   assignments: {
@@ -92,8 +100,9 @@ const CLIENT_LIST_SELECT = {
     take: 1,
   },
   _count: { select: { spocs: { where: { isActive: true } }, locations: BRANCHES } },
+  // add-ons (registration, CSR, govt) + company group — flattened by flattenClient()
+  ...ADDON_SELECT,
   // sales marks
-  csrEligible: true,
   projectIds: true,
   projectSetAt: true,
   projectSetBy: { select: PERSON },
@@ -190,12 +199,7 @@ const TECHNOLOGY_SELECT = {
 
 const CLIENT_DETAIL_SELECT = {
   ...CLIENT_LIST_SELECT,
-  foundationName: true,
-  foundationWebsite: true,
-  isListed: true,
-  subCategory: true,
   linkedinEmployees: true,
-  marketCapRs: true,
   approvedAt: true,
   approvedBy: { select: PERSON },
   locations: {
@@ -327,6 +331,32 @@ const range = (from?: string, to?: string) =>
 // Each filter is its own AND clause, so two filters on one relation never
 // overwrite each other. Multi values match any of them, except "missing" and
 // "steps done" (every picked one must hold).
+// ── latest-FY figures (CSR fund, revenue, paid-up capital …) — the value the list shows is the newest year's row
+const figureJoin = (f: ClientFigure) => {
+  const [table, col] = CLIENT_FIGURES[f];
+  return Prisma.sql`LEFT JOIN LATERAL (SELECT x."${Prisma.raw(col)}" AS v FROM "${Prisma.raw(table)}" x WHERE x."clientId" = c."id" ORDER BY x."fy" DESC LIMIT 1) l ON true`;
+};
+/** clients whose latest value of a figure is within [min, max] rupees */
+const figureRangeIds = async (f: ClientFigure, min?: number, max?: number) => {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT c."id" FROM "Client" c ${figureJoin(f)}
+    WHERE c."deletedAt" IS NULL AND l.v IS NOT NULL
+      ${min !== undefined ? Prisma.sql`AND l.v >= ${min}` : Prisma.empty}
+      ${max !== undefined ? Prisma.sql`AND l.v <= ${max}` : Prisma.empty}`;
+  return rows.map((r) => r.id);
+};
+/** one page of client ids ordered by a figure's latest value (blanks last) */
+const figureSortedIds = async (ids: string[], f: ClientFigure, dir: "asc" | "desc", skip: number, take: number) => {
+  if (!ids.length) return [];
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT c."id" FROM "Client" c ${figureJoin(f)}
+    WHERE c."id" = ANY(${ids}::text[])
+    ORDER BY l.v ${Prisma.raw(dir === "asc" ? "ASC" : "DESC")} NULLS LAST, c."name" ASC
+    OFFSET ${skip} LIMIT ${take}`;
+  return rows.map((r) => r.id);
+};
+const isFigure = (k: string): k is ClientFigure => k in CLIENT_FIGURES;
+
 const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prisma.ClientWhereInput[]> => {
   // "team" = assigned to me or to anyone below me in the reporting line (mobile app's My team)
   if (q.assignedTo === "team") {
@@ -335,7 +365,25 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
   const and: Prisma.ClientWhereInput[] = [];
   const any = <T,>(v: T[] | undefined) => (v?.length ? v : undefined);
 
-  if (q.status) and.push({ status: q.status });
+  if (any(q.status)) and.push({ status: { in: q.status! } });
+  // column searches — contains, any case
+  for (const f of ["name", "shortName", "website"] as const) {
+    if (q[f]) and.push({ [f]: { contains: q[f], mode: "insensitive" } });
+  }
+  if (q.cin) and.push({ registration: { cin: { contains: q.cin, mode: "insensitive" } } });
+  if (any(q.csrFy)) and.push({ csrFy: { in: q.csrFy! } });
+  if (any(q.groupName)) and.push({ groupName: { in: q.groupName! } });
+  if (any(q.ownership)) and.push({ registration: { ownership: { in: q.ownership! } } });
+  if (any(q.csrRoleId)) and.push({ csr: { csrRoleId: { in: q.csrRoleId! } } });
+  if (any(q.govtLevel)) and.push({ govt: { level: { in: q.govtLevel! } } });
+  if (any(q.govtOrgTypeId)) and.push({ govt: { orgTypeId: { in: q.govtOrgTypeId! } } });
+  if (q.employeeMin !== undefined || q.employeeMax !== undefined)
+    and.push({ employeeCount: { ...(q.employeeMin !== undefined && { gte: q.employeeMin }), ...(q.employeeMax !== undefined && { lte: q.employeeMax }) } });
+  for (const f of Object.keys(CLIENT_FIGURES) as ClientFigure[]) {
+    const min = q[`${f}MinCr`], max = q[`${f}MaxCr`];
+    if (min === undefined && max === undefined) continue;
+    and.push({ id: { in: await figureRangeIds(f, min === undefined ? undefined : min * CRORE, max === undefined ? undefined : max * CRORE) } });
+  }
   if (any(q.entityType)) and.push({ entityType: { in: q.entityType! } });
   if (any(q.employeeSizeId)) and.push({ employeeSizeId: { in: q.employeeSizeId! } });
   if (q.csrSpentMinCr !== undefined || q.csrSpentMaxCr !== undefined) {
@@ -352,7 +400,7 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
   if (any(q.industryId)) and.push({ industryId: { in: q.industryId! } });
   if (any(q.categoryId)) and.push({ categoryId: { in: q.categoryId! } });
   if (any(q.businessUnitId)) and.push({ businessUnitId: { in: q.businessUnitId! } });
-  if (any(q.serviceLineId)) and.push({ serviceLines: { some: { serviceLineId: { in: q.serviceLineId! } } } });
+  if (any(q.serviceLineId)) and.push({ spocs: { some: { isActive: true, serviceLineId: { in: q.serviceLineId! } } } });
   if (any(q.createdById)) and.push({ createdById: { in: q.createdById! } });
   if (any(q.handlerId)) and.push({ spocs: { some: { isActive: true, handlerId: { in: q.handlerId! } } } });
 
@@ -389,7 +437,9 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
     ...anyOf("country", q.country),
     ...anyOf("state", q.state),
     ...anyOf("city", q.city),
-    ...(q.district ? [{ district: { equals: q.district, mode: "insensitive" as const } }] : []),
+    ...(q.district ? [{ district: { contains: q.district, mode: "insensitive" as const } }] : []),
+    ...(q.address ? [{ addressLine: { contains: q.address, mode: "insensitive" as const } }] : []),
+    ...(q.pincode ? [{ pincode: { startsWith: q.pincode } }] : []),
   ];
   if (loc.length) and.push({ locations: { some: { isActive: true, AND: loc } } });
 
@@ -422,7 +472,12 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
   if (q.keyAccount === "me") and.push({ keyAccounts: { some: { userId: me } } });
   if (q.keyAccount === "any") and.push({ keyAccounts: { some: {} } });
   if (q.keyAccount === "none") and.push({ keyAccounts: { none: {} } });
-  if (q.csrEligible) and.push({ csrEligible: q.csrEligible === "unset" ? null : q.csrEligible === "yes" });
+  if (q.csrEligible)
+    and.push(
+      q.csrEligible === "unset"
+        ? { OR: [{ csr: null }, { csr: { csrEligible: null } }] }
+        : { csr: { csrEligible: q.csrEligible === "yes" } },
+    );
   if (any(q.projectId)) and.push({ projectIds: { hasSome: q.projectId! } });
 
   if (q.search) {
@@ -430,7 +485,7 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
       OR: [
         { name: { contains: q.search, mode: "insensitive" } },
         { shortName: { contains: q.search, mode: "insensitive" } },
-        { cin: { contains: q.search, mode: "insensitive" } },
+        { registration: { cin: { contains: q.search, mode: "insensitive" } } },
       ],
     });
   }
@@ -438,6 +493,13 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
 };
 
 // ── GET /clients
+// pick-list columns sort by the label people see, not the id
+const RELATION_SORT: Partial<Record<ListClientsQuery["sortBy"], "industry" | "category" | "employeeSize">> = {
+  industry: "industry",
+  category: "category",
+  employeeSize: "employeeSize",
+};
+
 export const listClients = async (req: Request, res: Response) => {
   const q = req.validatedQuery as ListClientsQuery;
   const canFigures = !!req.permissions!["client_financials.read"];
@@ -445,7 +507,8 @@ export const listClients = async (req: Request, res: Response) => {
   if (!canFigures) {
     delete q.csrSpentMinCr;
     delete q.csrSpentMaxCr;
-    if (q.sortBy === "csrSpentRs" || q.sortBy === "csrFy") q.sortBy = "createdAt";
+    if (q.sortBy === "csrSpentRs" || q.sortBy === "csrFy" || isFigure(q.sortBy)) q.sortBy = "createdAt";
+    for (const f of Object.keys(CLIENT_FIGURES) as ClientFigure[]) { delete q[`${f}MinCr`]; delete q[`${f}MaxCr`]; }
   }
   // programme filters need programme access
   if (!req.permissions!["client_programs.read"]) {
@@ -460,10 +523,18 @@ export const listClients = async (req: Request, res: Response) => {
     AND: [await clientScopeWhere(req.user, req.scope!), ...(await clientFilterWhere(q, req.user.id))],
   };
 
-  const [total, rows] = await Promise.all([
+  // figure sorts (latest-FY CSR fund, revenue …) can't be a Prisma orderBy: order the matching ids in SQL, then load that page
+  const figureSort = isFigure(q.sortBy) ? q.sortBy : null;
+  const pageIds = figureSort
+    ? await figureSortedIds(
+        (await prisma.client.findMany({ where, select: { id: true } })).map((r) => r.id),
+        figureSort, q.sortDir, toSkipTake(q).skip, toSkipTake(q).take,
+      )
+    : null;
+  const [total, unordered] = await Promise.all([
     prisma.client.count({ where }),
     prisma.client.findMany({
-      where,
+      where: pageIds ? { id: { in: pageIds } } : where,
       select: {
         ...CLIENT_LIST_SELECT,
         ...COVERAGE_SELECT,
@@ -472,20 +543,29 @@ export const listClients = async (req: Request, res: Response) => {
         ...(req.permissions!["client_documents.read"] && LIST_DOCUMENTS_SELECT),
       },
       // figures sort with blanks last, whichever direction
-      orderBy:
-        q.sortBy === "csrFy"
+      // (a figure-sorted page is re-ordered below)
+      orderBy: pageIds
+        ? { name: "asc" }
+        : q.sortBy === "csrFy"
           ? // latest CSR year, then the bigger spend within a year
             [
               { csrFy: { sort: q.sortDir, nulls: "last" } },
               { csrSpentRs: { sort: "desc", nulls: "last" } },
               { name: "asc" },
             ]
-          : q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount"
+          : q.sortBy === "cin"
+            ? [{ registration: { cin: q.sortDir } }, { name: "asc" }]
+          : q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount" || q.sortBy === "shortName"
             ? [{ [q.sortBy]: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
-            : { [q.sortBy]: q.sortDir },
-      ...toSkipTake(q),
+            : RELATION_SORT[q.sortBy]
+              ? [{ [RELATION_SORT[q.sortBy]!]: { label: q.sortDir } }, { name: "asc" }]
+              : q.sortBy === "businessUnit"
+                ? [{ businessUnit: { name: q.sortDir } }, { name: "asc" }]
+                : { [q.sortBy]: q.sortDir },
+      ...(pageIds ? {} : toSkipTake(q)),
     }),
   ]);
+  const rows = pageIds ? pageIds.flatMap((id) => unordered.filter((r) => r.id === id)) : unordered;
 
   // approved SPOCs + sent packs for this page in two grouped queries
   const ids = rows.map((r) => r.id);
@@ -530,7 +610,7 @@ export const listClients = async (req: Request, res: Response) => {
   const sentBy = new Map(sent.map((a) => [a.clientId, a._count]));
 
   const clients = rows.map(({ stepRuns, _count, ...c }) => ({
-    ...c,
+    ...flattenClient(c),
     // the CSR snapshot is a figure too
     ...(!canFigures && { csrSpentRs: null, csrFy: null }),
     // SPOCs column = the ones this user sees; coverage = what the CRM holds in total
@@ -551,6 +631,99 @@ export const listClients = async (req: Request, res: Response) => {
   }));
 
   res.json({ success: true, data: clients, meta: pageMeta(total, q.page, q.limit) });
+};
+
+// ── GET /clients/facets?field= — one column's values + how many clients have each.
+// Every other filter (and the user's scope) applies; the column's own filter doesn't, so you can add more values.
+const FACET_FILTER: Record<ClientFacetsQuery["field"], keyof ListClientsQuery> = {
+  groupName: "groupName", ownership: "ownership", csrRoleId: "csrRoleId", govtLevel: "govtLevel", govtOrgTypeId: "govtOrgTypeId",
+  status: "status", entityType: "entityType", industryId: "industryId", categoryId: "categoryId",
+  employeeSizeId: "employeeSizeId", businessUnitId: "businessUnitId", serviceLineId: "serviceLineId",
+  csrFy: "csrFy", createdById: "createdById", assignedToId: "assignedToId", projectId: "projectId",
+  country: "country", state: "state", city: "city",
+};
+export const clientFacets = async (req: Request, res: Response) => {
+  const { field, q: search, ...q } = req.validatedQuery as ClientFacetsQuery;
+  if (field === "csrFy" && !req.permissions!["client_financials.read"]) return void res.json({ success: true, data: [] });
+  delete (q as Partial<ListClientsQuery>)[FACET_FILTER[field]];
+  if (!req.permissions!["client_financials.read"]) { delete q.csrSpentMinCr; delete q.csrSpentMaxCr; }
+  const where: Prisma.ClientWhereInput = {
+    deletedAt: null,
+    AND: [await clientScopeWhere(req.user, req.scope!), ...(await clientFilterWhere(q as ListClientsQuery, req.user.id))],
+  };
+  let counts: { value: string | null; count: number }[];
+  if (field === "serviceLineId") {
+    // a client counts once per line its active SPOCs have
+    const rows = await prisma.clientSpoc.findMany({
+      where: { client: where, isActive: true },
+      select: { clientId: true, serviceLineId: true },
+      distinct: ["clientId", "serviceLineId"],
+    });
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.serviceLineId, (m.get(r.serviceLineId) ?? 0) + 1);
+    counts = [...m].map(([value, count]) => ({ value, count }));
+    counts.push({ value: null, count: await prisma.client.count({ where: { AND: [where, { spocs: { none: { isActive: true } } }] } }) });
+  } else if (field === "ownership" || field === "csrRoleId" || field === "govtLevel" || field === "govtOrgTypeId") {
+    // add-on fields: count per value on the matching clients' add-on rows
+    const rows =
+      field === "ownership"
+        ? (await prisma.clientRegistration.findMany({ where: { client: where }, select: { ownership: true } })).map((r) => r.ownership as string | null)
+        : field === "csrRoleId"
+          ? (await prisma.clientCsr.findMany({ where: { client: where }, select: { csrRoleId: true } })).map((r) => r.csrRoleId)
+          : field === "govtLevel"
+            ? (await prisma.clientGovt.findMany({ where: { client: where }, select: { level: true } })).map((r) => r.level as string | null)
+            : (await prisma.clientGovt.findMany({ where: { client: where }, select: { orgTypeId: true } })).map((r) => r.orgTypeId);
+    const m = new Map<string | null, number>();
+    for (const v of rows) m.set(v, (m.get(v) ?? 0) + 1);
+    counts = [...m].map(([value, count]) => ({ value, count }));
+  } else if (field === "assignedToId") {
+    // people with an active assignment on the matching clients
+    const g = await prisma.clientAssignment.groupBy({ by: ["userId"], where: { client: where, endedAt: null }, _count: { clientId: true } });
+    counts = g.map((r) => ({ value: r.userId, count: r._count.clientId }));
+    counts.push({ value: null, count: await prisma.client.count({ where: { AND: [where, { assignments: { none: { endedAt: null } } }] } }) });
+  } else if (field === "projectId") {
+    const m = new Map<string, number>();
+    let none = 0;
+    for (const r of await prisma.client.findMany({ where, select: { projectIds: true } })) {
+      if (!r.projectIds.length) none++;
+      for (const p of r.projectIds) m.set(p, (m.get(p) ?? 0) + 1);
+    }
+    counts = [...m].map(([value, count]) => ({ value, count }));
+    counts.push({ value: null, count: none });
+  } else if (field === "country" || field === "state" || field === "city") {
+    // a client counts once per place, however many offices it has there
+    const rows = await prisma.clientLocation.findMany({
+      where: { client: where, isActive: true, [field]: { not: null } },
+      select: { clientId: true, [field]: true },
+      distinct: ["clientId", field],
+    });
+    const m = new Map<string, number>();
+    for (const r of rows as unknown as Record<string, string>[]) m.set(r[field]!, (m.get(r[field]!) ?? 0) + 1);
+    counts = [...m].map(([value, count]) => ({ value, count }));
+  } else {
+    const g = await prisma.client.groupBy({ by: [field], where, _count: true });
+    counts = g.map((r) => ({ value: (r as Record<string, unknown>)[field] as string | null, count: r._count as number }));
+  }
+  // labels for ids
+  const ids = counts.map((c) => c.value).filter((v): v is string => !!v);
+  const labels = new Map<string, string>();
+  if (field === "industryId" || field === "categoryId" || field === "employeeSizeId" || field === "projectId" || field === "csrRoleId" || field === "govtOrgTypeId")
+    for (const l of await prisma.lookup.findMany({ where: { id: { in: ids } }, select: { id: true, label: true } })) labels.set(l.id, l.label);
+  if (field === "businessUnitId")
+    for (const b of await prisma.businessUnit.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })) labels.set(b.id, b.name);
+  if (field === "serviceLineId")
+    for (const b of await prisma.serviceLine.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })) labels.set(b.id, b.name);
+  if (field === "createdById" || field === "assignedToId")
+    for (const u of await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true, email: true } }))
+      labels.set(u.id, [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email);
+  const data = counts
+    .filter((c) => c.count > 0)
+    .map((c) => ({ value: c.value, label: c.value ? (labels.get(c.value) ?? c.value) : null, count: c.count }))
+    // search inside the values (the box at the top of the list)
+    .filter((c) => !search || (c.label ?? "").toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)))
+    .slice(0, 500);
+  res.json({ success: true, data });
 };
 
 // ── GET /clients/:id — SPOCs come from GET /spocs?clientId=
@@ -578,7 +751,7 @@ export const getClientById = async (req: Request, res: Response) => {
   });
   res.json({
     success: true,
-    data: { ...client, _count: { spocs, branches: client._count.locations }, spocsTotal: client._count.spocs },
+    data: { ...flattenClient(client), _count: { spocs, branches: client._count.locations }, spocsTotal: client._count.spocs },
   });
 };
 
@@ -591,21 +764,24 @@ export const createClient = async (req: Request, res: Response) => {
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
     employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
-  await assertOrg(body.businessUnitId, body.serviceLineIds);
+  await assertOrg(body.businessUnitId);
   await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
-  const { serviceLineIds, ...fields } = body;
+  await assertLookups({ csrRoleId: [body.csrRoleId, "CSR_ROLE"], orgTypeId: [body.govt?.orgTypeId, "GOVT_ORG_TYPE"] });
+  // core client fields vs the add-ons (registration / CSR / govt)
+  const parts = splitClientInput(body as Record<string, unknown>);
 
   const client = await prisma.$transaction(async (tx) => {
-    const c = await tx.client.create({
+    const created = await tx.client.create({
       data: {
-        ...definedOnly(fields),
+        ...(definedOnly(parts.core) as Omit<Prisma.ClientUncheckedCreateInput, "tenantId" | "createdById">),
         tenantId: req.user.tenantId,
         createdById: req.user.id,
         ...(body.projectIds?.length && { projectSetById: req.user.id, projectSetAt: new Date() }),
-        ...(serviceLineIds?.length && { serviceLines: serviceLinesData(serviceLineIds) }),
       },
-      select: CLIENT_LIST_SELECT,
+      select: { id: true },
     });
+    await saveAddons(tx, created.id, parts, req.user.id);
+    const c = await tx.client.findUniqueOrThrow({ where: { id: created.id }, select: CLIENT_LIST_SELECT });
 
     await logClientActivity(tx, {
       clientId: c.id,
@@ -617,7 +793,7 @@ export const createClient = async (req: Request, res: Response) => {
     return c;
   });
 
-  res.status(201).json({ success: true, message: "Client created", data: client });
+  res.status(201).json({ success: true, message: "Client created", data: flattenClient(client) });
 };
 
 // ── PATCH /clients/:id
@@ -631,36 +807,48 @@ export const updateClient = async (req: Request, res: Response) => {
     categoryId: [body.categoryId, "CLIENT_CATEGORY"],
     employeeSizeId: [body.employeeSizeId, "EMPLOYEE_SIZE"],
   });
-  await assertOrg(body.businessUnitId, body.serviceLineIds);
+  await assertOrg(body.businessUnitId);
   await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
+  await assertLookups({ csrRoleId: [body.csrRoleId, "CSR_ROLE"], orgTypeId: [body.govt?.orgTypeId, "GOVT_ORG_TYPE"] });
 
-  const { serviceLineIds, ...fields } = body;
-  const before = await prisma.client.findUnique({ where: { id }, select: { website: true } });
+  const parts = splitClientInput(body as Record<string, unknown>);
+  const fields = parts.core;
+  const was = await clientValuesForLock(id);
+  const before = was?.core as { website?: string | null } | undefined;
+  // filled data: only a super admin changes it (sales marks + status are work, not data) — core and each add-on
+  if (was) {
+    assertFillOnly(req.user, was.core, fields, ["status", "projectIds", "website"]);
+    assertFillOnly(req.user, was.registration, parts.registration);
+    assertFillOnly(req.user, was.csr, parts.csr, ["csrEligible"]);
+    assertFillOnly(req.user, was.govt, parts.govt, ["priority"]);
+  }
   const websiteChanged = body.website !== undefined && (body.website ?? "") !== (before?.website ?? "");
   // a typed website can't be trusted: only an admin changes it (others use the website check)
   if (websiteChanged && !req.user.isSuperAdmin) {
     throw ApiError(403, "Only an admin can change the website. If it does not open, run a step — the website check finds the current one.", "ADMIN_ONLY");
   }
-  const data = definedOnly(fields);
-  const changed = [...Object.keys(definedOnly(fields)), ...(serviceLineIds ? ["serviceLineIds"] : [])];
+  const data = definedOnly(fields) as Prisma.ClientUpdateInput;
+  const addonData = { ...definedOnly(parts.registration), ...definedOnly(parts.csr), ...(Object.keys(parts.govt).length && { govt: parts.govt }) };
+  const changed = [...Object.keys(data), ...Object.keys(addonData)];
 
   const updated = await prisma.$transaction(async (tx) => {
-    const c = await tx.client.update({
+    await tx.client.update({
       where: { id },
       data: {
-        ...data,
+        ...(data as Prisma.ClientUncheckedUpdateInput),
         ...(body.projectIds !== undefined && { projectSetById: req.user.id, projectSetAt: new Date() }),
-        ...(serviceLineIds && { serviceLines: { deleteMany: {}, ...serviceLinesData(serviceLineIds) } }),
-      },
-      select: CLIENT_LIST_SELECT,
+      } as Prisma.ClientUncheckedUpdateInput,
+      select: { id: true },
     });
+    await saveAddons(tx, id, parts, req.user.id);
+    const c = await tx.client.findUniqueOrThrow({ where: { id }, select: CLIENT_LIST_SELECT });
 
     await logClientActivity(tx, {
       clientId: id,
       actorId: req.user.id,
       type: "CLIENT_UPDATED",
       summary: `Updated ${changed.join(", ")}`,
-      meta: { changes: { ...data, ...(serviceLineIds && { serviceLineIds }) } },
+      meta: JSON.parse(JSON.stringify({ changes: { ...data, ...addonData } })) as Prisma.InputJsonValue,
     });
     if (websiteChanged) {
       await logWebsiteChange(tx, { clientId: id, actorId: req.user.id, old: before?.website ?? null, new: body.website ?? null, via: "edit" });
@@ -669,7 +857,7 @@ export const updateClient = async (req: Request, res: Response) => {
     return c;
   });
 
-  res.json({ success: true, message: "Client updated", data: updated });
+  res.json({ success: true, message: "Client updated", data: flattenClient(updated) });
 };
 
 // ── PATCH /clients/:id/status — first activation stamps approver
@@ -710,6 +898,7 @@ export const updateClientStatus = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id — soft delete
 export const deleteClient = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a client");
   const { id } = req.validatedParams;
   const client = await findClientInScope(req, id);
 
@@ -808,6 +997,7 @@ export const addClientNote = async (req: Request, res: Response) => {
 
 // ── PATCH /clients/:id/notes/:noteId — the author corrects their own comment
 export const updateClientNote = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "edit a note");
   const { id, noteId } = req.validatedParams;
   const { content } = req.validatedBody as { content: string };
   await findClientInScope(req, id);
@@ -839,6 +1029,7 @@ export const updateClientNote = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/notes/:noteId — own notes; anyone's with client_notes.delete_any
 export const deleteClientNote = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a note");
   const { id, noteId } = req.validatedParams;
   await findClientInScope(req, id);
   const canDeleteAny = !!req.permissions!["client_notes.delete_any"];
@@ -904,6 +1095,7 @@ export const addClientLocation = async (req: Request, res: Response) => {
 
 // ── PATCH /clients/:id/locations/:locationId
 export const updateClientLocation = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "edit an office");
   const { id, locationId } = req.validatedParams;
   const body = req.validatedBody as UpdateLocationInput;
   await findClientInScope(req, id);
@@ -943,6 +1135,7 @@ export const updateClientLocation = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/locations/:locationId — soft; SPOCs keep the link
 export const removeClientLocation = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "remove an office");
   const { id, locationId } = req.validatedParams;
   await findClientInScope(req, id);
 
@@ -976,6 +1169,9 @@ export const saveClientTechnology = async (req: Request, res: Response) => {
   const { categoryId, details } = req.validatedBody;
   await findClientInScope(req, id);
   await assertLookups({ categoryId: [categoryId, "TECH_CATEGORY"] });
+  // a category already filled: only a super admin rewrites it
+  const had = await prisma.clientTechnology.findUnique({ where: { clientId_categoryId: { clientId: id, categoryId } }, select: { details: true } });
+  if (had) assertFillOnly(req.user, had, { details });
 
   const technology = await prisma.$transaction(async (tx) => {
     const t = await tx.clientTechnology.upsert({
@@ -1000,6 +1196,7 @@ export const saveClientTechnology = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/technologies/:technologyId
 export const removeClientTechnology = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "remove a technology");
   const { id, technologyId } = req.validatedParams;
   await findClientInScope(req, id);
 
@@ -1114,6 +1311,9 @@ export const saveCsrFinancial = async (req: Request, res: Response) => {
   await findClientInScope(req, id);
 
   const values = definedOnly({ ...figures, evidence });
+  // an existing year: fill its empty figures only, unless super admin
+  const had = await prisma.clientCsrFinancial.findUnique({ where: { clientId_fy: { clientId: id, fy } } });
+  if (had) assertFillOnly(req.user, had, values, ["evidence"]);
   const row = await prisma.$transaction(async (tx) => {
     const f = await tx.clientCsrFinancial.upsert({
       where: { clientId_fy: { clientId: id, fy } },
@@ -1138,6 +1338,7 @@ export const saveCsrFinancial = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/financials/:financialId
 export const removeCsrFinancial = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a CSR year");
   const { id, financialId } = req.validatedParams;
   await findClientInScope(req, id);
 
@@ -1163,6 +1364,8 @@ export const saveCorporateFinancial = async (req: Request, res: Response) => {
   await findClientInScope(req, id);
 
   const values = definedOnly({ ...figures, source, updatedById: req.user.id });
+  const had = await prisma.clientCorporateFinancial.findUnique({ where: { clientId_fy: { clientId: id, fy } } });
+  if (had) assertFillOnly(req.user, had, values, ["source", "updatedById"]);
   const row = await prisma.$transaction(async (tx) => {
     const f = await tx.clientCorporateFinancial.upsert({
       where: { clientId_fy: { clientId: id, fy } },
@@ -1184,6 +1387,7 @@ export const saveCorporateFinancial = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/corporate-financials/:financialId
 export const removeCorporateFinancial = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a company figures year");
   const { id, financialId } = req.validatedParams;
   await findClientInScope(req, id);
 
@@ -1244,6 +1448,7 @@ export const uploadClientDocument = async (req: Request, res: Response) => {
 
 // ── DELETE /clients/:id/documents/:documentId
 export const removeClientDocument = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a document");
   const { id, documentId } = req.validatedParams;
   await findClientInScope(req, id);
 
@@ -1319,9 +1524,9 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
       entityType: true,
       website: true,
       linkedinUrl: true,
-      cin: true,
+      registration: { select: { cin: true } },
       csrSpentRs: true,
-      csrEligible: true,
+      csr: { select: { csrEligible: true } },
       industry: { select: { id: true, label: true } },
       category: { select: { id: true, label: true } },
       businessUnit: { select: { id: true, name: true } },
@@ -1347,7 +1552,7 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
   for (const r of rows) {
     if (r.website) has.website++;
     if (r.linkedinUrl) has.linkedin++;
-    if (r.cin) has.cin++;
+    if (r.registration?.cin) has.cin++;
     if (r._count.spocs) has.spocs++;
     spocs += r._count.spocs;
     if (r.csrSpentRs !== null) {
@@ -1357,7 +1562,7 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
     const state = (r.locations[0]?.state ?? "").trim();
     if (state) has.state++;
     if (r._count.keyAccounts) keyAccounts++;
-    if (r.csrEligible) csrEligible++;
+    if (r.csr?.csrEligible) csrEligible++;
     add(by.status, r.status, r.status);
     add(by.industry, r.industry?.id, r.industry?.label);
     add(by.category, r.category?.id, r.category?.label);

@@ -4,6 +4,7 @@
 import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
+import { assertFillOnly, assertSuperAdmin } from "@/services/editLock.service";
 import { getReportingLineIds, isUserInScope, spocScopeWhere } from "@/services/scope.service";
 import { assertLookupIds, assertLookups } from "@/services/lookup.service";
 import { logClientActivity } from "@/services/clientActivity.service";
@@ -12,6 +13,7 @@ import { notifyUsers } from "@/services/notification.service";
 import type { PermissionMap } from "@/services/permission.service";
 import { definedOnly, pageMeta, toSkipTake } from "@/utils/pagination";
 import { ApiError, notFound } from "@/utils/httpError";
+import { linkSpocPersons, otherRoles, syncPersonFromSpoc } from "@/services/person.service";
 import type {
   BulkAssignSpocsInput,
   BulkUpdateSpocsInput,
@@ -26,6 +28,8 @@ const LOOKUP = { id: true, code: true, label: true } as const;
 
 const SPOC_SELECT = {
   id: true,
+  // the human behind this role — one person can be a SPOC at several clients (send to a person once)
+  personId: true,
   firstName: true,
   lastName: true,
   email: true,
@@ -280,7 +284,9 @@ export const getSpocById = async (req: Request, res: Response) => {
   });
   if (!spoc) throw notFound("SPOC");
 
-  res.json({ success: true, data: toSpocResponse(spoc, req.permissions!) });
+  // the same person's roles at other clients ("Also works with") — only clients this user may see
+  const alsoWorksWith = await otherRoles(id, await spocScopeWhere(req.user, req.scope!));
+  res.json({ success: true, data: { ...toSpocResponse(spoc, req.permissions!), alsoWorksWith } });
 };
 
 // ── POST /spocs — handler must be in the caller's spocs.create scope
@@ -297,6 +303,7 @@ export const createSpoc = async (req: Request, res: Response) => {
   await spocLookups(body);
   await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
   await assertLocation(client.id, body.locationId);
+  await assertEmailFreeAtClient(client.id, body.email);
 
   const spoc = await prisma.$transaction(async (tx) => {
     const s = await tx.clientSpoc.create({
@@ -337,6 +344,8 @@ export const createSpoc = async (req: Request, res: Response) => {
 
     return s;
   });
+  // the human behind it — an existing person when their personal email / name + mobile is already known
+  await linkSpocPersons([spoc.id]);
 
   res.status(201).json({
     success: true,
@@ -346,14 +355,32 @@ export const createSpoc = async (req: Request, res: Response) => {
 };
 
 // ── PATCH /spocs/:id
+/** one email = one SPOC row per client (the same person at another client is another row of the same Person) */
+const assertEmailFreeAtClient = async (clientId: string, email?: string | null, exceptId?: string) => {
+  const e = email?.trim();
+  if (!e) return;
+  const taken = await prisma.clientSpoc.findFirst({
+    where: { clientId, isActive: true, email: { equals: e, mode: "insensitive" }, ...(exceptId && { id: { not: exceptId } }) },
+    select: { firstName: true, lastName: true },
+  });
+  if (taken) throw ApiError(409, `${[taken.firstName, taken.lastName].filter(Boolean).join(" ")} at this client already has that email`, "DUPLICATE_EMAIL");
+};
+
+/** changeable by anyone allowed to update SPOCs — the rest is data (fill-only unless super admin) */
+const SPOC_WORK_FIELDS = ["salesStatusId", "callConnected", "dataFlag", "isPrimary", "notes", "projectIds", "projectMode"] as const;
+
 export const updateSpoc = async (req: Request, res: Response) => {
   const { id } = req.validatedParams;
   const body = req.validatedBody as UpdateSpocInput;
 
   const existing = await findSpocInScope(req, id);
+  // filled contact data: only a super admin changes it; sales status / call status / flags / notes are work
+  const full = await prisma.clientSpoc.findUnique({ where: { id } });
+  if (full) assertFillOnly(req.user, full, body, SPOC_WORK_FIELDS);
   await spocLookups(body);
   await assertLookupIds(body.projectIds, "PROJECT", "projectIds");
   await assertLocation(existing.clientId, body.locationId);
+  if (body.email !== undefined) await assertEmailFreeAtClient(existing.clientId, body.email, id);
 
   const data: Prisma.ClientSpocUncheckedUpdateInput = definedOnly(body);
   const stamps = markStamps(body, req.user.id);
@@ -400,6 +427,10 @@ export const updateSpoc = async (req: Request, res: Response) => {
     }
 
     return s;
+  });
+  // same human, other clients: their name / email / phone / LinkedIn follow
+  await syncPersonFromSpoc(id, {
+    firstName: body.firstName, lastName: body.lastName, email: body.email, phone: body.phone, linkedinUrl: body.linkedinUrl,
   });
 
   res.json({
@@ -474,6 +505,7 @@ export const assignSpoc = async (req: Request, res: Response) => {
 
 // ── DELETE /spocs/:id — soft: deactivate, history stays
 export const deleteSpoc = async (req: Request, res: Response) => {
+  assertSuperAdmin(req.user, "delete a SPOC");
   const { id } = req.validatedParams;
   const spoc = await findSpocInScope(req, id);
   if (!spoc.isActive) throw ApiError(400, "SPOC is already inactive", "SPOC_INACTIVE");
@@ -683,8 +715,12 @@ export const bulkUpdateSpocs = async (req: Request, res: Response) => {
 
   const found = await prisma.clientSpoc.findMany({
     where: { id: { in: body.spocIds }, ...(await spocScopeWhere(req.user, req.scope!)) },
-    select: { id: true, clientId: true, firstName: true, lastName: true, isActive: true, projectIds: true },
+    select: { id: true, clientId: true, firstName: true, lastName: true, isActive: true, projectIds: true, erp: true },
   });
+  // ERP is data: a non-super-admin only fills it where it is empty
+  if (body.erp !== undefined && !req.user.isSuperAdmin && found.some((s) => s.erp && s.erp !== body.erp)) {
+    throw ApiError(403, "Only a super admin can change an ERP that is already filled. Pick only SPOCs without one.", "EDIT_LOCKED");
+  }
   const byId = new Map(found.map((s) => [s.id, s]));
   const skipped: { id: string; reason: string }[] = [];
   const eligible: typeof found = [];

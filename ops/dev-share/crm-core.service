@@ -1,0 +1,16 @@
+# The CRM backend (crm-core-service) running on this PC in the background.
+# Starts at boot, restarts if it crashes, reloads by itself when code changes
+# (npm run dev = nodemon). Logs: journalctl --user -u crm-core -f
+[Unit]
+Description=SFJBS CRM core-service (local, shared with the frontend devs)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Desktop/Sales & Marketing app/crm-core-service
+Environment=PATH=%h/.hermes/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.hermes/node/bin/npm run dev
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

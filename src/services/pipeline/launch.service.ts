@@ -86,9 +86,7 @@ const resolveBuSl = async (
   if (buId && client.businessUnitId && buId !== client.businessUnitId) {
     throw ApiError(400, "New SPOCs go under the client's own business unit", "BU_NOT_CLIENTS");
   }
-  if (slId && clientSls.length && !clientSls.includes(slId)) {
-    throw ApiError(400, "Pick one of this client's service lines", "SL_NOT_CLIENTS");
-  }
+  // (a client's service lines follow its SPOCs — any active line may add new SPOCs)
 
   const [bus, sls] = await Promise.all([
     buId || client.businessUnitId
@@ -221,7 +219,11 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
 
   const client = await prisma.client.findFirst({
     where: { id: input.clientId, deletedAt: null },
-    select: { id: true, website: true, businessUnitId: true, serviceLines: { select: { serviceLineId: true } } },
+    select: {
+      id: true, website: true, businessUnitId: true,
+      // the client's service lines = its active SPOCs' lines
+      spocs: { where: { isActive: true }, select: { serviceLineId: true }, distinct: ["serviceLineId"] },
+    },
   });
   if (!client) throw notFound("Client");
 
@@ -270,7 +272,7 @@ export const startRun = async (user: AuthUser, input: StartRunInput) => {
 
   const needsBuSl = def.engineStage !== null ? def.createsSpocs : chainKeys.some((k) => stepDef(k)?.createsSpocs);
   const buSl = needsBuSl
-    ? await resolveBuSl(user.id, client, input.businessUnitId, input.serviceLineId)
+    ? await resolveBuSl(user.id, { businessUnitId: client.businessUnitId, serviceLines: client.spocs }, input.businessUnitId, input.serviceLineId)
     : {};
 
   const options = {

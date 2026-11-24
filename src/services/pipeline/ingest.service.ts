@@ -8,6 +8,7 @@
 
 import { EmailStatus, Prisma, StepRunStatus, ValidationBand } from "@prisma/client";
 import prisma from "@/utils/prisma/client";
+import { linkSpocPersons } from "@/services/person.service";
 import { loggers } from "@/utils/logger";
 import { logClientActivity } from "@/services/clientActivity.service";
 import { notifyUsers, usersWithPermission } from "@/services/notification.service";
@@ -87,16 +88,12 @@ const saveSpoc = async (ctx: Ctx, s: ResultSpoc): Promise<SpocOutcome> => {
   const nameKey = toNameKey(s.firstName, s.lastName);
   const label = nameOf(s);
 
-  // match: CRM id → email (unique in the tenant) → (client, name)
+  // match: CRM id → email at this client → (client, name). The same email at ANOTHER client is the same
+  // person in another role: a new SPOC row here, linked to that Person (person.service).
   let existing =
     (s.id && (await prisma.clientSpoc.findFirst({ where: { id: s.id, clientId: ctx.clientId } }))) || null;
   if (!existing && email) {
-    const byEmail = await prisma.clientSpoc.findFirst({ where: { email } });
-    if (byEmail && byEmail.clientId !== ctx.clientId) {
-      ctx.skipped.push({ kind: "spocs", name: label, email, reason: "Email belongs to a SPOC of another client" });
-      return "skipped";
-    }
-    existing = byEmail;
+    existing = await prisma.clientSpoc.findFirst({ where: { email: { equals: email, mode: "insensitive" }, clientId: ctx.clientId } });
   }
   existing ??= await prisma.clientSpoc.findFirst({
     where: { clientId: ctx.clientId, nameKey, isActive: true },
@@ -596,6 +593,11 @@ export const applyResults = async (runId: string, body: ResultsBody, via: string
         }
       }
       summary.spocs = counts;
+      // new SPOC rows get their Person (an existing one when the email / name + mobile is known)
+      if (counts.created) {
+        const fresh = await prisma.clientSpoc.findMany({ where: { clientId: run.clientId!, personId: null }, select: { id: true } });
+        await linkSpocPersons(fresh.map((f) => f.id));
+      }
       if (counts.created) {
         // the requester and everyone who can approve; one notification each
         const approvers = await usersWithPermission("spocs.approve");

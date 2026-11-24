@@ -4,3 +4,7 @@ node_modules
 /dist
 
 /src/generated/prisma
+
+# client data for one-off imports — never committed
+/data-import/
+/data-fixes/

@@ -159,7 +159,7 @@ export const oneSuggestion = async (runId: string) => {
     where: { id: runId, step: { key: WEBSITE_STEP } },
     select: {
       id: true, status: true, finishedAt: true, options: true, viewData: true,
-      client: { select: { id: true, name: true, website: true, cin: true, industry: { select: { label: true } } } },
+      client: { select: { id: true, name: true, website: true, registration: { select: { cin: true } }, industry: { select: { label: true } } } },
       requestedBy: { select: { id: true, firstName: true, lastName: true } },
     },
   });
@@ -174,7 +174,7 @@ export const oneSuggestion = async (runId: string) => {
       id: r.client.id,
       name: r.client.name,
       website: r.client.website,
-      cin: r.client.cin,
+      cin: r.client.registration?.cin ?? null,
       industry: r.client.industry?.label ?? null,
     },
     requestedBy: r.requestedBy,
@@ -228,12 +228,12 @@ export const requestAdmin = async (user: AuthUser, runId: string) => {
 /** an admin checks a website they typed, before saving it */
 export const checkTyped = async (clientId: string, url: string): Promise<WebsiteCheckResult> => {
   const [client, svc] = await Promise.all([
-    prisma.client.findFirst({ where: { id: clientId, deletedAt: null }, select: { name: true, cin: true } }),
+    prisma.client.findFirst({ where: { id: clientId, deletedAt: null }, select: { name: true, registration: { select: { cin: true } } } }),
     prisma.externalService.findUnique({ where: { code: "BRANCH_FINDER" }, select: { baseUrl: true, outboundKeyEnv: true } }),
   ]);
   if (!client) throw notFound("Client");
   if (!svc) throw ApiError(503, "The website checker is not set up", "SERVICE_OFF");
-  const reply = await engine.checkWebsite(svc, { name: client.name, cin: client.cin, url });
+  const reply = await engine.checkWebsite(svc, { name: client.name, cin: client.registration?.cin ?? null, url });
   if (!reply.ok || !reply.data) throw ApiError(502, `The website could not be checked: ${reply.error ?? "no answer"}`, "CHECK_FAILED");
   return reply.data;
 };
@@ -282,6 +282,9 @@ export const replaceWebsite = async (
   const found = !!view.website?.candidates.some((c) => c.url === url);
 
   if ((client.website ?? "").trim() === url) throw ApiError(409, "That is already the client's website", "SAME_WEBSITE");
+  // the edit rule: a website already on file is changed only by a super admin (others: "Ask admin to update")
+  if (client.website?.trim() && !user.isSuperAdmin)
+    throw ApiError(403, "Only a super admin can change a website that is already filled — use “Ask admin to update”", "EDIT_LOCKED");
 
   // a website the check found was verified already (opens + the client's CIN / name on it).
   // Anything typed: super admins only, and checked first.

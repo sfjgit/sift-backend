@@ -26,6 +26,7 @@ import {
   documentParams,
   financialParams,
   listClientsQuery,
+  clientFacetsQuery,
   locationParams,
   noteParams,
   saveTechnologyBody,
@@ -39,6 +40,7 @@ import {
 import { createCsrProgram, removeCsrProgram, updateCsrProgram } from "@/controller/csrProgram.controller";
 import {
   listClients,
+  clientFacets,
   getClientById,
   createClient,
   updateClient,
@@ -105,6 +107,8 @@ router.use(authenticateUser);
 
 router.get("/", read, validate.query(listClientsQuery), listClients);
 router.get("/stats", read, validate.query(listClientsQuery), clientStats);
+// one column's values with client counts (the column-header filters); same filters as the list
+router.get("/facets", read, validate.query(clientFacetsQuery), clientFacets);
 router.post("/", authorize("clients.create"), validate.body(createClientBody), createClient);
 
 // bulk — before /:id so "bulk-status" isn't read as an id

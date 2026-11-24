@@ -8,10 +8,10 @@
 import { Request, Response, NextFunction } from "express";
 import { PermissionKey } from "@/config/permissions.registry";
 import { getUserPermissionMap } from "@/services/permission.service";
+import { tag } from "@/docs/meta";
 
-export const authorize =
-  (key: PermissionKey) =>
-  async (req: Request, res: Response, next: NextFunction) => {
+export const authorize = (key: PermissionKey) =>
+  tag(async (req: Request, res: Response, next: NextFunction) => {
     const map = await getUserPermissionMap(req.user);
     const grant = map[key];
 
@@ -27,7 +27,7 @@ export const authorize =
     req.permissions = map;
     req.scope = grant === true ? null : grant;
     next();
-  };
+  }, { perm: key });
 
 // Super admin only — impersonation and other break-glass actions
 export const requireSuperAdmin = (
@@ -45,3 +45,5 @@ export const requireSuperAdmin = (
   }
   next();
 };
+
+tag(requireSuperAdmin, { superAdmin: true });

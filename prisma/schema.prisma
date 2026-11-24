@@ -258,6 +258,8 @@ model Lookup {
   clientsByIndustry      Client[]                 @relation("ClientIndustry")
   clientsByCategory      Client[]                 @relation("ClientCategory")
   clientsByEmployeeSize  Client[]                 @relation("ClientEmployeeSize")
+  csrByRole              ClientCsr[]              @relation("CsrRole")
+  govtByOrgType          ClientGovt[]             @relation("GovtOrgType")
   locationsByType        ClientLocation[]         @relation("LocationType")
   technologiesByCategory ClientTechnology[]       @relation("TechCategory")
   spocsBySource          ClientSpoc[]             @relation("SpocSource")
@@ -586,9 +588,14 @@ model Client {
   entityType  ClientEntityType @default(COMPANY)
   name        String
   shortName   String?
+  // company group (Adani Group, Tata Group …) — CSR is often decided at group level
+  groupName   String?
   cin         String? // unique per tenant
   website     String?
   linkedinUrl String?
+  // the organisation's own office email / phone (people's contacts are SPOCs)
+  email       String?
+  phone       String?
   status      ClientStatus     @default(PENDING)
 
   // head count as found (exact) + the band sales filters on (lookup
@@ -643,6 +650,12 @@ model Client {
   locations           ClientLocation[]
   technologies        ClientTechnology[]
   spocs               ClientSpoc[]
+  // add-ons (21 Nov 2026 restructure): one table per topic, any client can have any
+  registration        ClientRegistration?
+  csr                 ClientCsr?
+  govt                ClientGovt?
+  govtChildren        ClientGovt[]               @relation("GovtParent")
+  govtNodalOf         ClientGovt[]               @relation("GovtNodalMinistry")
   notes               ClientNote[]
   activities          ClientActivity[]
   documents           ClientDocument[]
@@ -670,6 +683,7 @@ model Client {
   // list: default sort + name / CSR spend sort over a tenant's live rows
   @@index([tenantId, deletedAt, createdAt])
   @@index([tenantId, deletedAt, name])
+  @@index([tenantId, groupName])
   @@index([tenantId, deletedAt, csrSpentRs])
   // "contains" search (ILIKE '%x%') — trigram, needs pg_trgm
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
@@ -807,7 +821,11 @@ model ClientSpoc {
   firstName   String
   lastName    String?
   nameKey     String // normalized full name — dedupe per client
-  email       String? // unique per tenant
+  // the human behind this role (one Person, a SPOC row per client they work with).
+  // name / email / phone / LinkedIn here are kept in step with the Person (src/services/person.service.ts)
+  personId    String?
+  person      Person? @relation(fields: [personId], references: [id])
+  email       String? // unique per Person (Person.email); repeats across one person's SPOC rows
   phone       String?
   designation String? // free text as found
   department  String?
@@ -910,9 +928,10 @@ model ClientSpoc {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([tenantId, email])
   @@unique([tenantId, legacyCaspaId])
+  @@index([tenantId, email])
   @@index([tenantId, createdAt])
+  @@index([personId])
   @@index([clientId, isActive])
   @@index([clientId, nameKey])
   @@index([locationId])
@@ -999,7 +1018,9 @@ model WorkTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  /** kind = MEETING: everything the CASPA meeting form held */
+  /**
+   * kind = MEETING: everything the CASPA meeting form held
+   */
   meeting MeetingDetail?
 
   @@index([tenantId, assigneeId, status])
@@ -1013,23 +1034,31 @@ model WorkTask {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model MeetingDetail {
-  id       String   @id @default(uuid())
-  taskId   String   @unique
-  task     WorkTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id     String   @id @default(uuid())
+  taskId String   @unique
+  task   WorkTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   mode                 String? // virtual | offline
   link                 String?
   revenueGenerated     String?
   attendeeCount        Int?
-  /** our people in the meeting (user ids) */
-  sfjAttendeeIds       String[] @default([])
+  /**
+   * our people in the meeting (user ids)
+   */
+  sfjAttendeeIds       String[]  @default([])
   clientAttendeeNames  String?
   clientAttendeeEmails String?
-  /** CASPA "Minutes Of Meeting 1–4" */
-  minutes              String[] @default([])
-  /** Meeting Scheduled | Completed | Cancelled */
+  /**
+   * CASPA "Minutes Of Meeting 1–4"
+   */
+  minutes              String[]  @default([])
+  /**
+   * Meeting Scheduled | Completed | Cancelled
+   */
   meetingStatus        String?
-  /** PENDING when marked Completed → the lead approves (CASPA approval_status) */
+  /**
+   * PENDING when marked Completed → the lead approves (CASPA approval_status)
+   */
   approvalStatus       String?
   approvedById         String?
   approvedBy           User?     @relation("MeetingApprovedBy", fields: [approvedById], references: [id])
@@ -1038,7 +1067,9 @@ model MeetingDetail {
   proposalDate         DateTime? @db.Date
   proposalAmountRs     Decimal?  @db.Decimal(16, 2)
   tentativeDate        DateTime? @db.Date
-  /** "Current Sales SPOC" — our salesperson */
+  /**
+   * "Current Sales SPOC" — our salesperson
+   */
   salesUserId          String?
   salesUser            User?     @relation("MeetingSalesUser", fields: [salesUserId], references: [id])
   category             String?
@@ -1067,7 +1098,9 @@ model MeetingDetail {
   @@index([approvalStatus])
 }
 
-/** MOM, RFP/EOI/tender, proposal, signed MOU, credit letter, sales pitch, visit photo */
+/**
+ * MOM, RFP/EOI/tender, proposal, signed MOU, credit letter, sales pitch, visit photo
+ */
 model MeetingFile {
   id           String        @id @default(uuid())
   meetingId    String
@@ -1228,7 +1261,7 @@ model ClientCsrProgram {
 
   beneficiaries String?
   // UN Sustainable Development Goals the programme maps to (1–17)
-  sdgs          Int[]    @default([])
+  sdgs          Int[]   @default([])
   sourceUrl     String?
 
   sourceRunId String?
@@ -2010,4 +2043,122 @@ model TicketEvent {
   createdAt DateTime @default(now())
 
   @@index([ticketId, createdAt])
+}
+
+// ── client add-ons (21 Nov 2026) ───────────────────────────────────────────
+// Client keeps only what every client has; each topic is its own optional table.
+
+enum ClientOwnership {
+  PRIVATE
+  CENTRAL_GOVT
+  STATE_GOVT
+}
+
+enum GovtLevel {
+  CENTRAL
+  STATE
+  DISTRICT
+  LOCAL
+}
+
+/// company registration (MCA) — CIN and listing
+model ClientRegistration {
+  id                  String           @id @default(uuid())
+  tenantId            String
+  clientId            String           @unique
+  client              Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  cin                 String?
+  /// read from the CIN (GOI = central, SGC = state) or set by hand
+  ownership           ClientOwnership?
+  /// "Company limited by shares" …
+  companyClass        String?
+  yearOfIncorporation Int?
+  isListed            Boolean?
+  marketCapRs         Decimal?         @db.Decimal(18, 2)
+  subCategory         String?
+  updatedById         String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@unique([tenantId, cin])
+  @@index([cin(ops: raw("gin_trgm_ops"))], type: Gin)
+}
+
+/// CSR profile — figures per FY (ClientCsrFinancial) and programmes (ClientCsrProgram) hang off the client
+model ClientCsr {
+  id                String   @id @default(uuid())
+  clientId          String   @unique
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  /// CSR_ROLE lookup: Donor / Implementing agency / Foundation
+  csrRoleId         String?
+  csrRole           Lookup?  @relation("CsrRole", fields: [csrRoleId], references: [id])
+  csrEligible       Boolean?
+  foundationName    String?
+  foundationWebsite String?
+  updatedById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([csrRoleId])
+  @@index([csrEligible])
+}
+
+/// government body (B2G) — tier, type, administrative parent, nodal ministry, procurement
+model ClientGovt {
+  id              String     @id @default(uuid())
+  clientId        String     @unique
+  client          Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  level           GovtLevel?
+  /// GOVT_ORG_TYPE lookup: Ministry, Central dept, CPSU, State dept, SPSU, State mission, SSC, District admin, ULB …
+  orgTypeId       String?
+  orgType         Lookup?    @relation("GovtOrgType", fields: [orgTypeId], references: [id])
+  /// administrative parent body (a ministry / state department in the CRM)
+  parentClientId  String?
+  parent          Client?    @relation("GovtParent", fields: [parentClientId], references: [id])
+  /// functional mapping — not the ownership chain
+  nodalMinistryId String?
+  nodalMinistry   Client?    @relation("GovtNodalMinistry", fields: [nodalMinistryId], references: [id])
+  /// names as recorded, while the body isn't in the CRM itself
+  ministryName    String?
+  departmentName  String?
+  /// the state's skilling body (skill mission / SSDM) this body works with
+  stateSkillBody  String?
+  sector          String?
+  /// DTE, DVET, SKILL_MISSION, HIGHER_ED, SCHOOL_ED, INDUSTRY
+  skillFamily     String?
+  isNational      Boolean?
+  /// Scheme / Mission / Programme / Portal …
+  schemeType      String?
+  estimatedBudget String?
+  tenderPortal    String?
+  tenderAuthority String?
+  /// H / M / L
+  priority        String?
+  digitalMaturity String?
+  updatedById     String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([level])
+  @@index([orgTypeId])
+  @@index([parentClientId])
+  @@index([nodalMinistryId])
+}
+
+/// a human — stored once; each client they work with is a ClientSpoc row (their role there)
+model Person {
+  id          String       @id @default(uuid())
+  tenantId    String
+  firstName   String
+  lastName    String?
+  nameKey     String
+  email       String?
+  phone       String?
+  linkedinUrl String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  spocs       ClientSpoc[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, nameKey])
 }

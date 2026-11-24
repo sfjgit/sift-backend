@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { z, ZodSchema, ZodError } from "zod";
+import { tag } from "@/docs/meta";
 
 
 interface ValidationSchemas {
@@ -9,7 +10,7 @@ interface ValidationSchemas {
 }
 
 export const validateRequest = (schemas: ValidationSchemas) => {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return tag((req: Request, res: Response, next: NextFunction) => {
     try {
       if (schemas.body) {
         req.validatedBody = schemas.body.parse(req.body);
@@ -43,7 +44,7 @@ export const validateRequest = (schemas: ValidationSchemas) => {
         timestamp: new Date().toISOString(),
       });
     }
-  };
+  }, { schemas });
 };
 
 export const validateBody = (schema: ZodSchema) =>

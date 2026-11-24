@@ -14,6 +14,7 @@ import {
   NotBeforeError,
   TokenExpiredError,
 } from "jsonwebtoken";
+import { tag } from "@/docs/meta";
 
 config();
 
@@ -158,3 +159,5 @@ export const setTokenCookies = (
     maxAge: 9 * 60 * 60 * 1000,
   });
 };
+
+tag(authenticateUser, { auth: true });

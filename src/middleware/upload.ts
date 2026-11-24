@@ -6,6 +6,7 @@
 
 import multer from "multer";
 import { Request, Response, NextFunction } from "express";
+import { tag } from "@/docs/meta";
 
 const MAX_MB = 25;
 
@@ -54,3 +55,5 @@ export const singleFile = (req: Request, res: Response, next: NextFunction) => {
     next();
   });
 };
+
+tag(singleFile, { upload: true });
