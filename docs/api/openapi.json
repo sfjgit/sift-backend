@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SFJBS CRM API",
-    "version": "2026-11-23",
+    "version": "2026-11-24",
     "description": "Generated from the running crm-core-service router. Conventions (auth, envelope, errors, paging): docs/api/CONVENTIONS.md. Changes: docs/api/CHANGELOG.md."
   },
   "servers": [

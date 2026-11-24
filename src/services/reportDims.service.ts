@@ -152,9 +152,10 @@ const primaryLocation = (col: "state" | "city") =>
 
 export const CLIENT_DIM_DEFS: Record<ClientDim, DimDef> = {
   status: { field: "status", resolve: enumLabel, sql: Prisma.sql`c."status"::text` },
-  industry: { field: "industryId", resolve: lookups, sql: Prisma.sql`c."industryId"` },
-  category: { field: "categoryId", resolve: lookups, sql: Prisma.sql`c."categoryId"` },
-  employeeSize: { field: "employeeSizeId", resolve: lookups, sql: Prisma.sql`c."employeeSizeId"` },
+  // company facts live in the company add-on (table "ClientRegistration" until the rename after the deploy)
+  industry: { field: "industryId", resolve: lookups, sql: Prisma.sql`(SELECT r."industryId" FROM "ClientRegistration" r WHERE r."clientId" = c."id")` },
+  category: { field: "categoryId", resolve: lookups, sql: Prisma.sql`(SELECT r."categoryId" FROM "ClientRegistration" r WHERE r."clientId" = c."id")` },
+  employeeSize: { field: "employeeSizeId", resolve: lookups, sql: Prisma.sql`(SELECT r."employeeSizeId" FROM "ClientRegistration" r WHERE r."clientId" = c."id")` },
   createdBy: { field: "createdById", resolve: users, sql: Prisma.sql`c."createdById"` },
   state: { field: null, locationKey: "state", resolve: text, sql: primaryLocation("state") },
   city: { field: null, locationKey: "city", resolve: text, sql: primaryLocation("city") },

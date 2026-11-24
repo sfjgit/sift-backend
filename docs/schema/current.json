@@ -376,39 +376,39 @@
      "unique": false
     },
     {
-     "name": "clientsByIndustry",
-     "type": "Client",
+     "name": "companiesByIndustry",
+     "type": "ClientCompany",
      "list": true,
      "optional": false,
      "id": false,
      "unique": false,
      "relation": {
-      "to": "Client",
-      "name": "ClientIndustry"
+      "to": "ClientCompany",
+      "name": "CompanyIndustry"
      }
     },
     {
-     "name": "clientsByCategory",
-     "type": "Client",
+     "name": "companiesByCategory",
+     "type": "ClientCompany",
      "list": true,
      "optional": false,
      "id": false,
      "unique": false,
      "relation": {
-      "to": "Client",
-      "name": "ClientCategory"
+      "to": "ClientCompany",
+      "name": "CompanyCategory"
      }
     },
     {
-     "name": "clientsByEmployeeSize",
-     "type": "Client",
+     "name": "companiesByEmployeeSize",
+     "type": "ClientCompany",
      "list": true,
      "optional": false,
      "id": false,
      "unique": false,
      "relation": {
-      "to": "Client",
-      "name": "ClientEmployeeSize"
+      "to": "ClientCompany",
+      "name": "CompanyEmployeeSize"
      }
     },
     {
@@ -2535,24 +2535,6 @@
      "unique": false
     },
     {
-     "name": "groupName",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "comment": "company group (Adani Group, Tata Group …) — CSR is often decided at group level"
-    },
-    {
-     "name": "cin",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "comment": "unique per tenant"
-    },
-    {
      "name": "website",
      "type": "String",
      "list": false,
@@ -2595,99 +2577,32 @@
      "default": "PENDING"
     },
     {
-     "name": "employeeCount",
-     "type": "Int",
+     "name": "hasCompany",
+     "type": "Boolean",
      "list": false,
-     "optional": true,
+     "optional": false,
      "id": false,
      "unique": false,
-     "comment": "head count as found (exact) + the band sales filters on (lookup EMPLOYEE_SIZE, meta { min, max }); a count without a band picks the band"
+     "default": "false",
+     "comment": "Only what EVERY client has lives here (24 Nov 2026). Company facts (CIN, industry, category, employees, group …) → ClientCompany; CSR → ClientCsr; government → ClientGovt. Which add-ons a client has — true / false, never empty; kept by database triggers (migration 20261124120000) so lists filter / sort on an add-on without touching the rest."
     },
     {
-     "name": "employeeSizeId",
-     "type": "String",
+     "name": "isCsr",
+     "type": "Boolean",
      "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "employeeSize",
-     "type": "Lookup",
-     "list": false,
-     "optional": true,
+     "optional": false,
      "id": false,
      "unique": false,
-     "relation": {
-      "to": "Lookup",
-      "name": "ClientEmployeeSize",
-      "fields": [
-       "employeeSizeId"
-      ]
-     }
+     "default": "false"
     },
     {
-     "name": "csrFy",
-     "type": "String",
+     "name": "isGovt",
+     "type": "Boolean",
      "list": false,
-     "optional": true,
+     "optional": false,
      "id": false,
      "unique": false,
-     "comment": "latest CSR year, copied from ClientFinancial for list filters / sort at scale — kept in step by csrSnapshot.service, never edited directly"
-    },
-    {
-     "name": "csrSpentRs",
-     "type": "Decimal",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "industryId",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "industry",
-     "type": "Lookup",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "relation": {
-      "to": "Lookup",
-      "name": "ClientIndustry",
-      "fields": [
-       "industryId"
-      ]
-     }
-    },
-    {
-     "name": "categoryId",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "category",
-     "type": "Lookup",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "relation": {
-      "to": "Lookup",
-      "name": "ClientCategory",
-      "fields": [
-       "categoryId"
-      ]
-     }
+     "default": "false"
     },
     {
      "name": "legacyCaspaId",
@@ -2698,72 +2613,14 @@
      "unique": false
     },
     {
-     "name": "foundationName",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "comment": "CASPA \"Ideal customer profile\" facts with no other home"
-    },
-    {
-     "name": "foundationWebsite",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "isListed",
-     "type": "Boolean",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "comment": "listed on an exchange — BRSR applies only then"
-    },
-    {
-     "name": "subCategory",
-     "type": "String",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "linkedinEmployees",
-     "type": "Int",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "marketCapRs",
-     "type": "Decimal",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "csrEligible",
-     "type": "Boolean",
-     "list": false,
-     "optional": true,
-     "id": false,
-     "unique": false,
-     "comment": "sales marks (CASPA parity): eligible for CSR, project tags (Lookup PROJECT ids)"
-    },
-    {
      "name": "projectIds",
      "type": "String",
      "list": true,
      "optional": false,
      "id": false,
      "unique": false,
-     "default": "[]"
+     "default": "[]",
+     "comment": "sales marks (CASPA parity): project tags (Lookup PROJECT ids); CSR eligible → ClientCsr"
     },
     {
      "name": "projectSetById",
@@ -2839,17 +2696,6 @@
       "fields": [
        "businessUnitId"
       ]
-     }
-    },
-    {
-     "name": "serviceLines",
-     "type": "ClientServiceLine",
-     "list": true,
-     "optional": false,
-     "id": false,
-     "unique": false,
-     "relation": {
-      "to": "ClientServiceLine"
      }
     },
     {
@@ -2948,15 +2794,26 @@
      }
     },
     {
-     "name": "registration",
-     "type": "ClientRegistration",
+     "name": "serviceLines",
+     "type": "ClientServiceLine",
+     "list": true,
+     "optional": false,
+     "id": false,
+     "unique": false,
+     "comment": "add-ons (21 Nov 2026 restructure): one table per topic, any client can have any service lines = the lines of the client's active SPOCs, kept by a database trigger on ClientSpoc",
+     "relation": {
+      "to": "ClientServiceLine"
+     }
+    },
+    {
+     "name": "company",
+     "type": "ClientCompany",
      "list": false,
      "optional": true,
      "id": false,
      "unique": false,
-     "comment": "add-ons (21 Nov 2026 restructure): one table per topic, any client can have any",
      "relation": {
-      "to": "ClientRegistration"
+      "to": "ClientCompany"
      }
     },
     {
@@ -3124,22 +2981,18 @@
     }
    ],
    "constraints": [
-    "@@unique([tenantId, cin])",
     "@@unique([tenantId, legacyCaspaId])",
     "@@index([status])",
-    "@@index([industryId])",
-    "@@index([categoryId])",
-    "@@index([employeeSizeId])",
     "@@index([createdById])",
     "@@index([deletedAt])",
     "@@index([businessUnitId])",
     "@@index([tenantId, deletedAt, createdAt])",
     "@@index([tenantId, deletedAt, name])",
-    "@@index([tenantId, groupName])",
-    "@@index([tenantId, deletedAt, csrSpentRs])",
+    "@@index([tenantId, deletedAt, hasCompany])",
+    "@@index([tenantId, deletedAt, isCsr])",
+    "@@index([tenantId, deletedAt, isGovt])",
     "@@index([name(ops: raw(\"gin_trgm_ops\"))], type: Gin)",
-    "@@index([shortName(ops: raw(\"gin_trgm_ops\"))], type: Gin)",
-    "@@index([cin(ops: raw(\"gin_trgm_ops\"))], type: Gin)"
+    "@@index([shortName(ops: raw(\"gin_trgm_ops\"))], type: Gin)"
    ],
    "doc": "───────────────────────────────────────────────────────────────────────────── CLIENT — company master, flat (no parent/child). Addresses in ClientLocation. ───────────────────────────────────────────────────────────────────────────── One row per organisation, whatever we sell it (CSR, B2B, …). What differs by line of business hangs off the client in its own table (ClientFinancial = CSR figures, ClientCorporateFinancial = company figures), never as a copy."
   },
@@ -3319,78 +3172,6 @@
     "@@index([clientId, endedAt])",
     "@@index([userId, endedAt])",
     "@@index([assignedById, endedAt])"
-   ]
-  },
-  {
-   "name": "ClientServiceLine",
-   "fields": [
-    {
-     "name": "id",
-     "type": "String",
-     "list": false,
-     "optional": false,
-     "id": true,
-     "unique": false,
-     "default": "uuid()"
-    },
-    {
-     "name": "clientId",
-     "type": "String",
-     "list": false,
-     "optional": false,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "client",
-     "type": "Client",
-     "list": false,
-     "optional": false,
-     "id": false,
-     "unique": false,
-     "relation": {
-      "to": "Client",
-      "fields": [
-       "clientId"
-      ],
-      "onDelete": "Cascade"
-     }
-    },
-    {
-     "name": "serviceLineId",
-     "type": "String",
-     "list": false,
-     "optional": false,
-     "id": false,
-     "unique": false
-    },
-    {
-     "name": "serviceLine",
-     "type": "ServiceLine",
-     "list": false,
-     "optional": false,
-     "id": false,
-     "unique": false,
-     "relation": {
-      "to": "ServiceLine",
-      "fields": [
-       "serviceLineId"
-      ]
-     }
-    },
-    {
-     "name": "createdAt",
-     "type": "DateTime",
-     "list": false,
-     "optional": false,
-     "id": false,
-     "unique": false,
-     "default": "now()"
-    }
-   ],
-   "constraints": [
-    "@@unique([clientId, serviceLineId])",
-    "@@index([serviceLineId])"
    ]
   },
   {
@@ -10387,7 +10168,7 @@
    ]
   },
   {
-   "name": "ClientRegistration",
+   "name": "ClientCompany",
    "fields": [
     {
      "name": "id",
@@ -10488,6 +10269,102 @@
      "unique": false
     },
     {
+     "name": "industryId",
+     "type": "String",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false
+    },
+    {
+     "name": "industry",
+     "type": "Lookup",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "relation": {
+      "to": "Lookup",
+      "name": "CompanyIndustry",
+      "fields": [
+       "industryId"
+      ]
+     }
+    },
+    {
+     "name": "categoryId",
+     "type": "String",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "comment": "size band (CLIENT_CATEGORY) — sorting by value is a later task"
+    },
+    {
+     "name": "category",
+     "type": "Lookup",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "relation": {
+      "to": "Lookup",
+      "name": "CompanyCategory",
+      "fields": [
+       "categoryId"
+      ]
+     }
+    },
+    {
+     "name": "employeeCount",
+     "type": "Int",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "comment": "head count as found + the band (EMPLOYEE_SIZE, meta { min, max }); a count without a band picks it"
+    },
+    {
+     "name": "employeeSizeId",
+     "type": "String",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false
+    },
+    {
+     "name": "employeeSize",
+     "type": "Lookup",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "relation": {
+      "to": "Lookup",
+      "name": "CompanyEmployeeSize",
+      "fields": [
+       "employeeSizeId"
+      ]
+     }
+    },
+    {
+     "name": "linkedinEmployees",
+     "type": "Int",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false
+    },
+    {
+     "name": "groupName",
+     "type": "String",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "comment": "company group (Adani Group …) — CSR is often decided at group level"
+    },
+    {
      "name": "updatedById",
      "type": "String",
      "list": false,
@@ -10515,9 +10392,88 @@
    ],
    "constraints": [
     "@@unique([tenantId, cin])",
-    "@@index([cin(ops: raw(\"gin_trgm_ops\"))], type: Gin)"
+    "@@index([cin(ops: raw(\"gin_trgm_ops\"))], type: Gin)",
+    "@@index([industryId])",
+    "@@index([categoryId])",
+    "@@index([employeeSizeId])",
+    "@@index([employeeCount])",
+    "@@index([tenantId, groupName])",
+    "@@map(\"ClientRegistration\")"
    ],
-   "doc": "company registration (MCA) — CIN and listing"
+   "doc": "company details — everything only a company has: registration (MCA), industry, size, group. (table \"ClientRegistration\" until the rename after the 24 Nov deploy)"
+  },
+  {
+   "name": "ClientServiceLine",
+   "fields": [
+    {
+     "name": "id",
+     "type": "String",
+     "list": false,
+     "optional": false,
+     "id": true,
+     "unique": false,
+     "default": "uuid()"
+    },
+    {
+     "name": "clientId",
+     "type": "String",
+     "list": false,
+     "optional": false,
+     "id": false,
+     "unique": false
+    },
+    {
+     "name": "client",
+     "type": "Client",
+     "list": false,
+     "optional": false,
+     "id": false,
+     "unique": false,
+     "relation": {
+      "to": "Client",
+      "fields": [
+       "clientId"
+      ],
+      "onDelete": "Cascade"
+     }
+    },
+    {
+     "name": "serviceLineId",
+     "type": "String",
+     "list": false,
+     "optional": false,
+     "id": false,
+     "unique": false
+    },
+    {
+     "name": "serviceLine",
+     "type": "ServiceLine",
+     "list": false,
+     "optional": false,
+     "id": false,
+     "unique": false,
+     "relation": {
+      "to": "ServiceLine",
+      "fields": [
+       "serviceLineId"
+      ]
+     }
+    },
+    {
+     "name": "createdAt",
+     "type": "DateTime",
+     "list": false,
+     "optional": false,
+     "id": false,
+     "unique": false,
+     "default": "now()"
+    }
+   ],
+   "constraints": [
+    "@@unique([clientId, serviceLineId])",
+    "@@index([serviceLineId])"
+   ],
+   "doc": "a client's service lines = the lines of its active SPOCs. Written only by the database trigger on ClientSpoc (migration 20261124120000) — never by the app."
   },
   {
    "name": "ClientCsr",
@@ -10603,6 +10559,23 @@
      "unique": false
     },
     {
+     "name": "latestFy",
+     "type": "String",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false,
+     "comment": "newest FY with a CSR spent figure + that figure — kept by csrSnapshot.service from ClientCsrFinancial"
+    },
+    {
+     "name": "latestSpentRs",
+     "type": "Decimal",
+     "list": false,
+     "optional": true,
+     "id": false,
+     "unique": false
+    },
+    {
      "name": "updatedById",
      "type": "String",
      "list": false,
@@ -10630,7 +10603,9 @@
    ],
    "constraints": [
     "@@index([csrRoleId])",
-    "@@index([csrEligible])"
+    "@@index([csrEligible])",
+    "@@index([latestSpentRs])",
+    "@@index([latestFy])"
    ],
    "doc": "CSR profile — figures per FY (ClientCsrFinancial) and programmes (ClientCsrProgram) hang off the client"
   },
@@ -11418,27 +11393,6 @@
   },
   {
    "from": "Client",
-   "to": "Lookup",
-   "field": "employeeSizeId",
-   "optional": true,
-   "list": false
-  },
-  {
-   "from": "Client",
-   "to": "Lookup",
-   "field": "industryId",
-   "optional": true,
-   "list": false
-  },
-  {
-   "from": "Client",
-   "to": "Lookup",
-   "field": "categoryId",
-   "optional": true,
-   "list": false
-  },
-  {
-   "from": "Client",
    "to": "User",
    "field": "projectSetById",
    "optional": true,
@@ -11497,20 +11451,6 @@
    "from": "ClientAssignment",
    "to": "User",
    "field": "assignedById",
-   "optional": false,
-   "list": false
-  },
-  {
-   "from": "ClientServiceLine",
-   "to": "Client",
-   "field": "clientId",
-   "optional": false,
-   "list": false
-  },
-  {
-   "from": "ClientServiceLine",
-   "to": "ServiceLine",
-   "field": "serviceLineId",
    "optional": false,
    "list": false
   },
@@ -12194,9 +12134,44 @@
    "list": false
   },
   {
-   "from": "ClientRegistration",
+   "from": "ClientCompany",
    "to": "Client",
    "field": "clientId",
+   "optional": false,
+   "list": false
+  },
+  {
+   "from": "ClientCompany",
+   "to": "Lookup",
+   "field": "industryId",
+   "optional": true,
+   "list": false
+  },
+  {
+   "from": "ClientCompany",
+   "to": "Lookup",
+   "field": "categoryId",
+   "optional": true,
+   "list": false
+  },
+  {
+   "from": "ClientCompany",
+   "to": "Lookup",
+   "field": "employeeSizeId",
+   "optional": true,
+   "list": false
+  },
+  {
+   "from": "ClientServiceLine",
+   "to": "Client",
+   "field": "clientId",
+   "optional": false,
+   "list": false
+  },
+  {
+   "from": "ClientServiceLine",
+   "to": "ServiceLine",
+   "field": "serviceLineId",
    "optional": false,
    "list": false
   },

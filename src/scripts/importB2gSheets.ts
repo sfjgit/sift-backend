@@ -98,13 +98,10 @@ async function run(siva: { id: string; tenantId: string }) {
   const newSpocs: string[] = [];
   for (const b of bodies) {
     // match: government CIN → same name
-    let ex = b.cin ? (await prisma.clientRegistration.findFirst({ where: { cin: b.cin }, select: { client: true } }))?.client ?? null : null;
+    let ex = b.cin ? (await prisma.clientCompany.findFirst({ where: { cin: b.cin }, select: { client: true } }))?.client ?? null : null;
     ex ??= await prisma.client.findFirst({ where: { name: { equals: b.name, mode: "insensitive" }, deletedAt: null } });
     const core = {
       shortName: b.shortName, website: b.website, linkedinUrl: b.linkedin,
-      industryId: await industryId(b.industry),
-      categoryId: b.category ? (cats.get(b.category.toLowerCase()) ?? null) : null,
-      employeeSizeId: b.employeeSize ? (sizes.get(b.employeeSize) ?? null) : null,
       email: b.office?.email ?? null, phone: b.office?.phone ?? null,
       businessUnitId: bu.id,
     };
@@ -134,13 +131,18 @@ async function run(siva: { id: string; tenantId: string }) {
 
     // registration — a government company's CIN
     if (b.cin && real) {
-      const reg = await prisma.clientRegistration.findUnique({ where: { clientId } });
-      const taken = await prisma.clientRegistration.findFirst({ where: { cin: b.cin, clientId: { not: clientId } }, select: { id: true } });
+      const reg = await prisma.clientCompany.findUnique({ where: { clientId } });
+      const taken = await prisma.clientCompany.findFirst({ where: { cin: b.cin, clientId: { not: clientId } }, select: { id: true } });
       if (!taken && !reg?.cin) {
         bump("CINs added");
-        if (APPLY) await prisma.clientRegistration.upsert({
+        if (APPLY) await prisma.clientCompany.upsert({
           where: { clientId },
-          create: { tenantId, clientId, cin: b.cin, ownership: ownershipFromCin(b.cin), yearOfIncorporation: b.yearOfIncorporation },
+          // a government company (PSU): its company facts go with the CIN
+          create: {
+            tenantId, clientId, cin: b.cin, ownership: ownershipFromCin(b.cin), yearOfIncorporation: b.yearOfIncorporation,
+            industryId: await industryId(b.industry), categoryId: b.category ? (cats.get(b.category.toLowerCase()) ?? null) : null,
+            employeeSizeId: b.employeeSize ? (sizes.get(b.employeeSize) ?? null) : null,
+          },
           update: { cin: b.cin, ownership: ownershipFromCin(b.cin), ...(reg?.yearOfIncorporation ? {} : { yearOfIncorporation: b.yearOfIncorporation }) },
         });
       }
@@ -149,7 +151,7 @@ async function run(siva: { id: string; tenantId: string }) {
     // government add-on (fill empty only)
     const govtWant = {
       level: b.govt.level, orgTypeId: orgTypes.get(b.govt.orgType) ?? null, ministryName: b.govt.ministryName, departmentName: b.govt.departmentName,
-      stateSkillBody: b.govt.stateSkillBody, sector: b.govt.sector, schemeType: b.govt.schemeType, estimatedBudget: b.govt.estimatedBudget,
+      stateSkillBody: b.govt.stateSkillBody, sector: b.govt.sector ?? b.industry, schemeType: b.govt.schemeType, estimatedBudget: b.govt.estimatedBudget,
       tenderPortal: b.govt.tenderPortal, tenderAuthority: b.govt.tenderAuthority, priority: b.govt.priority, digitalMaturity: b.govt.digitalMaturity,
       isNational: b.sheet === "central" ? true : null,
     };

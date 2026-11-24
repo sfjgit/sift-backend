@@ -220,8 +220,9 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
   const c = await prisma.client.findFirst({
     where: { id, deletedAt: null, ...(g === true || !g ? {} : await clientScopeWhere(user, g)) },
     select: {
-      name: true, status: true, website: true, registration: { select: { cin: true } }, csrSpentRs: true, csrFy: true, csr: { select: { csrEligible: true } }, employeeCount: true,
-      industry: { select: { label: true } }, category: { select: { label: true } },
+      name: true, status: true, website: true, entityType: true, hasCompany: true, csr: { select: { csrEligible: true } },
+      // company facts live in the company add-on
+      company: { select: { cin: true, employeeCount: true, industry: { select: { label: true } }, category: { select: { label: true } } } },
       locations: { where: { isPrimary: true, isActive: true }, select: { city: true, state: true }, take: 1 },
       csrFinancials: { select: { fy: true, obligationRs: true, spentRs: true, unspentRs: true }, orderBy: { fy: "desc" }, take: 1 },
       spocs: { where: { isActive: true }, select: { approvalStatus: true, email: true, salesStatus: { select: { label: true } } } },
@@ -231,7 +232,7 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
   });
   if (!g || !c) return "I can't see this client — it may be outside your access.";
   const hq = c.locations[0];
-  const out = [`**${c.name}** — ${c.status.toLowerCase()} client${c.industry ? `, ${c.industry.label}` : ""}${c.category ? ` (${c.category.label})` : ""}${hq?.state ? `, head office in ${[hq.city, hq.state].filter(Boolean).join(", ")}` : ""}.`, ""];
+  const out = [`**${c.name}** — ${c.status.toLowerCase()} client${c.company?.industry ? `, ${c.company.industry.label}` : ""}${c.company?.category ? ` (${c.company.category.label})` : ""}${hq?.state ? `, head office in ${[hq.city, hq.state].filter(Boolean).join(", ")}` : ""}.`, ""];
   out.push("**Where it stands**");
   out.push(`- Assigned to ${c.assignments.length ? c.assignments.map((a) => nameOf(a.user)).join(", ") : "nobody yet"}${c._count.keyAccounts ? `; a key account for ${c._count.keyAccounts}` : ""}${c.csr?.csrEligible === true ? "; marked CSR eligible" : c.csr?.csrEligible === false ? "; marked not CSR eligible" : ""}.`);
   if (perms["spocs.read"]) {
@@ -254,7 +255,15 @@ const explainClient = async (user: AuthUser, perms: PermissionMap, id: string) =
         : "- No CSR figures on record yet.",
     );
   }
-  const missing = [!c.website && "website", !c.registration?.cin && "CIN", !c.industry && "industry", !c._count.locations && "an office address", c.employeeCount === null && "employee count"].filter(Boolean);
+  // company facts are only "missing" for a company (a ministry has no CIN or head count)
+  const isCompany = c.entityType === "COMPANY" || c.hasCompany;
+  const missing = [
+    !c.website && "website",
+    isCompany && !c.company?.cin && "CIN",
+    isCompany && !c.company?.industry && "industry",
+    !c._count.locations && "an office address",
+    isCompany && (c.company?.employeeCount ?? null) === null && "employee count",
+  ].filter(Boolean);
   if (missing.length) out.push("", `**Missing:** ${missing.join(", ")}.`);
   return out.join("\n");
 };
@@ -421,8 +430,8 @@ const recordFacts = async (user: AuthUser, perms: PermissionMap, page: Page): Pr
     const c = await prisma.client.findFirst({
       where: { id: page.id, deletedAt: null, ...(g === true ? {} : await clientScopeWhere(user, g)) },
       select: {
-        name: true, status: true, website: true, registration: { select: { cin: true } }, employeeCount: true, entityType: true,
-        industry: { select: { label: true } }, category: { select: { label: true } }, businessUnit: { select: { name: true } },
+        name: true, status: true, website: true, entityType: true, businessUnit: { select: { name: true } },
+        company: { select: { cin: true, employeeCount: true, industry: { select: { label: true } }, category: { select: { label: true } } } },
         locations: { where: { isActive: true }, select: { city: true, state: true, district: true, isPrimary: true }, take: 50 },
         assignments: { where: { endedAt: null }, select: { user: { select: { firstName: true, lastName: true } } } },
         _count: { select: { spocs: { where: { isActive: true } } } },
@@ -430,8 +439,8 @@ const recordFacts = async (user: AuthUser, perms: PermissionMap, page: Page): Pr
     });
     if (!c) return null;
     const facts: [string, string][] = [["status", c.status.toLowerCase()], ["type", c.entityType.toLowerCase()]];
-    if (c.industry) facts.push(["industry", c.industry.label]);
-    if (c.category) facts.push(["category", c.category.label]);
+    if (c.company?.industry) facts.push(["industry", c.company.industry.label]);
+    if (c.company?.category) facts.push(["category", c.company.category.label]);
     if (c.businessUnit) facts.push(["business unit", c.businessUnit.name]);
     for (const l of c.locations) {
       if (l.state) facts.push([l.isPrimary ? "head office state" : "office state", l.state]);
@@ -441,8 +450,8 @@ const recordFacts = async (user: AuthUser, perms: PermissionMap, page: Page): Pr
     for (const a of c.assignments) facts.push(["assigned to", nameOf(a.user)]);
     facts.push(["SPOCs", String(c._count.spocs)]);
     if (c.website) facts.push(["website", c.website]);
-    if (c.registration?.cin) facts.push(["CIN", c.registration.cin]);
-    if (c.employeeCount !== null) facts.push(["employees", String(c.employeeCount)]);
+    if (c.company?.cin) facts.push(["CIN", c.company.cin]);
+    if (c.company?.employeeCount != null) facts.push(["employees", String(c.company.employeeCount)]);
     return { name: c.name, facts };
   }
   if (page.kind === "spoc") {

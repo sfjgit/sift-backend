@@ -31,7 +31,7 @@ import type {
 } from "@/validators/client.validators";
 import { CLIENT_FIGURES } from "@/validators/client.validators";
 import { assertFillOnly, assertSuperAdmin } from "@/services/editLock.service";
-import { ADDON_SELECT, clientValuesForLock, flattenClient, saveAddons, splitClientInput } from "@/services/clientAddons.service";
+import { ADDON_SELECT, addonWhere, clientValuesForLock, flattenClient, saveAddons, splitClientInput } from "@/services/clientAddons.service";
 
 const PERSON = { id: true, firstName: true, lastName: true } as const;
 const NOTE_SELECT = {
@@ -67,17 +67,11 @@ const CLIENT_LIST_SELECT = {
   email: true,
   phone: true,
   status: true,
-  employeeCount: true,
-  employeeSize: { select: LOOKUP },
-  csrFy: true,
-  csrSpentRs: true,
   createdAt: true,
   updatedAt: true,
-  industry: { select: LOOKUP },
-  category: { select: LOOKUP },
   businessUnit: { select: ORG },
-  // the client's service lines = the lines of its active SPOCs (automatic; flattenClient → serviceLines)
-  spocs: { where: { isActive: true }, select: { serviceLine: { select: ORG } }, distinct: ["serviceLineId"] },
+  // = the lines of its active SPOCs, kept by a database trigger (industry, category, employees, CSR → add-ons)
+  serviceLines: { select: { serviceLine: { select: ORG } }, orderBy: { createdAt: "asc" } },
   createdBy: { select: PERSON },
   // who works the client (set by super admin / clients.assign)
   assignments: {
@@ -199,7 +193,6 @@ const TECHNOLOGY_SELECT = {
 
 const CLIENT_DETAIL_SELECT = {
   ...CLIENT_LIST_SELECT,
-  linkedinEmployees: true,
   approvedAt: true,
   approvedBy: { select: PERSON },
   locations: {
@@ -370,37 +363,39 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
   for (const f of ["name", "shortName", "website"] as const) {
     if (q[f]) and.push({ [f]: { contains: q[f], mode: "insensitive" } });
   }
-  if (q.cin) and.push({ registration: { cin: { contains: q.cin, mode: "insensitive" } } });
-  if (any(q.csrFy)) and.push({ csrFy: { in: q.csrFy! } });
-  if (any(q.groupName)) and.push({ groupName: { in: q.groupName! } });
-  if (any(q.ownership)) and.push({ registration: { ownership: { in: q.ownership! } } });
+  if (q.cin) and.push(addonWhere.cin(q.cin));
+  if (any(q.csrFy)) and.push({ csr: { latestFy: { in: q.csrFy! } } });
+  if (any(q.groupName)) and.push(addonWhere.groupName(q.groupName!));
+  if (any(q.ownership)) and.push({ company: { ownership: { in: q.ownership! } } });
   if (any(q.csrRoleId)) and.push({ csr: { csrRoleId: { in: q.csrRoleId! } } });
   if (any(q.govtLevel)) and.push({ govt: { level: { in: q.govtLevel! } } });
   if (any(q.govtOrgTypeId)) and.push({ govt: { orgTypeId: { in: q.govtOrgTypeId! } } });
   if (q.employeeMin !== undefined || q.employeeMax !== undefined)
-    and.push({ employeeCount: { ...(q.employeeMin !== undefined && { gte: q.employeeMin }), ...(q.employeeMax !== undefined && { lte: q.employeeMax }) } });
+    and.push({ company: { employeeCount: { ...(q.employeeMin !== undefined && { gte: q.employeeMin }), ...(q.employeeMax !== undefined && { lte: q.employeeMax }) } } });
   for (const f of Object.keys(CLIENT_FIGURES) as ClientFigure[]) {
     const min = q[`${f}MinCr`], max = q[`${f}MaxCr`];
     if (min === undefined && max === undefined) continue;
     and.push({ id: { in: await figureRangeIds(f, min === undefined ? undefined : min * CRORE, max === undefined ? undefined : max * CRORE) } });
   }
   if (any(q.entityType)) and.push({ entityType: { in: q.entityType! } });
-  if (any(q.employeeSizeId)) and.push({ employeeSizeId: { in: q.employeeSizeId! } });
+  if (any(q.employeeSizeId)) and.push(addonWhere.employeeSizeId(q.employeeSizeId!));
   if (q.csrSpentMinCr !== undefined || q.csrSpentMaxCr !== undefined) {
     and.push({
-      csrSpentRs: {
-        ...(q.csrSpentMinCr !== undefined && { gte: q.csrSpentMinCr * CRORE }),
-        ...(q.csrSpentMaxCr !== undefined && { lte: q.csrSpentMaxCr * CRORE }),
+      csr: {
+        latestSpentRs: {
+          ...(q.csrSpentMinCr !== undefined && { gte: q.csrSpentMinCr * CRORE }),
+          ...(q.csrSpentMaxCr !== undefined && { lte: q.csrSpentMaxCr * CRORE }),
+        },
       },
     });
   }
   if (q.hasBranches !== undefined) {
     and.push({ locations: q.hasBranches ? { some: BRANCHES.where } : { none: BRANCHES.where } });
   }
-  if (any(q.industryId)) and.push({ industryId: { in: q.industryId! } });
-  if (any(q.categoryId)) and.push({ categoryId: { in: q.categoryId! } });
+  if (any(q.industryId)) and.push(addonWhere.industryId(q.industryId!));
+  if (any(q.categoryId)) and.push(addonWhere.categoryId(q.categoryId!));
   if (any(q.businessUnitId)) and.push({ businessUnitId: { in: q.businessUnitId! } });
-  if (any(q.serviceLineId)) and.push({ spocs: { some: { isActive: true, serviceLineId: { in: q.serviceLineId! } } } });
+  if (any(q.serviceLineId)) and.push({ serviceLines: { some: { serviceLineId: { in: q.serviceLineId! } } } });
   if (any(q.createdById)) and.push({ createdById: { in: q.createdById! } });
   if (any(q.handlerId)) and.push({ spocs: { some: { isActive: true, handlerId: { in: q.handlerId! } } } });
 
@@ -485,7 +480,7 @@ const clientFilterWhere = async (q: ListClientsQuery, me: string): Promise<Prism
       OR: [
         { name: { contains: q.search, mode: "insensitive" } },
         { shortName: { contains: q.search, mode: "insensitive" } },
-        { registration: { cin: { contains: q.search, mode: "insensitive" } } },
+        addonWhere.cin(q.search),
       ],
     });
   }
@@ -546,19 +541,22 @@ export const listClients = async (req: Request, res: Response) => {
       // (a figure-sorted page is re-ordered below)
       orderBy: pageIds
         ? { name: "asc" }
-        : q.sortBy === "csrFy"
-          ? // latest CSR year, then the bigger spend within a year
-            [
-              { csrFy: { sort: q.sortDir, nulls: "last" } },
-              { csrSpentRs: { sort: "desc", nulls: "last" } },
+        : // add-on sorts: clients that have the add-on first (flag index), sorted by the add-on's field
+          q.sortBy === "csrFy"
+          ? [
+              { isCsr: "desc" },
+              { csr: { latestFy: { sort: q.sortDir, nulls: "last" } } },
+              { csr: { latestSpentRs: { sort: "desc", nulls: "last" } } },
               { name: "asc" },
             ]
-          : q.sortBy === "cin"
-            ? [{ registration: { cin: q.sortDir } }, { name: "asc" }]
-          : q.sortBy === "csrSpentRs" || q.sortBy === "employeeCount" || q.sortBy === "shortName"
-            ? [{ [q.sortBy]: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
+          : q.sortBy === "csrSpentRs"
+            ? [{ isCsr: "desc" }, { csr: { latestSpentRs: { sort: q.sortDir, nulls: "last" } } }, { name: "asc" }]
+          : q.sortBy === "cin" || q.sortBy === "employeeCount"
+            ? [{ hasCompany: "desc" }, { company: { [q.sortBy]: { sort: q.sortDir, nulls: "last" } } }, { name: "asc" }]
+          : q.sortBy === "shortName"
+            ? [{ shortName: { sort: q.sortDir, nulls: "last" } }, { name: "asc" }]
             : RELATION_SORT[q.sortBy]
-              ? [{ [RELATION_SORT[q.sortBy]!]: { label: q.sortDir } }, { name: "asc" }]
+              ? [{ hasCompany: "desc" }, { company: { [RELATION_SORT[q.sortBy]!]: { label: q.sortDir } } }, { name: "asc" }]
               : q.sortBy === "businessUnit"
                 ? [{ businessUnit: { name: q.sortDir } }, { name: "asc" }]
                 : { [q.sortBy]: q.sortDir },
@@ -654,25 +652,26 @@ export const clientFacets = async (req: Request, res: Response) => {
   let counts: { value: string | null; count: number }[];
   if (field === "serviceLineId") {
     // a client counts once per line its active SPOCs have
-    const rows = await prisma.clientSpoc.findMany({
-      where: { client: where, isActive: true },
-      select: { clientId: true, serviceLineId: true },
-      distinct: ["clientId", "serviceLineId"],
-    });
-    const m = new Map<string, number>();
-    for (const r of rows) m.set(r.serviceLineId, (m.get(r.serviceLineId) ?? 0) + 1);
-    counts = [...m].map(([value, count]) => ({ value, count }));
-    counts.push({ value: null, count: await prisma.client.count({ where: { AND: [where, { spocs: { none: { isActive: true } } }] } }) });
-  } else if (field === "ownership" || field === "csrRoleId" || field === "govtLevel" || field === "govtOrgTypeId") {
+    // the link table (kept from active SPOCs by a trigger)
+    const g = await prisma.clientServiceLine.groupBy({ by: ["serviceLineId"], where: { client: where }, _count: true });
+    counts = g.map((r) => ({ value: r.serviceLineId, count: r._count }));
+    counts.push({ value: null, count: await prisma.client.count({ where: { AND: [where, { serviceLines: { none: {} } }] } }) });
+  } else if (["ownership", "csrRoleId", "govtLevel", "govtOrgTypeId", "industryId", "categoryId", "employeeSizeId", "groupName", "csrFy"].includes(field)) {
     // add-on fields: count per value on the matching clients' add-on rows
-    const rows =
-      field === "ownership"
-        ? (await prisma.clientRegistration.findMany({ where: { client: where }, select: { ownership: true } })).map((r) => r.ownership as string | null)
+    // (company fields count only companies; CSR fields only CSR clients — the add-on rows)
+    const companyField = { ownership: "ownership", industryId: "industryId", categoryId: "categoryId", employeeSizeId: "employeeSizeId", groupName: "groupName" } as const;
+    const rows: (string | null)[] =
+      field in companyField
+        ? (await prisma.clientCompany.findMany({ where: { client: where }, select: { [companyField[field as keyof typeof companyField]]: true } })).map(
+            (r) => (r as Record<string, unknown>)[companyField[field as keyof typeof companyField]] as string | null,
+          )
         : field === "csrRoleId"
           ? (await prisma.clientCsr.findMany({ where: { client: where }, select: { csrRoleId: true } })).map((r) => r.csrRoleId)
-          : field === "govtLevel"
-            ? (await prisma.clientGovt.findMany({ where: { client: where }, select: { level: true } })).map((r) => r.level as string | null)
-            : (await prisma.clientGovt.findMany({ where: { client: where }, select: { orgTypeId: true } })).map((r) => r.orgTypeId);
+          : field === "csrFy"
+            ? (await prisma.clientCsr.findMany({ where: { client: where }, select: { latestFy: true } })).map((r) => r.latestFy)
+            : field === "govtLevel"
+              ? (await prisma.clientGovt.findMany({ where: { client: where }, select: { level: true } })).map((r) => r.level as string | null)
+              : (await prisma.clientGovt.findMany({ where: { client: where }, select: { orgTypeId: true } })).map((r) => r.orgTypeId);
     const m = new Map<string | null, number>();
     for (const v of rows) m.set(v, (m.get(v) ?? 0) + 1);
     counts = [...m].map(([value, count]) => ({ value, count }));
@@ -701,7 +700,7 @@ export const clientFacets = async (req: Request, res: Response) => {
     for (const r of rows as unknown as Record<string, string>[]) m.set(r[field]!, (m.get(r[field]!) ?? 0) + 1);
     counts = [...m].map(([value, count]) => ({ value, count }));
   } else {
-    const g = await prisma.client.groupBy({ by: [field], where, _count: true });
+    const g = await prisma.client.groupBy({ by: [field as "status" | "entityType" | "businessUnitId" | "createdById"], where, _count: true });
     counts = g.map((r) => ({ value: (r as Record<string, unknown>)[field] as string | null, count: r._count as number }));
   }
   // labels for ids
@@ -818,7 +817,7 @@ export const updateClient = async (req: Request, res: Response) => {
   // filled data: only a super admin changes it (sales marks + status are work, not data) — core and each add-on
   if (was) {
     assertFillOnly(req.user, was.core, fields, ["status", "projectIds", "website"]);
-    assertFillOnly(req.user, was.registration, parts.registration);
+    assertFillOnly(req.user, was.company, parts.company);
     assertFillOnly(req.user, was.csr, parts.csr, ["csrEligible"]);
     assertFillOnly(req.user, was.govt, parts.govt, ["priority"]);
   }
@@ -828,7 +827,7 @@ export const updateClient = async (req: Request, res: Response) => {
     throw ApiError(403, "Only an admin can change the website. If it does not open, run a step — the website check finds the current one.", "ADMIN_ONLY");
   }
   const data = definedOnly(fields) as Prisma.ClientUpdateInput;
-  const addonData = { ...definedOnly(parts.registration), ...definedOnly(parts.csr), ...(Object.keys(parts.govt).length && { govt: parts.govt }) };
+  const addonData = { ...definedOnly(parts.company), ...definedOnly(parts.csr), ...(Object.keys(parts.govt).length && { govt: parts.govt }) };
   const changed = [...Object.keys(data), ...Object.keys(addonData)];
 
   const updated = await prisma.$transaction(async (tx) => {
@@ -1524,11 +1523,8 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
       entityType: true,
       website: true,
       linkedinUrl: true,
-      registration: { select: { cin: true } },
-      csrSpentRs: true,
-      csr: { select: { csrEligible: true } },
-      industry: { select: { id: true, label: true } },
-      category: { select: { id: true, label: true } },
+      company: { select: { cin: true, industry: { select: { id: true, label: true } }, category: { select: { id: true, label: true } } } },
+      csr: { select: { csrEligible: true, latestSpentRs: true } },
       businessUnit: { select: { id: true, name: true } },
       locations: { where: { isPrimary: true, isActive: true }, select: { state: true }, take: 1 },
       _count: { select: { spocs: { where: { isActive: true } }, keyAccounts: true } },
@@ -1552,20 +1548,20 @@ export const computeClientStats = async (who: ClientAsker, q: ListClientsQuery) 
   for (const r of rows) {
     if (r.website) has.website++;
     if (r.linkedinUrl) has.linkedin++;
-    if (r.registration?.cin) has.cin++;
+    if (r.company?.cin) has.cin++;
     if (r._count.spocs) has.spocs++;
     spocs += r._count.spocs;
-    if (r.csrSpentRs !== null) {
+    if (r.csr?.latestSpentRs != null) {
       has.csrFigures++;
-      csrSpentRs += Number(r.csrSpentRs);
+      csrSpentRs += Number(r.csr.latestSpentRs);
     }
     const state = (r.locations[0]?.state ?? "").trim();
     if (state) has.state++;
     if (r._count.keyAccounts) keyAccounts++;
     if (r.csr?.csrEligible) csrEligible++;
     add(by.status, r.status, r.status);
-    add(by.industry, r.industry?.id, r.industry?.label);
-    add(by.category, r.category?.id, r.category?.label);
+    add(by.industry, r.company?.industry?.id, r.company?.industry?.label);
+    add(by.category, r.company?.category?.id, r.company?.category?.label);
     add(by.state, state ? state.toLowerCase() : null, state);
     add(by.businessUnit, r.businessUnit?.id, r.businessUnit?.name);
     add(by.entityType, r.entityType, r.entityType);

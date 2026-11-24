@@ -64,7 +64,7 @@ const TENANT_MODELS = new Set<string>([
   "Ticket",
   // a human behind one or more client SPOC roles; a client's company registration (CIN unique per tenant)
   "Person",
-  "ClientRegistration",
+  "ClientCompany",
 ]);
 
 // tenantId may be null = platform row every tenant reads (not writes)

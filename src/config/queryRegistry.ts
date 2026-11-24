@@ -187,8 +187,8 @@ const clientWhere = async (ctx: QueryCtx, f: ClientFilter): Promise<Prisma.Clien
       { deletedAt: null },
       f.clientId ? { id: { in: f.clientId } } : {},
       f.status ? { status: f.status as $Enums.ClientStatus } : {},
-      f.industryId ? { industryId: { in: f.industryId } } : {},
-      f.categoryId ? { categoryId: { in: f.categoryId } } : {},
+      f.industryId ? { company: { industryId: { in: f.industryId } } } : {},
+      f.categoryId ? { company: { categoryId: { in: f.categoryId } } } : {},
       f.businessUnitId ? { businessUnitId: { in: f.businessUnitId } } : {},
       f.entityType ? { entityType: f.entityType as $Enums.ClientEntityType } : {},
       f.added ? { createdAt: { gte: day(f.added.from), lte: day(f.added.to, true) } } : {},
@@ -412,14 +412,17 @@ const BUSINESS = [
           where,
           take,
           orderBy:
-            p.sort === "newest" ? { createdAt: "desc" } : p.sort === "csr_spent" && showMoney ? { csrSpentRs: { sort: "desc", nulls: "last" } } : { name: "asc" },
+            p.sort === "newest"
+              ? { createdAt: "desc" }
+              : p.sort === "csr_spent" && showMoney
+                ? [{ isCsr: "desc" }, { csr: { latestSpentRs: { sort: "desc", nulls: "last" } } }]
+                : { name: "asc" },
           select: {
             name: true,
             status: true,
-            csrFy: true,
-            csrSpentRs: true,
+            csr: { select: { latestFy: true, latestSpentRs: true } },
             createdAt: true,
-            industry: { select: { label: true } },
+            company: { select: { industry: { select: { label: true } } } },
             businessUnit: { select: { name: true } },
             assignments: { where: { endedAt: null }, select: { user: { select: { firstName: true, lastName: true } } }, take: 10 },
           },
@@ -447,9 +450,9 @@ const BUSINESS = [
           name: r.name,
           assignedTo: r.assignments.map((a) => `${a.user.firstName} ${a.user.lastName ?? ""}`.trim()).join(", ") || "Nobody",
           status: r.status,
-          industry: r.industry?.label ?? null,
+          industry: r.company?.industry?.label ?? null,
           businessUnit: r.businessUnit?.name ?? null,
-          ...(showMoney ? { csrFy: r.csrFy, csrSpent: num(r.csrSpentRs) } : {}),
+          ...(showMoney ? { csrFy: r.csr?.latestFy ?? null, csrSpent: num(r.csr?.latestSpentRs ?? null) } : {}),
           addedOn: dayKey(r.createdAt),
         })),
       };
@@ -566,8 +569,7 @@ const BUSINESS = [
           [field]: true,
           client: {
             select: {
-              industryId: true,
-              categoryId: true,
+              company: { select: { industryId: true, categoryId: true } },
               businessUnitId: true,
               locations: { where: { isActive: true }, orderBy: { isPrimary: "desc" }, take: 1, select: { state: true } },
             },
@@ -575,8 +577,8 @@ const BUSINESS = [
         },
         take: 50_000,
       });
-      const keyOf = (c: { industryId: string | null; categoryId: string | null; businessUnitId: string | null; locations: { state: string | null }[] }) =>
-        p.by === "industry" ? c.industryId : p.by === "category" ? c.categoryId : p.by === "business_unit" ? c.businessUnitId : (c.locations[0]?.state ?? null);
+      const keyOf = (c: { company: { industryId: string | null; categoryId: string | null } | null; businessUnitId: string | null; locations: { state: string | null }[] }) =>
+        p.by === "industry" ? (c.company?.industryId ?? null) : p.by === "category" ? (c.company?.categoryId ?? null) : p.by === "business_unit" ? c.businessUnitId : (c.locations[0]?.state ?? null);
       const sums = new Map<string, number>();
       for (const r of rows as unknown as Record<string, unknown>[]) {
         const k = keyOf(r.client as never) ?? "";

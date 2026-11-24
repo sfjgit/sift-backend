@@ -133,24 +133,20 @@ async function run(siva: { id: string; tenantId: string }) {
   for (const [i, c] of C.clients.entries()) {
     if (i % 100 === 0) console.log(`  clients ${i}/${C.clients.length}`);
     let ex = await prisma.client.findFirst({ where: { legacyCaspaId: c.legacyId } });
-    ex ??= c.cin ? await prisma.client.findFirst({ where: { cin: c.cin } }) : null;
+    ex ??= c.cin ? ((await prisma.clientCompany.findFirst({ where: { cin: c.cin }, select: { client: true } }))?.client ?? null) : null;
     ex ??= await prisma.client.findFirst({ where: { name: { equals: c.name, mode: "insensitive" }, deletedAt: null } });
+    // core client fields only — company facts → company add-on, CSR → CSR add-on (below)
     const want = {
       name: c.name,
-      cin: c.cin,
       website: c.website,
       linkedinUrl: c.linkedin,
+      businessUnitId: bu.id,
+    };
+    const companyFacts = {
       employeeCount: c.employees,
       industryId: await look("INDUSTRY", c.industry),
       categoryId: await look("CLIENT_CATEGORY", c.category),
-      isListed: c.listed,
-      marketCapRs: dec(c.marketCap),
-      subCategory: c.subCategory,
       linkedinEmployees: c.linkedinEmployees,
-      csrEligible: c.csrEligible,
-      foundationName: c.foundationName,
-      foundationWebsite: c.foundationWebsite,
-      businessUnitId: bu.id,
     };
     const latest = [...c.csr].filter((y: any) => y.spent != null).sort((a: any, b: any) => b.fy.localeCompare(a.fy))[0];
     let clientId: string;
@@ -161,9 +157,7 @@ async function run(siva: { id: string; tenantId: string }) {
         bump("clients skipped (conflict)");
         continue;
       }
-      // a CIN taken by another client can't be copied over
-      if (want.cin && ex.cin !== want.cin && (await prisma.client.findFirst({ where: { cin: want.cin, id: { not: ex.id } }, select: { id: true } }))) delete (want as any).cin;
-      const { data, before } = fillEmpty(ex as any, { ...want, legacyCaspaId: c.legacyId, ...(latest && { csrFy: latest.fy, csrSpentRs: dec(latest.spent) }) } as any);
+      const { data, before } = fillEmpty(ex as any, { ...want, legacyCaspaId: c.legacyId } as any);
       if (Object.keys(data).length) {
         bump("clients updated (empty fields filled)");
         if (APPLY) {
@@ -174,7 +168,6 @@ async function run(siva: { id: string; tenantId: string }) {
       clientId = ex.id;
       hasLocations = await prisma.clientLocation.count({ where: { clientId } });
     } else {
-      if (want.cin && (await prisma.client.findFirst({ where: { cin: want.cin }, select: { id: true } }))) delete (want as any).cin;
       bump("clients created");
       if (APPLY) {
         const row = await prisma.client.create({
@@ -185,7 +178,6 @@ async function run(siva: { id: string; tenantId: string }) {
             legacyCaspaId: c.legacyId,
             createdById: users.get(c.addedBy) ?? siva.id,
             ...(c.status === "ACTIVE" && { approvedById: siva.id, approvedAt: new Date() }),
-            ...(latest && { csrFy: latest.fy, csrSpentRs: dec(latest.spent) }),
           },
           select: { id: true },
         });
@@ -196,17 +188,17 @@ async function run(siva: { id: string; tenantId: string }) {
     clientIdByLegacy.set(c.legacyId, clientId);
     // add-ons (23 Nov 2026): registration + CSR profile — fill what is empty
     if (APPLY) {
-      const reg = await prisma.clientRegistration.findUnique({ where: { clientId } });
-      const regWant = { cin: want.cin ?? null, isListed: c.listed, marketCapRs: dec(c.marketCap), subCategory: c.subCategory, ownership: ownershipFromCin(want.cin), yearOfIncorporation: yearFromCin(want.cin) };
-      const cinFree = !want.cin || !(await prisma.clientRegistration.findFirst({ where: { cin: want.cin, clientId: { not: clientId } }, select: { id: true } }));
+      const reg = await prisma.clientCompany.findUnique({ where: { clientId } });
+      const regWant = { ...companyFacts, cin: c.cin ?? null, isListed: c.listed, marketCapRs: dec(c.marketCap), subCategory: c.subCategory, ownership: ownershipFromCin(c.cin), yearOfIncorporation: yearFromCin(c.cin) };
+      const cinFree = !c.cin || !(await prisma.clientCompany.findFirst({ where: { cin: c.cin, clientId: { not: clientId } }, select: { id: true } }));
       if (!cinFree) { delete (regWant as any).cin; delete (regWant as any).ownership; delete (regWant as any).yearOfIncorporation; }
       const regData = reg ? fillEmpty(reg as any, regWant as any).data : Object.fromEntries(Object.entries(regWant).filter(([, v]) => v !== null && v !== undefined));
       if (Object.keys(regData).length) {
         bump(reg ? "registrations completed" : "registrations added");
-        await prisma.clientRegistration.upsert({ where: { clientId }, create: { tenantId, clientId, ...regData } as any, update: regData });
+        await prisma.clientCompany.upsert({ where: { clientId }, create: { tenantId, clientId, ...regData } as any, update: regData });
       }
       const csr = await prisma.clientCsr.findUnique({ where: { clientId } });
-      const csrWant = { csrEligible: c.csrEligible, foundationName: c.foundationName, foundationWebsite: c.foundationWebsite };
+      const csrWant = { csrEligible: c.csrEligible, foundationName: c.foundationName, foundationWebsite: c.foundationWebsite, ...(latest && { latestFy: latest.fy, latestSpentRs: dec(latest.spent) }) };
       const csrData = csr ? fillEmpty(csr as any, csrWant as any).data : Object.fromEntries(Object.entries(csrWant).filter(([, v]) => v !== null && v !== undefined));
       if (Object.keys(csrData).length) {
         bump(csr ? "CSR profiles completed" : "CSR profiles added");

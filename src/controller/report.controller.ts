@@ -230,9 +230,12 @@ const spocPairs = async (where: Prisma.ClientSpocWhereInput, a: DimDef, b: DimDe
   return fromGroupRows(rows as unknown as GroupRow[], a, b);
 };
 
+const COMPANY_DIMS = new Set(["industryId", "categoryId", "employeeSizeId"]);
+
 const clientPairs = async (where: Prisma.ClientWhereInput, a: DimDef, b: DimDef | null) => {
-  // plain columns → groupBy
-  if (a.field && (!b || b.field)) {
+  // plain Client columns → groupBy (industry / category / size live in the company add-on → counted below)
+  const onClient = (d: DimDef) => !!d.field && !COMPANY_DIMS.has(d.field);
+  if (onClient(a) && (!b || onClient(b))) {
     const by = [a.field, ...(b ? [b.field] : [])] as Prisma.ClientScalarFieldEnum[];
     const rows = await prisma.client.groupBy({ by, where, _count: { _all: true } });
     return fromGroupRows(rows as unknown as GroupRow[], a, b);
@@ -243,8 +246,8 @@ const clientPairs = async (where: Prisma.ClientWhereInput, a: DimDef, b: DimDef 
     where,
     select: {
       status: true,
-      industryId: true,
-      categoryId: true,
+      // industry / category live in the company add-on
+      company: { select: { industryId: true, categoryId: true, employeeSizeId: true } },
       createdById: true,
       locations: {
         where: { isPrimary: true, isActive: true },
@@ -254,8 +257,15 @@ const clientPairs = async (where: Prisma.ClientWhereInput, a: DimDef, b: DimDef 
     },
   });
 
+  const flat = (row: (typeof rows)[number]) =>
+    ({
+      ...row,
+      industryId: row.company?.industryId ?? null,
+      categoryId: row.company?.categoryId ?? null,
+      employeeSizeId: row.company?.employeeSizeId ?? null,
+    }) as Record<string, unknown>;
   const pick = (row: (typeof rows)[number], d: DimDef) =>
-    toRaw(d.locationKey ? row.locations[0]?.[d.locationKey] : row[d.field as keyof typeof row]);
+    toRaw(d.locationKey ? row.locations[0]?.[d.locationKey] : (flat(row)[d.field ?? ""] as never));
 
   const counts = new Map<string, Pair>();
   for (const row of rows) {

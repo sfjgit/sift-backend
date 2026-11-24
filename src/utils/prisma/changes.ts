@@ -34,7 +34,7 @@ export const isTracked = (model: string | undefined) => !!model && !SKIP.has(mod
 const CATEGORY: Record<string, string> = {
   Client: "Clients", ClientSpoc: "SPOCs", ClientNote: "Comments", WorkTask: "Tasks & meetings", ClientDocument: "Documents",
   ClientLocation: "Offices", ClientTechnology: "Technology", ClientAssignment: "Assignments", ClientSpocAssignment: "Assignments",
-  ClientKeyAccount: "Key accounts", ClientServiceLine: "Service lines", ClientRegistration: "Clients", ClientCsr: "Clients",
+  ClientKeyAccount: "Key accounts", ClientCompany: "Clients", ClientServiceLine: "Service lines", ClientCsr: "Clients",
   ClientGovt: "Clients", Person: "SPOCs", ClientCsrFinancial: "CSR figures",
   ClientCorporateFinancial: "Financials", ClientCsrProgram: "CSR programmes", ClientCsrProgramSector: "CSR programmes",
   ClientCsrProgramLocation: "CSR programmes", OutreachPack: "Outreach", OutreachMessage: "Outreach", User: "Users",

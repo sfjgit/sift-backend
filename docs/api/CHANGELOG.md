@@ -5,6 +5,15 @@ Newest first. Every API change gets a line here in the same commit as the code, 
 
 Format: `- METHOD /api/path — what changed (request #issue)`
 
+## 2026-11-24
+
+- **Company add-on:** industry, category, employee count, employee size, LinkedIn employees and company group moved from Client to the company add-on (`ClientCompany`; responses also as `company`, and `registration` = the same object for older builds). The CSR snapshot moved to the CSR add-on (`csr.latestFy`, `csr.latestSpentRs`). **No change to the flat response fields** (`industry`, `category`, `employeeCount`, `csrFy`, `csrSpentRs` … are filled from the add-ons) or to request bodies / filters / sorts.
+- New client flags in responses: `hasCompany`, `isCsr`, `isGovt` (true / false; kept by database triggers). Sorting by a company or CSR field lists the clients that have it first.
+- Service lines: back to the `ClientServiceLine` link, now written only by a database trigger from the client's active SPOCs (same behaviour, faster filter).
+- An add-on is only created when at least one sent value is real — empty company fields on a government body don't create a company record.
+
+- Restructure finished (after the 24 Nov deploy): the old Client columns `cin`, `isListed`, `marketCapRs`, `subCategory`, `csrEligible`, `foundationName`, `foundationWebsite` and the table `ClientServiceLine` are dropped. **No API change** — responses still carry those flat fields, read from `registration` / `csr`; service lines from the active SPOCs.
+
 ## 2026-11-23 — client add-ons, persons, B2G
 
 - `GET /api/schema-map` (super admins) — the database structure for Admin › Data map: `graph` (tables, fields, links parsed from prisma/schema.prisma), `domains` + `modelNotes` + `fieldNotes` (plain-language what / why, src/docs/schemaNotes.ts), `history` (every schema change since the first version, docs/schema/history.json — rebuilt by `npm run docs:schema`, part of `npm run docs:api`).

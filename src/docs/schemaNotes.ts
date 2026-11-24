@@ -26,7 +26,7 @@ export const DOMAINS: Domain[] = [
   {
     key: "addons", label: "Client add-ons", color: "#7c3aed", col: 2, row: 0,
     what: "Optional topic tables any client can have (23 Nov 2026). A new topic = a new add-on table, never a table per business unit.",
-    models: ["ClientRegistration", "ClientCsr", "ClientGovt", "ClientTechnology", "ClientCorporateFinancial"],
+    models: ["ClientCompany", "ClientCsr", "ClientGovt", "ClientTechnology", "ClientCorporateFinancial"],
   },
   {
     key: "people", label: "People & SPOCs", color: "#0891b2", col: 0, row: 0,
@@ -67,12 +67,12 @@ export const DOMAINS: Domain[] = [
 
 /** what / why per table (ⓘ on each box) */
 export const MODEL_NOTES: Record<string, { what: string; why: string }> = {
-  Client: { what: "One organisation we sell to. Type (Company / Government / Institution) is only a label.", why: "One table for every kind of client keeps lists, reports and AI simple; differences live in add-ons." },
-  ClientServiceLine: { what: "Old link client ↔ service line. No longer used for display.", why: "Since 23 Nov a client's service lines come from its active SPOCs automatically — kept until the old builds are gone." },
+  Client: { what: "One organisation we sell to — only what every client has (name, type, status, website, office contact, BU). Flags hasCompany / isCsr / isGovt say which add-ons it has.", why: "No column that is empty because a type doesn't use it: company facts, CSR and government data live in add-ons (24 Nov 2026)." },
   ClientAssignment: { what: "Who works this client (history kept: endedAt).", why: "Scope: what each salesperson sees follows their assignments." },
   ClientKeyAccount: { what: "A personal ★ key-account mark per user.", why: "Each salesperson flags their own important accounts." },
   ClientLocation: { what: "Offices: head office, branches, plants (with GPS).", why: "Branch finder, map, distance and regional filters." },
-  ClientRegistration: { what: "Company registration (MCA): CIN, ownership (from the CIN: GOI = central, SGC = state), year, listing, market cap.", why: "Only companies have a CIN — so it is an add-on, not a Client column. Also how PSUs are recognised." },
+  ClientCompany: { what: "Company details: CIN, ownership (from the CIN: GOI = central, SGC = state), year, listing, market cap, industry, category, employees, group.", why: "Only companies have these — a ministry has no CIN or head count, so they are an add-on, never empty Client columns. PSUs with a CIN have one too." },
+  ClientServiceLine: { what: "A client's service lines (KaaS / TaaS / CSR).", why: "Written only by a database trigger: = the lines of the client's active SPOCs. Fast filter, never typed by hand." },
   ClientCsr: { what: "CSR profile: role (donor / implementing agency / foundation), CSR eligible, foundation.", why: "Not every client does CSR; the CSR years and programmes hang off the client." },
   ClientGovt: { what: "Government body: tier, body type, parent body, nodal ministry, ministry / department, state skill body, tender portal, priority.", why: "B2G bodies need these; companies don't. Parent lives here (ministry → department), not on Client." },
   ClientTechnology: { what: "Tech stack per area (cloud, ERP, CRM, LMS, cyber …).", why: "KaaS sales: what they run decides what training fits." },
@@ -112,11 +112,10 @@ export const MODEL_NOTES: Record<string, { what: string; why: string }> = {
 /** notes on single fields (ⓘ in the field list) — "Model.field" */
 export const FIELD_NOTES: Record<string, string> = {
   "Client.entityType": "Organisation type — a label (Company / Government / Institution). Finer kinds live in add-ons (government body type, ownership).",
-  "Client.csrFy": "Cache: newest FY with CSR spent — kept by the snapshot job so lists sort without a join.",
-  "Client.csrSpentRs": "Cache: that FY's CSR spent (₹).",
-  "Client.cin": "OLD — moved to ClientRegistration.cin; mirrored until the next deploy, then dropped.",
-  "Client.csrEligible": "OLD — moved to ClientCsr; mirrored until the next deploy.",
-  "Client.groupName": "Company group (Adani Group …) — CSR is often decided at group level.",
+  "Client.hasCompany": "True when the client has company details (ClientCompany). Kept by a database trigger — lists filter / sort company fields through it.",
+  "Client.isCsr": "True when the client has a CSR profile (ClientCsr). Kept by a database trigger.",
+  "Client.isGovt": "True when the client is a government body (ClientGovt). Kept by a database trigger.",
+  "ClientCsr.latestSpentRs": "Newest FY's CSR spent — kept by csrSnapshot.service so lists sort by CSR spend.",
   "Client.businessUnitId": "The client's business unit (B2B / B2G / B2I) — the list's view switch filters on it.",
   "Client.email": "The organisation's own office email (people's emails are on SPOCs).",
   "ClientSpoc.personId": "The human behind this role. Same person at another client = another SPOC row, same Person.",
@@ -125,7 +124,7 @@ export const FIELD_NOTES: Record<string, string> = {
   "ClientSpoc.handlerId": "The salesperson who owns this contact.",
   "ClientSpoc.approvalStatus": "Engine-found SPOCs start PENDING until a lead approves.",
   "Person.email": "Unique per tenant; only personal mailboxes (not csr@ / info@).",
-  "ClientRegistration.ownership": "Read from the CIN: GOI = central govt, SGC = state govt (PSUs).",
+  "ClientCompany.ownership": "Read from the CIN: GOI = central govt, SGC = state govt (PSUs).",
   "ClientGovt.parentClientId": "Administrative parent (ministry → department → mission).",
   "ClientGovt.nodalMinistryId": "Functional mapping — not the ownership chain.",
   "ClientCsrFinancial.isLocked": "Confirmed by a person — engines never overwrite it.",

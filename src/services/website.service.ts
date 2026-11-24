@@ -159,7 +159,7 @@ export const oneSuggestion = async (runId: string) => {
     where: { id: runId, step: { key: WEBSITE_STEP } },
     select: {
       id: true, status: true, finishedAt: true, options: true, viewData: true,
-      client: { select: { id: true, name: true, website: true, registration: { select: { cin: true } }, industry: { select: { label: true } } } },
+      client: { select: { id: true, name: true, website: true, company: { select: { cin: true, industry: { select: { label: true } } } } } },
       requestedBy: { select: { id: true, firstName: true, lastName: true } },
     },
   });
@@ -174,8 +174,8 @@ export const oneSuggestion = async (runId: string) => {
       id: r.client.id,
       name: r.client.name,
       website: r.client.website,
-      cin: r.client.registration?.cin ?? null,
-      industry: r.client.industry?.label ?? null,
+      cin: r.client.company?.cin ?? null,
+      industry: r.client.company?.industry?.label ?? null,
     },
     requestedBy: r.requestedBy,
     request: v.websiteRequest ?? null,
@@ -228,12 +228,12 @@ export const requestAdmin = async (user: AuthUser, runId: string) => {
 /** an admin checks a website they typed, before saving it */
 export const checkTyped = async (clientId: string, url: string): Promise<WebsiteCheckResult> => {
   const [client, svc] = await Promise.all([
-    prisma.client.findFirst({ where: { id: clientId, deletedAt: null }, select: { name: true, registration: { select: { cin: true } } } }),
+    prisma.client.findFirst({ where: { id: clientId, deletedAt: null }, select: { name: true, company: { select: { cin: true } } } }),
     prisma.externalService.findUnique({ where: { code: "BRANCH_FINDER" }, select: { baseUrl: true, outboundKeyEnv: true } }),
   ]);
   if (!client) throw notFound("Client");
   if (!svc) throw ApiError(503, "The website checker is not set up", "SERVICE_OFF");
-  const reply = await engine.checkWebsite(svc, { name: client.name, cin: client.registration?.cin ?? null, url });
+  const reply = await engine.checkWebsite(svc, { name: client.name, cin: client.company?.cin ?? null, url });
   if (!reply.ok || !reply.data) throw ApiError(502, `The website could not be checked: ${reply.error ?? "no answer"}`, "CHECK_FAILED");
   return reply.data;
 };

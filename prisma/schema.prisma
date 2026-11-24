@@ -255,22 +255,22 @@ model Lookup {
   isSystem Boolean @default(false) // seeded rows code may reference — not deletable
   meta     Json?
 
-  clientsByIndustry      Client[]                 @relation("ClientIndustry")
-  clientsByCategory      Client[]                 @relation("ClientCategory")
-  clientsByEmployeeSize  Client[]                 @relation("ClientEmployeeSize")
-  csrByRole              ClientCsr[]              @relation("CsrRole")
-  govtByOrgType          ClientGovt[]             @relation("GovtOrgType")
-  locationsByType        ClientLocation[]         @relation("LocationType")
-  technologiesByCategory ClientTechnology[]       @relation("TechCategory")
-  spocsBySource          ClientSpoc[]             @relation("SpocSource")
-  spocsByEmailSource     ClientSpoc[]             @relation("SpocEmailSource")
-  spocsBySalesStatus     ClientSpoc[]             @relation("SpocSalesStatus")
-  spocsByRoleCategory    ClientSpoc[]             @relation("SpocRoleCategory")
-  spocsByDecision        ClientSpoc[]             @relation("SpocDecisionAuthority")
-  spocsByOrgType         ClientSpoc[]             @relation("SpocOrgType")
-  spocsByRevenueBand     ClientSpoc[]             @relation("SpocRevenueBand")
-  documentsByType        ClientDocument[]         @relation("DocumentType")
-  csrProgramSectors      ClientCsrProgramSector[] @relation("CsrProgramSector")
+  companiesByIndustry     ClientCompany[]          @relation("CompanyIndustry")
+  companiesByCategory     ClientCompany[]          @relation("CompanyCategory")
+  companiesByEmployeeSize ClientCompany[]          @relation("CompanyEmployeeSize")
+  csrByRole               ClientCsr[]              @relation("CsrRole")
+  govtByOrgType           ClientGovt[]             @relation("GovtOrgType")
+  locationsByType         ClientLocation[]         @relation("LocationType")
+  technologiesByCategory  ClientTechnology[]       @relation("TechCategory")
+  spocsBySource           ClientSpoc[]             @relation("SpocSource")
+  spocsByEmailSource      ClientSpoc[]             @relation("SpocEmailSource")
+  spocsBySalesStatus      ClientSpoc[]             @relation("SpocSalesStatus")
+  spocsByRoleCategory     ClientSpoc[]             @relation("SpocRoleCategory")
+  spocsByDecision         ClientSpoc[]             @relation("SpocDecisionAuthority")
+  spocsByOrgType          ClientSpoc[]             @relation("SpocOrgType")
+  spocsByRevenueBand      ClientSpoc[]             @relation("SpocRevenueBand")
+  documentsByType         ClientDocument[]         @relation("DocumentType")
+  csrProgramSectors       ClientCsrProgramSector[] @relation("CsrProgramSector")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -588,9 +588,6 @@ model Client {
   entityType  ClientEntityType @default(COMPANY)
   name        String
   shortName   String?
-  // company group (Adani Group, Tata Group …) — CSR is often decided at group level
-  groupName   String?
-  cin         String? // unique per tenant
   website     String?
   linkedinUrl String?
   // the organisation's own office email / phone (people's contacts are SPOCs)
@@ -598,34 +595,17 @@ model Client {
   phone       String?
   status      ClientStatus     @default(PENDING)
 
-  // head count as found (exact) + the band sales filters on (lookup
-  // EMPLOYEE_SIZE, meta { min, max }); a count without a band picks the band
-  employeeCount  Int?
-  employeeSizeId String?
-  employeeSize   Lookup? @relation("ClientEmployeeSize", fields: [employeeSizeId], references: [id])
-
-  // latest CSR year, copied from ClientFinancial for list filters / sort at
-  // scale — kept in step by csrSnapshot.service, never edited directly
-  csrFy      String?
-  csrSpentRs Decimal? @db.Decimal(16, 2)
-
-  industryId String?
-  industry   Lookup? @relation("ClientIndustry", fields: [industryId], references: [id])
-  categoryId String?
-  category   Lookup? @relation("ClientCategory", fields: [categoryId], references: [id])
+  // Only what EVERY client has lives here (24 Nov 2026). Company facts (CIN, industry, category,
+  // employees, group …) → ClientCompany; CSR → ClientCsr; government → ClientGovt.
+  // Which add-ons a client has — true / false, never empty; kept by database triggers
+  // (migration 20261124120000) so lists filter / sort on an add-on without touching the rest.
+  hasCompany Boolean @default(false)
+  isCsr      Boolean @default(false)
+  isGovt     Boolean @default(false)
 
   legacyCaspaId Int?
 
-  // CASPA "Ideal customer profile" facts with no other home
-  foundationName    String?
-  foundationWebsite String?
-  isListed          Boolean? // listed on an exchange — BRSR applies only then
-  subCategory       String?
-  linkedinEmployees Int?
-  marketCapRs       Decimal? @db.Decimal(18, 2)
-
-  // sales marks (CASPA parity): eligible for CSR, project tags (Lookup PROJECT ids)
-  csrEligible    Boolean?
+  // sales marks (CASPA parity): project tags (Lookup PROJECT ids); CSR eligible → ClientCsr
   projectIds     String[]           @default([])
   projectSetById String?
   projectSetBy   User?              @relation("ClientProjectSetBy", fields: [projectSetById], references: [id])
@@ -636,8 +616,7 @@ model Client {
   // one BU owns the client; it can be served by several service lines.
   // New SPOCs from pipeline runs take the BU from here.
   businessUnitId String?
-  businessUnit   BusinessUnit?       @relation(fields: [businessUnitId], references: [id])
-  serviceLines   ClientServiceLine[]
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id])
 
   createdById  String
   createdBy    User      @relation("ClientCreatedBy", fields: [createdById], references: [id])
@@ -651,7 +630,9 @@ model Client {
   technologies        ClientTechnology[]
   spocs               ClientSpoc[]
   // add-ons (21 Nov 2026 restructure): one table per topic, any client can have any
-  registration        ClientRegistration?
+  // service lines = the lines of the client's active SPOCs, kept by a database trigger on ClientSpoc
+  serviceLines        ClientServiceLine[]
+  company             ClientCompany?
   csr                 ClientCsr?
   govt                ClientGovt?
   govtChildren        ClientGovt[]               @relation("GovtParent")
@@ -671,24 +652,20 @@ model Client {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([tenantId, cin])
   @@unique([tenantId, legacyCaspaId])
   @@index([status])
-  @@index([industryId])
-  @@index([categoryId])
-  @@index([employeeSizeId])
   @@index([createdById])
   @@index([deletedAt])
   @@index([businessUnitId])
   // list: default sort + name / CSR spend sort over a tenant's live rows
   @@index([tenantId, deletedAt, createdAt])
   @@index([tenantId, deletedAt, name])
-  @@index([tenantId, groupName])
-  @@index([tenantId, deletedAt, csrSpentRs])
+  @@index([tenantId, deletedAt, hasCompany])
+  @@index([tenantId, deletedAt, isCsr])
+  @@index([tenantId, deletedAt, isGovt])
   // "contains" search (ILIKE '%x%') — trigram, needs pg_trgm
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
   @@index([shortName(ops: raw("gin_trgm_ops"))], type: Gin)
-  @@index([cin(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 // who works a client — set by super admin / clients.assign. Assigned users see
@@ -722,19 +699,6 @@ model ClientAssignment {
   @@index([clientId, endedAt])
   @@index([userId, endedAt])
   @@index([assignedById, endedAt])
-}
-
-model ClientServiceLine {
-  id            String      @id @default(uuid())
-  clientId      String
-  client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  serviceLineId String
-  serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id])
-
-  createdAt DateTime @default(now())
-
-  @@unique([clientId, serviceLineId])
-  @@index([serviceLineId])
 }
 
 // every address of a client — HQ, branches, dev centres, plants
@@ -2061,8 +2025,9 @@ enum GovtLevel {
   LOCAL
 }
 
-/// company registration (MCA) — CIN and listing
-model ClientRegistration {
+/// company details — everything only a company has: registration (MCA), industry, size, group.
+/// (table "ClientRegistration" until the rename after the 24 Nov deploy)
+model ClientCompany {
   id                  String           @id @default(uuid())
   tenantId            String
   clientId            String           @unique
@@ -2076,12 +2041,44 @@ model ClientRegistration {
   isListed            Boolean?
   marketCapRs         Decimal?         @db.Decimal(18, 2)
   subCategory         String?
+  industryId          String?
+  industry            Lookup?          @relation("CompanyIndustry", fields: [industryId], references: [id])
+  /// size band (CLIENT_CATEGORY) — sorting by value is a later task
+  categoryId          String?
+  category            Lookup?          @relation("CompanyCategory", fields: [categoryId], references: [id])
+  /// head count as found + the band (EMPLOYEE_SIZE, meta { min, max }); a count without a band picks it
+  employeeCount       Int?
+  employeeSizeId      String?
+  employeeSize        Lookup?          @relation("CompanyEmployeeSize", fields: [employeeSizeId], references: [id])
+  linkedinEmployees   Int?
+  /// company group (Adani Group …) — CSR is often decided at group level
+  groupName           String?
   updatedById         String?
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 
   @@unique([tenantId, cin])
   @@index([cin(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([industryId])
+  @@index([categoryId])
+  @@index([employeeSizeId])
+  @@index([employeeCount])
+  @@index([tenantId, groupName])
+  @@map("ClientRegistration")
+}
+
+/// a client's service lines = the lines of its active SPOCs. Written only by the database trigger on
+/// ClientSpoc (migration 20261124120000) — never by the app.
+model ClientServiceLine {
+  id            String      @id @default(uuid())
+  clientId      String
+  client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  serviceLineId String
+  serviceLine   ServiceLine @relation(fields: [serviceLineId], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@unique([clientId, serviceLineId])
+  @@index([serviceLineId])
 }
 
 /// CSR profile — figures per FY (ClientCsrFinancial) and programmes (ClientCsrProgram) hang off the client
@@ -2095,12 +2092,17 @@ model ClientCsr {
   csrEligible       Boolean?
   foundationName    String?
   foundationWebsite String?
+  /// newest FY with a CSR spent figure + that figure — kept by csrSnapshot.service from ClientCsrFinancial
+  latestFy          String?
+  latestSpentRs     Decimal? @db.Decimal(16, 2)
   updatedById       String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   @@index([csrRoleId])
   @@index([csrEligible])
+  @@index([latestSpentRs])
+  @@index([latestFy])
 }
 
 /// government body (B2G) — tier, type, administrative parent, nodal ministry, procurement

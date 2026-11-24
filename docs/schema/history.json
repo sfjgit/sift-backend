@@ -1,9 +1,84 @@
 [
  {
   "ref": "working copy",
-  "at": "2026-11-23T13:06:42.571Z",
+  "at": "2026-11-24T06:39:22.488Z",
   "author": "uncommitted",
-  "message": "not committed yet — latest migration 20261123120000_client_office_contact",
+  "message": "not committed yet — latest migration 20261124120000_company_addon_flags_service_lines",
+  "hash": "7730f262f8",
+  "tables": 65,
+  "addedModels": [
+   "ClientCompany"
+  ],
+  "removedModels": [
+   "ClientRegistration"
+  ],
+  "fieldChanges": [
+   {
+    "model": "Lookup",
+    "added": [
+     "companiesByIndustry",
+     "companiesByCategory",
+     "companiesByEmployeeSize"
+    ],
+    "removed": [
+     "clientsByIndustry",
+     "clientsByCategory",
+     "clientsByEmployeeSize"
+    ],
+    "changed": []
+   },
+   {
+    "model": "Client",
+    "added": [
+     "hasCompany",
+     "isCsr",
+     "isGovt",
+     "company"
+    ],
+    "removed": [
+     "groupName",
+     "cin",
+     "employeeCount",
+     "employeeSizeId",
+     "employeeSize",
+     "csrFy",
+     "csrSpentRs",
+     "industryId",
+     "industry",
+     "categoryId",
+     "category",
+     "foundationName",
+     "foundationWebsite",
+     "isListed",
+     "subCategory",
+     "linkedinEmployees",
+     "marketCapRs",
+     "csrEligible",
+     "registration"
+    ],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   },
+   {
+    "model": "ClientCsr",
+    "added": [
+     "latestFy",
+     "latestSpentRs"
+    ],
+    "removed": [],
+    "changed": [
+     "(indexes / unique rules)"
+    ]
+   }
+  ],
+  "enumChanges": []
+ },
+ {
+  "ref": "0c1ec85",
+  "at": "2026-11-24T10:29:21+05:30",
+  "author": "sfjgit",
+  "message": "we have done major changes",
   "hash": "1a0adac236",
   "tables": 65,
   "addedModels": [

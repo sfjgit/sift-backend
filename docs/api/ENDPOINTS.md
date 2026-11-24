@@ -1,6 +1,6 @@
 # SFJBS CRM API — endpoints
 
-Generated 2026-11-23 13:06 UTC from the code (`npm run docs:api`). **Do not edit by hand.** 236 endpoints.
+Generated 2026-11-24 06:39 UTC from the code (`npm run docs:api`). **Do not edit by hand.** 236 endpoints.
 Read first: [CONVENTIONS.md](./CONVENTIONS.md) (sign-in, response envelope, errors, paging). What changed: [CHANGELOG.md](./CHANGELOG.md).
 
 - [auth](#auth) — 7

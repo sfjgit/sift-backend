@@ -810,7 +810,7 @@ export const computeSpocStats = async (who: Asker, q: ListSpocsQuery) => {
       location: { select: { state: true } },
       client: {
         select: {
-          category: { select: { id: true, label: true } },
+          company: { select: { category: { select: { id: true, label: true } } } },
           locations: { where: { isPrimary: true, isActive: true }, select: { state: true }, take: 1 },
         },
       },
@@ -853,7 +853,7 @@ export const computeSpocStats = async (who: Asker, q: ListSpocsQuery) => {
     if (r.dataFlag) flagged++;
     if (r.projectIds.length) withProjects++;
     add(by.salesStatus, r.salesStatus?.id, r.salesStatus?.label);
-    add(by.category, r.client.category?.id, r.client.category?.label);
+    add(by.category, r.client.company?.category?.id, r.client.company?.category?.label);
     add(by.state, state ? state.toLowerCase() : null, state);
     add(by.handler, r.handler.id, fullNameOf(r.handler));
     add(by.businessUnit, r.businessUnit.id, r.businessUnit.name);
